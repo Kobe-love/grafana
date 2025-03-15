@@ -1,235 +1,186 @@
-import React, { useMemo, useRef } from 'react';
-import { TooltipDisplayMode, StackingMode, LegendDisplayMode } from '@grafana/schema';
-import {
-  compareDataFrameStructures,
-  DataFrame,
-  getFieldDisplayName,
-  PanelProps,
-  TimeRange,
-  VizOrientation,
-} from '@grafana/data';
-import {
-  GraphNG,
-  GraphNGProps,
-  measureText,
-  PlotLegend,
-  TooltipPlugin,
-  UPlotConfigBuilder,
-  UPLOT_AXIS_FONT_SIZE,
-  usePanelContext,
-  useTheme2,
-  VizLayout,
-  VizLegend,
-} from '@grafana/ui';
-import { PanelOptions } from './models.gen';
-import { prepareBarChartDisplayValues, preparePlotConfigBuilder } from './utils';
+import { useMemo } from 'react';
+
+import { PanelProps, VizOrientation } from '@grafana/data';
 import { PanelDataErrorView } from '@grafana/runtime';
-import { DataHoverView } from '../geomap/components/DataHoverView';
-import { getFieldLegendItem } from '../state-timeline/utils';
-import { PropDiffFn } from '@grafana/ui/src/components/GraphNG/GraphNG';
+import {
+  TooltipDisplayMode,
+  TooltipPlugin2,
+  UPLOT_AXIS_FONT_SIZE,
+  UPlotChart,
+  VizLayout,
+  measureText,
+  // usePanelContext,
+  useTheme2,
+} from '@grafana/ui';
+import { TooltipHoverMode } from '@grafana/ui/internal';
 
-/**
- * @alpha
- */
-export interface BarChartProps
-  extends PanelOptions,
-    Omit<GraphNGProps, 'prepConfig' | 'propsToDiff' | 'renderLegend' | 'theme'> {}
+import { TimeSeriesTooltip } from '../timeseries/TimeSeriesTooltip';
 
-const propsToDiff: Array<string | PropDiffFn> = [
-  'orientation',
-  'barWidth',
-  'barRadius',
-  'xTickLabelRotation',
-  'xTickLabelMaxLength',
-  'xTickLabelSpacing',
-  'groupWidth',
-  'stacking',
-  'showValue',
-  'xField',
-  'colorField',
-  'legend',
-  (prev: BarChartProps, next: BarChartProps) => next.text?.valueSize === prev.text?.valueSize,
-];
+import { BarChartLegend, hasVisibleLegendSeries } from './BarChartLegend';
+import { Options } from './panelcfg.gen';
+import { prepConfig, prepSeries } from './utils';
 
-interface Props extends PanelProps<PanelOptions> {}
+const charWidth = measureText('M', UPLOT_AXIS_FONT_SIZE).width;
+const toRads = Math.PI / 180;
 
-export const BarChartPanel: React.FunctionComponent<Props> = ({ data, options, width, height, timeZone, id }) => {
+export const BarChartPanel = (props: PanelProps<Options>) => {
+  const { data, options, fieldConfig, width, height, timeZone, id, replaceVariables } = props;
+
+  // will need this if joining on time to re-create data links
+  // const { dataLinkPostProcessor } = usePanelContext();
+
   const theme = useTheme2();
-  const { eventBus } = usePanelContext();
 
-  const frame0Ref = useRef<DataFrame>();
-  const info = useMemo(() => prepareBarChartDisplayValues(data?.series, theme, options), [data, theme, options]);
-  const structureRef = useRef(10000);
-  useMemo(() => {
-    structureRef.current++;
+  const {
+    barWidth,
+    barRadius = 0,
+    showValue,
+    groupWidth,
+    stacking,
+    legend,
+    tooltip,
+    text,
+    xTickLabelRotation,
+    xTickLabelSpacing,
+    fullHighlight,
+    xField,
+    colorByField,
+  } = options;
+
+  // size-dependent, calculated opts that should cause viz re-config
+  let { orientation, xTickLabelMaxLength = 0 } = options;
+
+  orientation =
+    orientation === VizOrientation.Auto
+      ? width < height
+        ? VizOrientation.Horizontal
+        : VizOrientation.Vertical
+      : orientation;
+
+  // TODO: this can be moved into axis calc internally, no need to re-config based on this
+  // should be based on vizHeight, not full height?
+  xTickLabelMaxLength =
+    xTickLabelRotation === 0
+      ? Infinity // should this calc using spacing between groups?
+      : xTickLabelMaxLength ||
+        // auto max length clamps to half viz height, subracts 3 chars for ... ellipsis
+        Math.floor(height / 2 / Math.sin(Math.abs(xTickLabelRotation * toRads)) / charWidth - 3);
+
+  // TODO: config data links
+  const info = useMemo(
+    () => prepSeries(data.series, fieldConfig, stacking, theme, xField, colorByField),
+    [data.series, fieldConfig, stacking, theme, xField, colorByField]
+  );
+
+  const vizSeries = useMemo(
+    () =>
+      info.series.map((frame) => ({
+        ...frame,
+        fields: frame.fields.filter((field, i) => i === 0 || !field.state?.hideFrom?.viz),
+      })),
+    [info.series]
+  );
+
+  const xGroupsCount = vizSeries[0]?.length ?? 0;
+  const seriesCount = vizSeries[0]?.fields.length ?? 0;
+  const totalSeries = Math.max(0, (info.series[0]?.fields.length ?? 0) - 1);
+
+  let { builder, prepData } = useMemo(
+    () => {
+      return xGroupsCount === 0
+        ? { builder: null, prepData: null }
+        : prepConfig({ series: vizSeries, totalSeries, color: info.color, orientation, options, timeZone, theme });
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options]); // change every time the options object changes (while editing)
-
-  const structureRev = useMemo(() => {
-    const f0 = info.viz;
-    const f1 = frame0Ref.current;
-    if (!(f0 && f1 && compareDataFrameStructures(f0, f1, true))) {
-      structureRef.current++;
-    }
-    frame0Ref.current = f0;
-    return (data.structureRev ?? 0) + structureRef.current;
-  }, [info, data.structureRev]);
-
-  const orientation = useMemo(() => {
-    if (!options.orientation || options.orientation === VizOrientation.Auto) {
-      return width < height ? VizOrientation.Horizontal : VizOrientation.Vertical;
-    }
-    return options.orientation;
-  }, [width, height, options.orientation]);
-
-  const xTickLabelMaxLength = useMemo(() => {
-    // If no max length is set, limit the number of characters to a length where it will use a maximum of half of the height of the viz.
-    if (!options.xTickLabelMaxLength) {
-      const rotationAngle = options.xTickLabelRotation;
-      const textSize = measureText('M', UPLOT_AXIS_FONT_SIZE).width; // M is usually the widest character so let's use that as an aproximation.
-      const maxHeightForValues = height / 2;
-
-      return (
-        maxHeightForValues /
-          (Math.sin(((rotationAngle >= 0 ? rotationAngle : rotationAngle * -1) * Math.PI) / 180) * textSize) -
-        3 //Subtract 3 for the "..." added to the end.
-      );
-    } else {
-      return options.xTickLabelMaxLength;
-    }
-  }, [height, options.xTickLabelRotation, options.xTickLabelMaxLength]);
-
-  // Force 'multi' tooltip setting or stacking mode
-  const tooltip = useMemo(() => {
-    if (options.stacking === StackingMode.Normal || options.stacking === StackingMode.Percent) {
-      return { ...options.tooltip, mode: TooltipDisplayMode.Multi };
-    }
-    return options.tooltip;
-  }, [options.tooltip, options.stacking]);
-
-  if (!info.viz?.fields.length) {
-    return <PanelDataErrorView panelId={id} data={data} message={info.warn} needsNumberField={true} />;
-  }
-
-  const renderTooltip = (alignedFrame: DataFrame, seriesIdx: number | null, datapointIdx: number | null) => {
-    const field = seriesIdx == null ? null : alignedFrame.fields[seriesIdx];
-    if (field) {
-      const disp = getFieldDisplayName(field, alignedFrame);
-      seriesIdx = info.aligned.fields.findIndex((f) => disp === getFieldDisplayName(f, info.aligned));
-    }
-
-    return (
-      <DataHoverView
-        data={info.aligned}
-        rowIndex={datapointIdx}
-        columnIndex={seriesIdx}
-        sortOrder={options.tooltip.sort}
-      />
-    );
-  };
-
-  const renderLegend = (config: UPlotConfigBuilder) => {
-    const { legend } = options;
-    if (!config || legend.displayMode === LegendDisplayMode.Hidden) {
-      return null;
-    }
-
-    if (info.colorByField) {
-      const items = getFieldLegendItem([info.colorByField], theme);
-      if (items?.length) {
-        return (
-          <VizLayout.Legend placement={legend.placement}>
-            <VizLegend placement={legend.placement} items={items} displayMode={legend.displayMode} />
-          </VizLayout.Legend>
-        );
-      }
-    }
-
-    return <PlotLegend data={[info.viz]} config={config} maxHeight="35%" maxWidth="60%" {...options.legend} />;
-  };
-
-  const rawValue = (seriesIdx: number, valueIdx: number) => {
-    return frame0Ref.current!.fields[seriesIdx].values.get(valueIdx);
-  };
-
-  // Color by value
-  let getColor: ((seriesIdx: number, valueIdx: number) => string) | undefined = undefined;
-
-  let fillOpacity = 1;
-
-  if (info.colorByField) {
-    const colorByField = info.colorByField;
-    const disp = colorByField.display!;
-    fillOpacity = (colorByField.config.custom.fillOpacity ?? 100) / 100;
-    // gradientMode? ignore?
-    getColor = (seriesIdx: number, valueIdx: number) => disp(colorByField.values.get(valueIdx)).color!;
-  }
-
-  const prepConfig = (alignedFrame: DataFrame, allFrames: DataFrame[], getTimeRange: () => TimeRange) => {
-    const {
-      barWidth,
-      barRadius = 0,
-      showValue,
-      groupWidth,
-      stacking,
-      legend,
-      tooltip,
-      text,
-      xTickLabelRotation,
-      xTickLabelSpacing,
-    } = options;
-
-    return preparePlotConfigBuilder({
-      frame: alignedFrame,
-      getTimeRange,
-      theme,
-      timeZone,
-      eventBus,
+    [
       orientation,
+      timeZone,
+      props.data.structureRev,
+
+      totalSeries,
+      seriesCount,
+      xGroupsCount,
+
       barWidth,
       barRadius,
       showValue,
       groupWidth,
-      xTickLabelRotation,
-      xTickLabelMaxLength,
-      xTickLabelSpacing,
       stacking,
       legend,
       tooltip,
-      text,
-      rawValue,
-      getColor,
-      fillOpacity,
-      allFrames: [info.viz],
-    });
-  };
+      text?.valueSize, // cause text obj is re-created each time?
+      xTickLabelRotation,
+      xTickLabelSpacing,
+      fullHighlight,
+      xField,
+      colorByField,
+      xTickLabelMaxLength, // maybe not?
+      // props.fieldConfig, // usePrevious hideFrom on all fields?
+    ]
+  );
+
+  const plotData = useMemo(
+    () => (prepData == null ? [] : prepData(vizSeries, info.color)),
+    [prepData, vizSeries, info.color]
+  );
+
+  if (info.warn != null || builder == null) {
+    return (
+      <PanelDataErrorView
+        panelId={id}
+        fieldConfig={fieldConfig}
+        data={data}
+        message={info.warn ?? ''}
+        needsNumberField={true}
+      />
+    );
+  }
+
+  const legendComp =
+    legend.showLegend && hasVisibleLegendSeries(builder, info.series!) ? (
+      <BarChartLegend data={info.series!} colorField={info.color} {...legend} />
+    ) : null;
 
   return (
-    <GraphNG
-      theme={theme}
-      frames={[info.viz]}
-      prepConfig={prepConfig}
-      propsToDiff={propsToDiff}
-      preparePlotFrame={(f) => f[0]} // already processed in by the panel above!
-      renderLegend={renderLegend}
-      legend={options.legend}
-      timeZone={timeZone}
-      timeRange={({ from: 1, to: 1 } as unknown) as TimeRange} // HACK
-      structureRev={structureRev}
-      width={width}
-      height={height}
+    <VizLayout
+      width={props.width}
+      height={props.height}
+      // legend={<BarChartLegend frame={info.series![0]} colorField={info.color} {...legend} />}
+      legend={legendComp}
     >
-      {(config, alignedFrame) => {
-        return (
-          <TooltipPlugin
-            data={alignedFrame}
-            config={config}
-            mode={tooltip.mode}
-            timeZone={timeZone}
-            renderTooltip={renderTooltip}
-          />
-        );
-      }}
-    </GraphNG>
+      {(vizWidth, vizHeight) => (
+        <UPlotChart config={builder!} data={plotData} width={vizWidth} height={vizHeight}>
+          {props.options.tooltip.mode !== TooltipDisplayMode.None && (
+            <TooltipPlugin2
+              config={builder}
+              maxWidth={options.tooltip.maxWidth}
+              hoverMode={
+                options.tooltip.mode === TooltipDisplayMode.Single ? TooltipHoverMode.xOne : TooltipHoverMode.xAll
+              }
+              getDataLinks={(seriesIdx, dataIdx) =>
+                vizSeries[0].fields[seriesIdx].getLinks?.({ valueRowIndex: dataIdx }) ?? []
+              }
+              render={(u, dataIdxs, seriesIdx, isPinned, dismiss, timeRange2, viaSync, dataLinks) => {
+                return (
+                  <TimeSeriesTooltip
+                    series={vizSeries[0]}
+                    _rest={info._rest}
+                    dataIdxs={dataIdxs}
+                    seriesIdx={seriesIdx}
+                    mode={options.tooltip.mode}
+                    sortOrder={options.tooltip.sort}
+                    isPinned={isPinned}
+                    maxHeight={options.tooltip.maxHeight}
+                    replaceVariables={replaceVariables}
+                    dataLinks={dataLinks}
+                    hideZeros={options.tooltip.hideZeros}
+                  />
+                );
+              }}
+            />
+          )}
+        </UPlotChart>
+      )}
+    </VizLayout>
   );
 };
