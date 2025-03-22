@@ -1,18 +1,20 @@
-import { CentrifugeSrv, CentrifugeSrvDeps } from './service';
-import { RemoteCentrifugeService } from './service.worker';
 import './transferHandlers';
 
 import * as comlink from 'comlink';
 import { asyncScheduler, Observable, observeOn } from 'rxjs';
+
 import { LiveChannelAddress, LiveChannelEvent } from '@grafana/data';
-import { promiseWithRemoteObservableAsObservable } from './remoteObservable';
+
 import { createWorker } from './createCentrifugeServiceWorker';
+import { promiseWithRemoteObservableAsObservable } from './remoteObservable';
+import { CentrifugeSrv, CentrifugeSrvDeps } from './service';
+import { RemoteCentrifugeService } from './service.worker';
 
 export class CentrifugeServiceWorkerProxy implements CentrifugeSrv {
   private centrifugeWorker;
 
   constructor(deps: CentrifugeSrvDeps) {
-    this.centrifugeWorker = comlink.wrap<RemoteCentrifugeService>(createWorker() as comlink.Endpoint);
+    this.centrifugeWorker = comlink.wrap<RemoteCentrifugeService>(createWorker());
     this.centrifugeWorker.initialize(deps, comlink.proxy(deps.dataStreamSubscriberReadiness));
   }
 
@@ -44,5 +46,9 @@ export class CentrifugeServiceWorkerProxy implements CentrifugeSrv {
     return promiseWithRemoteObservableAsObservable(
       this.centrifugeWorker.getStream(address) as Promise<comlink.Remote<Observable<LiveChannelEvent<T>>>>
     );
+  };
+
+  publish: CentrifugeSrv['publish'] = (address, data, options) => {
+    return this.centrifugeWorker.publish(address, data, options);
   };
 }

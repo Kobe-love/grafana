@@ -1,7 +1,7 @@
-import React from 'react';
-import { DataSourcePicker } from './DataSourcePicker';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+import { DataSourcePicker } from './DataSourcePicker';
 
 jest.mock('../services/dataSourceSrv');
 
@@ -11,8 +11,8 @@ describe('DataSourcePicker', () => {
       const onClear = jest.fn();
       const select = render(<DataSourcePicker onClear={onClear} />);
 
-      const clearButton = select.getByLabelText('select-clear-value');
-      userEvent.click(clearButton);
+      const clearButton = select.getByLabelText('Clear value');
+      await userEvent.click(clearButton);
       expect(onClear).toHaveBeenCalled();
     });
 
@@ -20,8 +20,15 @@ describe('DataSourcePicker', () => {
       const select = render(<DataSourcePicker />);
 
       expect(() => {
-        select.getByLabelText('select-clear-value');
+        select.getByLabelText('Clear value');
       }).toThrowError();
+    });
+
+    it('should pass disabled prop', async () => {
+      render(<DataSourcePicker disabled={true} />);
+
+      const input = screen.getByLabelText('Select a data source');
+      expect(input).toHaveProperty('disabled', true);
     });
   });
 });

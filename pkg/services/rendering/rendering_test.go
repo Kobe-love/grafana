@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/grafana/grafana/pkg/infra/log"
+	"github.com/grafana/grafana/pkg/models"
+	"github.com/grafana/grafana/pkg/setting"
 )
 
 func TestGetUrl(t *testing.T) {
@@ -25,12 +27,19 @@ func TestGetUrl(t *testing.T) {
 	t.Run("When renderer and callback url configured should return callback url plus path", func(t *testing.T) {
 		rs.Cfg.RendererUrl = "http://localhost:8081/render"
 		rs.Cfg.RendererCallbackUrl = "http://public-grafana.com/"
-		url := rs.getURL(path)
+		url := rs.getGrafanaCallbackURL(path)
+		require.Equal(t, rs.Cfg.RendererCallbackUrl+path+"&render=1", url)
+	})
+
+	t.Run("When callback url is configured and https should return domain of callback url plus path", func(t *testing.T) {
+		rs.Cfg.RendererCallbackUrl = "https://public-grafana.com/"
+		url := rs.getGrafanaCallbackURL(path)
 		require.Equal(t, rs.Cfg.RendererCallbackUrl+path+"&render=1", url)
 	})
 
 	t.Run("When renderer url not configured", func(t *testing.T) {
 		rs.Cfg.RendererUrl = ""
+		rs.Cfg.RendererCallbackUrl = ""
 		rs.domain = "localhost"
 		rs.Cfg.HTTPPort = "3000"
 
@@ -38,13 +47,13 @@ func TestGetUrl(t *testing.T) {
 			rs.Cfg.ServeFromSubPath = false
 			rs.Cfg.AppSubURL = ""
 			rs.Cfg.Protocol = setting.HTTPScheme
-			url := rs.getURL(path)
+			url := rs.getGrafanaCallbackURL(path)
 			require.Equal(t, "http://localhost:3000/"+path+"&render=1", url)
 
 			t.Run("And serve from sub path should return expected path", func(t *testing.T) {
 				rs.Cfg.ServeFromSubPath = true
 				rs.Cfg.AppSubURL = "/grafana"
-				url := rs.getURL(path)
+				url := rs.getGrafanaCallbackURL(path)
 				require.Equal(t, "http://localhost:3000/grafana/"+path+"&render=1", url)
 			})
 		})
@@ -53,7 +62,7 @@ func TestGetUrl(t *testing.T) {
 			rs.Cfg.ServeFromSubPath = false
 			rs.Cfg.AppSubURL = ""
 			rs.Cfg.Protocol = setting.HTTPSScheme
-			url := rs.getURL(path)
+			url := rs.getGrafanaCallbackURL(path)
 			require.Equal(t, "https://localhost:3000/"+path+"&render=1", url)
 		})
 
@@ -61,7 +70,7 @@ func TestGetUrl(t *testing.T) {
 			rs.Cfg.ServeFromSubPath = false
 			rs.Cfg.AppSubURL = ""
 			rs.Cfg.Protocol = setting.HTTP2Scheme
-			url := rs.getURL(path)
+			url := rs.getGrafanaCallbackURL(path)
 			require.Equal(t, "https://localhost:3000/"+path+"&render=1", url)
 		})
 	})
@@ -83,13 +92,13 @@ func TestRenderErrorImage(t *testing.T) {
 	})
 
 	t.Run("Timeout error returns timeout error image", func(t *testing.T) {
-		result, err := rs.RenderErrorImage(ThemeLight, ErrTimeout)
+		result, err := rs.RenderErrorImage(models.ThemeLight, ErrTimeout)
 		require.NoError(t, err)
 		assert.Equal(t, result.FilePath, path+"/public/img/rendering_timeout_light.png")
 	})
 
 	t.Run("Generic error returns error image", func(t *testing.T) {
-		result, err := rs.RenderErrorImage(ThemeLight, errors.New("an error"))
+		result, err := rs.RenderErrorImage(models.ThemeLight, errors.New("an error"))
 		require.NoError(t, err)
 		assert.Equal(t, result.FilePath, path+"/public/img/rendering_error_light.png")
 	})
@@ -101,13 +110,26 @@ func TestRenderErrorImage(t *testing.T) {
 	})
 }
 
+func TestRenderUnavailableError(t *testing.T) {
+	rs := RenderingService{
+		Cfg:                   &setting.Cfg{},
+		log:                   log.New("test"),
+		RendererPluginManager: &dummyPluginManager{},
+	}
+	opts := Opts{ErrorOpts: ErrorOpts{ErrorRenderUnavailable: true}}
+	result, err := rs.Render(context.Background(), RenderPNG, opts, nil)
+	assert.Equal(t, ErrRenderUnavailable, err)
+	assert.Nil(t, result)
+}
+
 func TestRenderLimitImage(t *testing.T) {
 	path, err := filepath.Abs("../../../")
 	require.NoError(t, err)
 
 	rs := RenderingService{
 		Cfg: &setting.Cfg{
-			HomePath: path,
+			HomePath:    path,
+			RendererUrl: "http://localhost:8081/render",
 		},
 		inProgressCount: 2,
 		log:             log.New("test"),
@@ -115,17 +137,17 @@ func TestRenderLimitImage(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		theme    Theme
+		theme    models.Theme
 		expected string
 	}{
 		{
 			name:     "Light theme returns light image",
-			theme:    ThemeLight,
+			theme:    models.ThemeLight,
 			expected: path + "/public/img/rendering_limit_light.png",
 		},
 		{
 			name:     "Dark theme returns dark image",
-			theme:    ThemeDark,
+			theme:    models.ThemeDark,
 			expected: path + "/public/img/rendering_limit_dark.png",
 		},
 		{
@@ -137,12 +159,30 @@ func TestRenderLimitImage(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			opts := Opts{Theme: tc.theme, ConcurrentLimit: 1}
-			result, err := rs.Render(context.Background(), opts)
+			opts := Opts{Theme: tc.theme, CommonOpts: CommonOpts{ConcurrentLimit: 1}}
+			result, err := rs.Render(context.Background(), RenderPNG, opts, nil)
 			assert.NoError(t, err)
 			assert.Equal(t, tc.expected, result.FilePath)
 		})
 	}
+}
+
+func TestRenderLimitImageError(t *testing.T) {
+	rs := RenderingService{
+		Cfg: &setting.Cfg{
+			RendererUrl: "http://localhost:8081/render",
+		},
+		inProgressCount: 2,
+		log:             log.New("test"),
+	}
+	opts := Opts{
+		CommonOpts: CommonOpts{ConcurrentLimit: 1},
+		ErrorOpts:  ErrorOpts{ErrorConcurrentLimitReached: true},
+		Theme:      models.ThemeDark,
+	}
+	result, err := rs.Render(context.Background(), RenderPNG, opts, nil)
+	assert.Equal(t, ErrConcurrentLimitReached, err)
+	assert.Nil(t, result)
 }
 
 func TestRenderingServiceGetRemotePluginVersion(t *testing.T) {
