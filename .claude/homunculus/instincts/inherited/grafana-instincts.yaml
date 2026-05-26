@@ -1,0 +1,744 @@
+# Instincts generated from https://github.com/Kobe-love/grafana
+# Generated: 2026-05-26T07:14:10.688Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: grafana-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Commit Length
+
+## Action
+
+Write moderate-length commit messages (~57 characters)
+
+## Evidence
+
+- Average commit message length: 57 chars
+- Based on 100 commits
+
+---
+id: grafana-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: grafana-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: grafana-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: grafana-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: 
+
+---
+id: grafana-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Test Framework
+
+## Action
+
+Use jest as the test framework
+
+## Evidence
+
+- Test framework detected: jest
+- File pattern: *.test.tsx
+
+---
+id: grafana-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.tsx
+
+## Evidence
+
+- File pattern: *.test.tsx
+- Consistent across test files
+
+---
+id: grafana-test-mocking
+trigger: "when mocking dependencies in tests"
+confidence: 0.75
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Test Mocking
+
+## Action
+
+Use msw for mocking
+
+## Evidence
+
+- Mocking pattern detected: msw
+- Consistent across test files
+
+---
+id: grafana-test-types
+trigger: "when planning tests for a feature"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Test Types
+
+## Action
+
+Write unit, integration, e2e tests to match project standards
+
+## Evidence
+
+- Test types detected: unit, integration, e2e
+- Coverage config: yes
+
+---
+id: grafana-workflow-feature-development
+trigger: "when implementing a new feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Workflow Feature Development
+
+## Action
+
+Follow the feature-development workflow:
+1. Add feature implementation
+2. Add tests for feature
+3. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~10x per month
+- Files: public/app/features/alerting/unified/rule-list/*, public/app/features/alerting/unified/rule-list/components/*, packages/grafana-data/src/types/*
+
+---
+id: grafana-workflow-update-npm-dependency
+trigger: "when doing update npm dependency"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Workflow Update Npm Dependency
+
+## Action
+
+Follow the update-npm-dependency workflow:
+1. Update version in root package.json
+2. Update version in relevant packages/*/package.json and/or public/app/plugins/datasource/*/package.json
+3. Regenerate yarn.lock
+4. Commit all changes
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~8x per month
+- Files: package.json, packages/*/package.json, public/app/plugins/datasource/*/package.json
+
+---
+id: grafana-workflow-add-or-update-feature-toggle
+trigger: "when doing add or update feature toggle"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Workflow Add Or Update Feature Toggle
+
+## Action
+
+Follow the add-or-update-feature-toggle workflow:
+1. Edit or add entry in pkg/services/featuremgmt/toggles_gen.csv
+2. Update pkg/services/featuremgmt/registry.go
+3. Regenerate pkg/services/featuremgmt/toggles_gen.go and toggles_gen.json
+4. Update packages/grafana-data/src/types/featureToggles.gen.ts
+5. Update docs/sources/setup-grafana/configure-grafana/feature-toggles/index.md if needed
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: pkg/services/featuremgmt/toggles_gen.csv, pkg/services/featuremgmt/registry.go, pkg/services/featuremgmt/toggles_gen.go
+
+---
+id: grafana-workflow-update-changelog
+trigger: "when doing update changelog"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Workflow Update Changelog
+
+## Action
+
+Follow the update-changelog workflow:
+1. Edit CHANGELOG.md with new entries
+2. Commit the updated file
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: CHANGELOG.md
+
+---
+id: grafana-workflow-ci-build-script-update
+trigger: "when doing ci build script update"
+confidence: 0.65
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Workflow Ci Build Script Update
+
+## Action
+
+Follow the ci-build-script-update workflow:
+1. Edit one or more scripts under pkg/build/daggerbuild/scripts/
+2. Optionally update .drone.yml or scripts/drone/*.star if CI config is affected
+3. Commit all changes
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~3x per month
+- Files: pkg/build/daggerbuild/scripts/*.sh, .drone.yml, scripts/drone/*.star
+
+---
+id: grafana-workflow-add-or-update-database-table-or-index
+trigger: "when doing add or update database table or index"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Workflow Add Or Update Database Table Or Index
+
+## Action
+
+Follow the add-or-update-database-table-or-index workflow:
+1. Add or update migration file (e.g., *_mig.go or *.sql)
+2. Update or add related model/store code (*.go)
+3. Add or update tests if needed
+4. Commit all changes
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: pkg/services/sqlstore/migrations/*.go, pkg/storage/secret/metadata/data/*.sql, pkg/storage/secret/metadata/keeper_model.go
+
+---
+id: grafana-workflow-update-api-or-openapi-spec
+trigger: "when doing update api or openapi spec"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Kobe-love/grafana
+---
+
+# Grafana Workflow Update Api Or Openapi Spec
+
+## Action
+
+Follow the update-api-or-openapi-spec workflow:
+1. Edit docs/sources/developers/http_api/*.md
+2. Update public/api-*.json or public/openapi*.json
+3. Commit all changes
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: docs/sources/developers/http_api/*.md, public/api-enterprise-spec.json, public/api-merged.json
+
+---
+id: grafana-naming-files-camelCase
+trigger: "When creating or renaming a file in the codebase"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Naming Files CamelCase
+
+## Action
+
+Use camelCase for file names
+
+## Evidence
+
+- Pattern in namingConventions.files: camelCase
+
+---
+id: grafana-naming-functions-camelCase
+trigger: "When defining a function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Naming Functions CamelCase
+
+## Action
+
+Use camelCase for function names
+
+## Evidence
+
+- Pattern in namingConventions.functions: camelCase
+
+---
+id: grafana-naming-classes-pascalCase
+trigger: "When defining a class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Naming Classes PascalCase
+
+## Action
+
+Use PascalCase for class names
+
+## Evidence
+
+- Pattern in namingConventions.classes: PascalCase
+
+---
+id: grafana-naming-constants-screamingSnakeCase
+trigger: "When defining a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Naming Constants ScreamingSnakeCase
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for constant names
+
+## Evidence
+
+- Pattern in namingConventions.constants: SCREAMING_SNAKE_CASE
+
+---
+id: grafana-import-style-relative
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Import Style Relative
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle: relative
+
+---
+id: grafana-export-style-named
+trigger: "When exporting modules or functions"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Export Style Named
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle: named
+
+---
+id: grafana-testing-file-pattern
+trigger: "When creating a test file for a React component"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Testing File Pattern
+
+## Action
+
+Name the file with the pattern *.test.tsx
+
+## Evidence
+
+- Pattern in testing.filePattern: *.test.tsx
+
+---
+id: grafana-testing-framework-jest
+trigger: "When writing tests for frontend code"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Testing Framework Jest
+
+## Action
+
+Use Jest as the testing framework
+
+## Evidence
+
+- Pattern in testing.framework: jest
+
+---
+id: grafana-testing-mocking-msw
+trigger: "When mocking network requests in tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Testing Mocking Msw
+
+## Action
+
+Use msw (Mock Service Worker) for mocking
+
+## Evidence
+
+- Pattern in testing.mockingStyle: msw
+
+---
+id: grafana-testing-coverage-config
+trigger: "When configuring tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Testing Coverage Config
+
+## Action
+
+Ensure test coverage is configured and measured
+
+## Evidence
+
+- Pattern in testing.coverageConfig: true
+
+---
+id: grafana-testing-types
+trigger: "When planning tests for a feature"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Testing Types
+
+## Action
+
+Include unit, integration, and e2e tests as appropriate
+
+## Evidence
+
+- Pattern in testing.testTypes: unit, integration, e2e
+
+---
+id: grafana-git-commit-prefixes
+trigger: "When writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Git Commit Prefixes
+
+## Action
+
+Start the commit message with a recognized prefix (e.g., fix, chore, docs, alerting, dashboards, release, ci, i18n)
+
+## Evidence
+
+- Pattern in commits.prefixes
+- Seen in commit: 'Chore: Update internationalization docs (#105748)'
+
+---
+id: grafana-git-commit-length
+trigger: "When composing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Git Commit Length
+
+## Action
+
+Keep the commit message concise, around 57 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength: 57
+
+---
+id: grafana-git-commit-format-component-scope
+trigger: "When writing a commit message for a specific component or feature"
+confidence: 0.8
+domain: git
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Git Commit Format Component Scope
+
+## Action
+
+Format as 'Component: Description (#PR_NUMBER)'
+
+## Evidence
+
+- Seen in commit: 'SQLStore: Add index on is_service_account and last_seen_at columns in user table. (#105727)'
+
+---
+id: grafana-workflow-update-npm-dependency
+trigger: "When a dependency needs to be updated to a new version"
+confidence: 0.98
+domain: workflow
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Workflow Update Npm Dependency
+
+## Action
+
+Update root and relevant package.json files, regenerate yarn.lock, and commit all changes
+
+## Evidence
+
+- Workflow: update-npm-dependency
+- Pattern in files: package.json, packages/*/package.json, yarn.lock
+
+---
+id: grafana-workflow-add-or-update-feature-toggle
+trigger: "When a new feature flag is added or an existing one is updated"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Workflow Add Or Update Feature Toggle
+
+## Action
+
+Edit toggles_gen.csv, update registry.go, regenerate toggles_gen.go and toggles_gen.json, update types and docs as needed
+
+## Evidence
+
+- Workflow: add-or-update-feature-toggle
+- Pattern in files: pkg/services/featuremgmt/*
+
+---
+id: grafana-workflow-update-changelog
+trigger: "When a new release is prepared or significant changes are made"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Workflow Update Changelog
+
+## Action
+
+Edit CHANGELOG.md with new entries and commit the updated file
+
+## Evidence
+
+- Workflow: update-changelog
+- Pattern in files: CHANGELOG.md
+
+---
+id: grafana-workflow-ci-build-script-update
+trigger: "When build process needs adjustment (e.g., new flags, missing steps, or new environments)"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Workflow Ci Build Script Update
+
+## Action
+
+Edit scripts under pkg/build/daggerbuild/scripts/, update .drone.yml or scripts/drone/*.star if needed, and commit all changes
+
+## Evidence
+
+- Workflow: ci-build-script-update
+- Pattern in files: pkg/build/daggerbuild/scripts/*.sh, .drone.yml
+
+---
+id: grafana-workflow-add-or-update-database-table-or-index
+trigger: "When a new table/index is needed or a schema change is required"
+confidence: 0.88
+domain: workflow
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Workflow Add Or Update Database Table Or Index
+
+## Action
+
+Add or update migration file, update related model/store code, add or update tests if needed, and commit all changes
+
+## Evidence
+
+- Workflow: add-or-update-database-table-or-index
+- Pattern in files: pkg/services/sqlstore/migrations/*.go
+
+---
+id: grafana-workflow-update-api-or-openapi-spec
+trigger: "When API endpoints are added/changed or documentation needs to be updated"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: Kobe-love/grafana
+---
+
+# Grafana Workflow Update Api Or Openapi Spec
+
+## Action
+
+Edit http_api/*.md, update public/api-*.json or public/openapi*.json, and commit all changes
+
+## Evidence
+
+- Workflow: update-api-or-openapi-spec
+- Pattern in files: docs/sources/developers/http_api/*.md, public/openapi3.json
+
