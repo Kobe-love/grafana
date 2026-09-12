@@ -1,138 +1,149 @@
-import React from 'react';
-import { shallow } from 'enzyme';
-import { Props, TeamList } from './TeamList';
-import { OrgRole, Team } from '../../types';
-import { getMockTeam, getMultipleMockTeams } from './__mocks__/teamMocks';
-import { contextSrv, User } from 'app/core/services/context_srv';
-import { NavModel } from '@grafana/data';
-import { mockToolkitActionCreator } from 'test/core/redux/mocks';
-import { setSearchQuery, setTeamsSearchPage } from './state/reducers';
+import { HttpResponse, http } from 'msw';
+import { render, screen, userEvent, waitFor, within } from 'test/test-utils';
 
-jest.mock('app/core/config', () => {
-  return {
-    featureToggles: { accesscontrol: false },
-  };
-});
+import { setBackendSrv } from '@grafana/runtime';
+import { setupMockServer } from '@grafana/test-utils/server';
+import { MOCK_TEAMS } from '@grafana/test-utils/unstable';
+import { ModalRoot } from '@grafana/ui';
+import { backendSrv } from 'app/core/services/backend_srv';
+import { contextSrv } from 'app/core/services/context_srv';
 
-const setup = (propOverrides?: object) => {
-  const props: Props = {
-    navModel: {
-      main: {
-        text: 'Configuration',
-      },
-      node: {
-        text: 'Team List',
-      },
-    } as NavModel,
-    teams: [] as Team[],
-    loadTeams: jest.fn(),
-    deleteTeam: jest.fn(),
-    setSearchQuery: mockToolkitActionCreator(setSearchQuery),
-    setTeamsSearchPage: mockToolkitActionCreator(setTeamsSearchPage),
-    searchQuery: '',
-    searchPage: 1,
-    teamsCount: 0,
-    hasFetched: false,
-    editorsCanAdmin: false,
-    signedInUser: {
-      id: 1,
-      orgRole: OrgRole.Viewer,
-    } as User,
-  };
+import { appEvents } from '../../core/app_events';
+import { ShowModalReactEvent } from '../../types/events';
 
-  Object.assign(props, propOverrides);
+import { TeamDeleteModal } from './TeamDeleteModal';
+import TeamList from './TeamList';
 
-  contextSrv.user = props.signedInUser;
+setBackendSrv(backendSrv);
+const server = setupMockServer();
 
-  const wrapper = shallow(<TeamList {...props} />);
-  const instance = wrapper.instance() as TeamList;
-
-  return {
-    wrapper,
-    instance,
-  };
-};
-
-describe('Render', () => {
-  it('should render component', () => {
-    const { wrapper } = setup();
-    expect(wrapper).toMatchSnapshot();
+describe('TeamList', () => {
+  beforeEach(() => {
+    jest.spyOn(contextSrv, 'hasPermission').mockReturnValue(true);
+    jest.spyOn(contextSrv, 'hasPermissionInMetadata').mockReturnValue(true);
+    jest.spyOn(contextSrv, 'fetchUserPermissions').mockResolvedValue();
   });
 
-  it('should render teams table', () => {
-    const { wrapper } = setup({
-      teams: getMultipleMockTeams(5),
-      teamsCount: 5,
-      hasFetched: true,
-    });
-
-    expect(wrapper).toMatchSnapshot();
+  it('should render teams table', async () => {
+    render(<TeamList />);
+    await waitFor(() =>
+      expect(screen.getAllByRole('row'))
+        // Number of teams plus table header row
+        .toHaveLength(MOCK_TEAMS.length + 1)
+    );
   });
 
-  describe('when feature toggle editorsCanAdmin is turned on', () => {
-    describe('and signedin user is not viewer', () => {
-      it('should enable the new team button', () => {
-        const { wrapper } = setup({
-          teams: getMultipleMockTeams(1),
-          teamsCount: 1,
-          hasFetched: true,
-          editorsCanAdmin: true,
-          signedInUser: {
-            id: 1,
-            orgRole: OrgRole.Editor,
-          } as User,
-        });
+  it('clicks the delete button and opens the TeamDeleteModal', async () => {
+    const mockTeam = MOCK_TEAMS[0];
+    jest.spyOn(appEvents, 'publish');
+    render(<TeamList />);
+    await userEvent.click(await screen.findByRole('button', { name: `Delete team ${mockTeam.spec.title}` }));
 
-        expect(wrapper).toMatchSnapshot();
-      });
-    });
-
-    describe('and signedin user is a viewer', () => {
-      it('should disable the new team button', () => {
-        const { wrapper } = setup({
-          teams: getMultipleMockTeams(1),
-          teamsCount: 1,
-          hasFetched: true,
-          editorsCanAdmin: true,
-          signedInUser: {
-            id: 1,
-            orgRole: OrgRole.Viewer,
-          } as User,
-        });
-
-        expect(wrapper).toMatchSnapshot();
-      });
-    });
+    expect(appEvents.publish).toHaveBeenCalledWith(
+      new ShowModalReactEvent(
+        expect.objectContaining({
+          component: TeamDeleteModal,
+        })
+      )
+    );
   });
-});
 
-describe('Life cycle', () => {
-  it('should call loadTeams', () => {
-    const { instance } = setup();
+  describe('when user has access to create a team', () => {
+    it('should enable the new team button', async () => {
+      render(<TeamList />);
 
-    instance.componentDidMount();
-
-    expect(instance.props.loadTeams).toHaveBeenCalled();
-  });
-});
-
-describe('Functions', () => {
-  describe('Delete team', () => {
-    it('should call delete team', () => {
-      const { instance } = setup();
-      instance.deleteTeam(getMockTeam());
-
-      expect(instance.props.deleteTeam).toHaveBeenCalledWith(1);
+      expect(await screen.findByRole('link', { name: /new team/i })).not.toHaveStyle('pointer-events: none');
     });
   });
 
-  describe('on search query change', () => {
-    it('should call setSearchQuery', () => {
-      const { instance } = setup();
+  describe('when user does not have access to create a team', () => {
+    it('should disable the new team button', async () => {
+      jest.spyOn(contextSrv, 'hasPermission').mockReturnValue(false);
+      render(<TeamList />);
 
-      instance.onSearchQueryChange('test');
+      expect(await screen.findByRole('link', { name: /new team/i })).toHaveStyle('pointer-events: none');
+    });
+  });
 
-      expect(instance.props.setSearchQuery).toHaveBeenCalledWith('test');
+  describe('when searching teams', () => {
+    it('sends the raw query to the backend without regex-escaping special characters', async () => {
+      let capturedQuery: string | null = null;
+      server.use(
+        http.get('/api/teams/search', ({ request }) => {
+          capturedQuery = new URL(request.url).searchParams.get('query');
+          const teams = MOCK_TEAMS.map((team) => ({
+            name: team.spec.title,
+            uid: team.metadata.name,
+            id: Number(team.metadata.labels['grafana.app/deprecatedInternalID']),
+            orgId: 1,
+            memberCount: 0,
+            permission: 0,
+            accessControl: null,
+          }));
+          return HttpResponse.json({ totalCount: teams.length, teams, page: 1, perPage: 20 });
+        })
+      );
+
+      const { user } = render(<TeamList />);
+      const input = await screen.findByPlaceholderText('Search teams');
+      // Regex-special characters like the hyphen must reach the backend unescaped (not "k8s\-test").
+      await user.click(input);
+      await user.paste('k8s-test alpha');
+
+      await waitFor(() => expect(capturedQuery).toBe('k8s-test alpha'));
+    });
+
+    it('finds a team whose name contains a hyphen', async () => {
+      // Mimic the backend substring match. With regex-escaping the query becomes
+      // "k8s\-test", which matches nothing; only the raw query "k8s-test" matches.
+      const searchableTeams = [
+        { name: 'k8s-test', uid: 'team-1', id: 1, orgId: 1, memberCount: 0, permission: 0, accessControl: null },
+        { name: 'production', uid: 'team-2', id: 2, orgId: 1, memberCount: 0, permission: 0, accessControl: null },
+      ];
+      server.use(
+        http.get('/api/teams/search', ({ request }) => {
+          const query = (new URL(request.url).searchParams.get('query') ?? '').toLowerCase();
+          const matches = searchableTeams.filter((team) => team.name.toLowerCase().includes(query));
+          return HttpResponse.json({ totalCount: matches.length, teams: matches, page: 1, perPage: 20 });
+        })
+      );
+
+      const { user } = render(<TeamList />);
+      const input = await screen.findByPlaceholderText('Search teams');
+      await user.click(input);
+      await user.paste('k8s-test');
+
+      // The initial (empty query) response lists all teams, so wait until the
+      // non-matching team is filtered out before asserting on the results.
+      await waitFor(() => expect(screen.queryByText('production')).not.toBeInTheDocument(), { timeout: 5000 });
+      expect(screen.getByText('k8s-test')).toBeInTheDocument();
+    });
+  });
+
+  it('should close the delete modal after confirming team deletion', async () => {
+    const mockTeam = MOCK_TEAMS[0];
+    render(
+      <>
+        <TeamList />
+        <ModalRoot />
+      </>
+    );
+
+    // Click the delete button to open the modal
+    await userEvent.click(await screen.findByRole('button', { name: `Delete team ${mockTeam.spec.title}` }));
+
+    // The modal should be visible with a Delete heading
+    const modalTitle = await screen.findByRole('heading', { name: /delete/i });
+    expect(modalTitle).toBeInTheDocument();
+
+    // Click the confirm delete button in the modal (the one inside the dialog, not the icon buttons)
+    const modal = screen.getByRole('dialog');
+    const confirmButton = within(modal).getByRole('button', { name: /delete/i });
+    await userEvent.click(confirmButton);
+
+    // The modal should close after deletion
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: /delete/i })).not.toBeInTheDocument();
     });
   });
 });

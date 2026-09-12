@@ -7,42 +7,73 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	claims "github.com/grafana/authlib/types"
 
 	"github.com/grafana/grafana/pkg/api/dtos"
 	"github.com/grafana/grafana/pkg/api/response"
 	"github.com/grafana/grafana/pkg/api/routing"
-	"github.com/grafana/grafana/pkg/bus"
 	"github.com/grafana/grafana/pkg/components/simplejson"
 	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/login"
+	"github.com/grafana/grafana/pkg/infra/metrics/metricutil"
 	"github.com/grafana/grafana/pkg/login/social"
-	"github.com/grafana/grafana/pkg/models"
-	"github.com/grafana/grafana/pkg/services/auth"
+	"github.com/grafana/grafana/pkg/models/usertoken"
+	"github.com/grafana/grafana/pkg/services/auth/authtest"
+	"github.com/grafana/grafana/pkg/services/authn"
+	"github.com/grafana/grafana/pkg/services/authn/authntest"
+	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
+	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/hooks"
 	"github.com/grafana/grafana/pkg/services/licensing"
+	"github.com/grafana/grafana/pkg/services/licensing/licensingtest"
+	loginservice "github.com/grafana/grafana/pkg/services/login"
+	"github.com/grafana/grafana/pkg/services/login/authinfotest"
+	"github.com/grafana/grafana/pkg/services/navtree"
 	"github.com/grafana/grafana/pkg/services/secrets"
 	"github.com/grafana/grafana/pkg/services/secrets/fakes"
 	secretsManager "github.com/grafana/grafana/pkg/services/secrets/manager"
+	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/setting"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
+
+const loginCookieName = "grafana_session"
+
+// setupHTMLHandlerMetrics creates and registers the prometheus metrics needed for HTTPServer tests
+// that call methods using htmlHandlerRequestsDuration (LoginView, Index, NotFoundHandler)
+func setupHTMLHandlerMetrics() (prometheus.Registerer, *prometheus.HistogramVec) {
+	promRegister := prometheus.NewRegistry()
+	htmlHandlerRequestsDuration := metricutil.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "grafana",
+		Name:      "html_handler_requests_duration_seconds",
+	}, []string{"handler"})
+	promRegister.MustRegister(htmlHandlerRequestsDuration)
+	return promRegister, htmlHandlerRequestsDuration
+}
 
 func fakeSetIndexViewData(t *testing.T) {
 	origSetIndexViewData := setIndexViewData
 	t.Cleanup(func() {
 		setIndexViewData = origSetIndexViewData
 	})
-	setIndexViewData = func(*HTTPServer, *models.ReqContext) (*dtos.IndexViewData, error) {
+	setIndexViewData = func(*HTTPServer, *contextmodel.ReqContext) (*dtos.IndexViewData, error) {
 		data := &dtos.IndexViewData{
 			User:     &dtos.CurrentUser{},
-			Settings: map[string]interface{}{},
-			NavTree:  []*dtos.NavLink{},
+			Settings: &dtos.FrontendSettingsDTO{},
+			NavTree:  &navtree.NavTreeRoot{},
+			Assets: &dtos.EntryPointAssets{
+				JSFiles: []dtos.EntryPointAsset{},
+				Dark:    "dark.css",
+				Light:   "light.css",
+			},
 		}
 		return data, nil
 	}
@@ -54,39 +85,22 @@ func fakeViewIndex(t *testing.T) {
 		getViewIndex = origGetViewIndex
 	})
 	getViewIndex = func() string {
-		return "index-template"
+		return "index"
 	}
 }
 
 func getBody(resp *httptest.ResponseRecorder) (string, error) {
-	responseData, err := ioutil.ReadAll(resp.Body)
+	responseData, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 	return string(responseData), nil
 }
 
-type FakeLogger struct {
-	log.Logger
-}
-
-func (fl *FakeLogger) Debug(testMessage string, ctx ...interface{}) {
-}
-
-func (fl *FakeLogger) Info(testMessage string, ctx ...interface{}) {
-}
-
-func (fl *FakeLogger) Warn(testMessage string, ctx ...interface{}) {
-}
-
-func (fl *FakeLogger) Error(testMessage string, ctx ...interface{}) {
-}
-
 type redirectCase struct {
 	desc        string
 	url         string
 	status      int
-	err         error
 	appURL      string
 	appSubURL   string
 	redirectURL string
@@ -110,30 +124,32 @@ func TestLoginErrorCookieAPIEndpoint(t *testing.T) {
 	sc := setupScenarioContext(t, "/login")
 	cfg := setting.NewCfg()
 	secretsService := secretsManager.SetupTestService(t, fakes.NewFakeSecretsStore())
+	promRegister, htmlHandlerRequestsDuration := setupHTMLHandlerMetrics()
 	hs := &HTTPServer{
-		Cfg:              cfg,
-		SettingsProvider: &setting.OSSImpl{Cfg: cfg},
-		License:          &licensing.OSSLicensingService{},
-		SocialService:    &mockSocialService{},
-		SecretsService:   secretsService,
+		Cfg:                         cfg,
+		SettingsProvider:            &setting.OSSImpl{Cfg: cfg},
+		License:                     &licensing.OSSLicensingService{},
+		SocialService:               &mockSocialService{},
+		SecretsService:              secretsService,
+		Features:                    featuremgmt.WithFeatures(),
+		promRegister:                promRegister,
+		htmlHandlerRequestsDuration: htmlHandlerRequestsDuration,
 	}
 
-	sc.defaultHandler = routing.Wrap(func(c *models.ReqContext) response.Response {
+	sc.defaultHandler = routing.Wrap(func(c *contextmodel.ReqContext) response.Response {
 		hs.LoginView(c)
 		return response.Empty(http.StatusOK)
 	})
 
-	cfg.LoginCookieName = "grafana_session"
-	setting.SecretKey = "login_testing"
-
-	setting.OAuthAutoLogin = true
+	cfg.LoginCookieName = loginCookieName
+	cfg.OAuthAutoLogin = true
 
 	oauthError := errors.New("User not a member of one of the required organizations")
 	encryptedError, err := hs.SecretsService.Encrypt(context.Background(), []byte(oauthError.Error()), secrets.WithoutScope())
 	require.NoError(t, err)
 	expCookiePath := "/"
-	if len(setting.AppSubUrl) > 0 {
-		expCookiePath = setting.AppSubUrl
+	if len(cfg.AppSubURL) > 0 {
+		expCookiePath = cfg.AppSubURL
 	}
 	cookie := http.Cookie{
 		Name:     loginErrorCookieName,
@@ -155,22 +171,26 @@ func TestLoginErrorCookieAPIEndpoint(t *testing.T) {
 
 func TestLoginViewRedirect(t *testing.T) {
 	fakeSetIndexViewData(t)
-
 	fakeViewIndex(t)
 	sc := setupScenarioContext(t, "/login")
 	cfg := setting.NewCfg()
+	promRegister, htmlHandlerRequestsDuration := setupHTMLHandlerMetrics()
 	hs := &HTTPServer{
-		Cfg:              cfg,
-		SettingsProvider: &setting.OSSImpl{Cfg: cfg},
-		License:          &licensing.OSSLicensingService{},
-		SocialService:    &mockSocialService{},
+		Cfg:                         cfg,
+		SettingsProvider:            &setting.OSSImpl{Cfg: cfg},
+		License:                     &licensing.OSSLicensingService{},
+		SocialService:               &mockSocialService{},
+		Features:                    featuremgmt.WithFeatures(),
+		log:                         log.NewNopLogger(),
+		promRegister:                promRegister,
+		htmlHandlerRequestsDuration: htmlHandlerRequestsDuration,
 	}
 	hs.Cfg.CookieSecure = true
 
-	sc.defaultHandler = routing.Wrap(func(c *models.ReqContext) response.Response {
+	sc.defaultHandler = routing.Wrap(func(c *contextmodel.ReqContext) response.Response {
 		c.IsSignedIn = true
-		c.SignedInUser = &models.SignedInUser{
-			UserId: 10,
+		c.SignedInUser = &user.SignedInUser{
+			UserID: 10,
 		}
 		hs.LoginView(c)
 		return response.Empty(http.StatusOK)
@@ -310,19 +330,10 @@ func TestLoginViewRedirect(t *testing.T) {
 					expCookieMaxAge = 0
 				}
 				expCookie := fmt.Sprintf("redirect_to=%v; Path=%v; Max-Age=%v; HttpOnly; Secure", expCookieValue, expCookiePath, expCookieMaxAge)
-				for _, cookieValue := range setCookie {
-					if cookieValue == expCookie {
-						redirectToCookieFound = true
-						break
-					}
+				if slices.Contains(setCookie, expCookie) {
+					redirectToCookieFound = true
 				}
 				assert.True(t, redirectToCookieFound)
-			}
-
-			responseString, err := getBody(sc.resp)
-			require.NoError(t, err)
-			if c.err != nil {
-				assert.True(t, strings.Contains(responseString, c.err.Error()))
 			}
 		})
 	}
@@ -333,115 +344,118 @@ func TestLoginPostRedirect(t *testing.T) {
 
 	fakeViewIndex(t)
 	sc := setupScenarioContext(t, "/login")
+
 	hs := &HTTPServer{
-		log:              &FakeLogger{},
-		Cfg:              setting.NewCfg(),
-		HooksService:     &hooks.HooksService{},
-		License:          &licensing.OSSLicensingService{},
-		AuthTokenService: auth.NewFakeUserAuthTokenService(),
+		log:          log.NewNopLogger(),
+		Cfg:          setting.NewCfg(),
+		HooksService: &hooks.HooksService{},
+		License:      &licensing.OSSLicensingService{},
+		authnService: &authntest.FakeService{
+			ExpectedIdentity: &authn.Identity{ID: "42", Type: claims.TypeUser, SessionToken: &usertoken.UserToken{}},
+		},
+		AuthTokenService: authtest.NewFakeUserAuthTokenService(),
+		Features:         featuremgmt.WithFeatures(),
 	}
 	hs.Cfg.CookieSecure = true
 
-	sc.defaultHandler = routing.Wrap(func(c *models.ReqContext) response.Response {
+	sc.defaultHandler = routing.Wrap(func(c *contextmodel.ReqContext) response.Response {
 		c.Req.Header.Set("Content-Type", "application/json")
 		c.Req.Body = io.NopCloser(bytes.NewBufferString(`{"user":"admin","password":"admin"}`))
 		return hs.LoginPost(c)
 	})
 
-	bus.AddHandler("grafana-auth", func(ctx context.Context, query *models.LoginUserQuery) error {
-		query.User = &models.User{
-			Id:    42,
-			Email: "",
-		}
-		return nil
-	})
-
 	redirectCases := []redirectCase{
 		{
-			desc:   "grafana relative url without subpath",
-			url:    "/profile",
-			appURL: "https://localhost:3000/",
+			desc:        "grafana relative url without subpath",
+			url:         "/profile",
+			redirectURL: "/profile",
+			appURL:      "https://localhost:3000/",
 		},
 		{
-			desc:      "grafana relative url with subpath with leading slash",
-			url:       "/grafana/profile",
-			appURL:    "https://localhost:3000/",
-			appSubURL: "/grafana",
+			desc:        "grafana relative url with subpath with leading slash",
+			url:         "/grafana/profile",
+			redirectURL: "/grafana/profile",
+			appURL:      "https://localhost:3000/",
+			appSubURL:   "/grafana",
 		},
 		{
-			desc:      "grafana invalid relative url starting with subpath",
-			url:       "/grafanablah",
-			appURL:    "https://localhost:3000/",
-			appSubURL: "/grafana",
-			err:       login.ErrInvalidRedirectTo,
+			desc:        "grafana invalid relative url starting with subpath",
+			url:         "/grafanablah",
+			redirectURL: "/grafana/",
+			appURL:      "https://localhost:3000/",
+			appSubURL:   "/grafana",
 		},
 		{
-			desc:      "relative url with missing subpath",
-			url:       "/profile",
-			appURL:    "https://localhost:3000/",
-			appSubURL: "/grafana",
-			err:       login.ErrInvalidRedirectTo,
+			desc:        "relative url with missing subpath",
+			url:         "/profile",
+			redirectURL: "/grafana/",
+			appURL:      "https://localhost:3000/",
+			appSubURL:   "/grafana",
 		},
 		{
-			desc:   "grafana absolute url",
-			url:    "http://localhost:3000/profile",
-			appURL: "http://localhost:3000/",
-			err:    login.ErrAbsoluteRedirectTo,
+			desc:        "grafana absolute url",
+			url:         "http://localhost:3000/profile",
+			appURL:      "http://localhost:3000/",
+			redirectURL: "/",
 		},
 		{
-			desc:   "non grafana absolute url",
-			url:    "http://example.com",
-			appURL: "https://localhost:3000/",
-			err:    login.ErrAbsoluteRedirectTo,
+			desc:        "non grafana absolute url",
+			url:         "http://example.com",
+			appURL:      "https://localhost:3000/",
+			redirectURL: "/",
 		},
 		{
-			desc:   "invalid URL",
-			url:    ":foo",
-			appURL: "http://localhost:3000/",
-			err:    login.ErrInvalidRedirectTo,
+			desc:        "invalid URL",
+			url:         ":foo",
+			appURL:      "http://localhost:3000/",
+			redirectURL: "/",
 		},
 		{
-			desc:   "non-Grafana URL without scheme",
-			url:    "example.com",
-			appURL: "http://localhost:3000/",
-			err:    login.ErrForbiddenRedirectTo,
+			desc:        "non-Grafana URL without scheme",
+			url:         "example.com",
+			appURL:      "http://localhost:3000/",
+			redirectURL: "/",
 		},
 		{
-			desc:   "non-Grafana URL without scheme",
-			url:    "www.example.com",
-			appURL: "http://localhost:3000/",
-			err:    login.ErrForbiddenRedirectTo,
+			desc:        "non-Grafana URL without scheme",
+			url:         "www.example.com",
+			appURL:      "http://localhost:3000/",
+			redirectURL: "/",
 		},
 		{
-			desc:   "URL path is a host with two leading slashes",
-			url:    "//example.com",
-			appURL: "http://localhost:3000/",
-			err:    login.ErrForbiddenRedirectTo,
+			desc:        "URL path is a host with two leading slashes",
+			url:         "//example.com",
+			appURL:      "http://localhost:3000/",
+			redirectURL: "/",
 		},
 		{
-			desc:   "URL path is a host with three leading slashes",
-			url:    "///example.com",
-			appURL: "http://localhost:3000/",
-			err:    login.ErrForbiddenRedirectTo,
+			desc:        "URL path is a host with three leading slashes",
+			url:         "///example.com",
+			appURL:      "http://localhost:3000/",
+			redirectURL: "/",
 		},
 		{
-			desc:   "URL path is an IP address with two leading slashes",
-			url:    "//0.0.0.0",
-			appURL: "http://localhost:3000/",
-			err:    login.ErrForbiddenRedirectTo,
+			desc:        "URL path is an IP address with two leading slashes",
+			url:         "//0.0.0.0",
+			appURL:      "http://localhost:3000/",
+			redirectURL: "/",
 		},
 		{
-			desc:   "URL path is an IP address with three leading slashes",
-			url:    "///0.0.0.0",
-			appURL: "http://localhost:3000/",
-			err:    login.ErrForbiddenRedirectTo,
+			desc:        "URL path is an IP address with three leading slashes",
+			url:         "///0.0.0.0",
+			appURL:      "http://localhost:3000/",
+			redirectURL: "/",
 		},
 	}
 
 	for _, c := range redirectCases {
 		hs.Cfg.AppURL = c.appURL
 		hs.Cfg.AppSubURL = c.appSubURL
+
 		t.Run(c.desc, func(t *testing.T) {
+			if c.desc == "grafana invalid relative url starting with subpath" {
+				fmt.Println()
+			}
 			expCookiePath := "/"
 			if len(hs.Cfg.AppSubURL) > 0 {
 				expCookiePath = hs.Cfg.AppSubURL
@@ -462,22 +476,16 @@ func TestLoginPostRedirect(t *testing.T) {
 			respJSON, err := simplejson.NewJson(sc.resp.Body.Bytes())
 			require.NoError(t, err)
 			redirectURL := respJSON.Get("redirectUrl").MustString()
-			if c.err != nil {
-				assert.Equal(t, "", redirectURL)
-			} else {
-				assert.Equal(t, c.url, redirectURL)
-			}
+			assert.Equal(t, c.redirectURL, redirectURL)
+
 			// assert redirect_to cookie is deleted
 			setCookie, ok := sc.resp.Header()["Set-Cookie"]
 			assert.True(t, ok, "Set-Cookie exists")
 			assert.Greater(t, len(setCookie), 0)
 			var redirectToCookieFound bool
 			expCookieValue := fmt.Sprintf("redirect_to=; Path=%v; Max-Age=0; HttpOnly; Secure", expCookiePath)
-			for _, cookieValue := range setCookie {
-				if cookieValue == expCookieValue {
-					redirectToCookieFound = true
-					break
-				}
+			if slices.Contains(setCookie, expCookieValue) {
+				redirectToCookieFound = true
 			}
 			assert.True(t, redirectToCookieFound)
 		})
@@ -499,19 +507,24 @@ func TestLoginOAuthRedirect(t *testing.T) {
 		},
 		oAuthInfos: oAuthInfos,
 	}
+	promRegister, htmlHandlerRequestsDuration := setupHTMLHandlerMetrics()
 	hs := &HTTPServer{
-		Cfg:              cfg,
-		SettingsProvider: &setting.OSSImpl{Cfg: cfg},
-		License:          &licensing.OSSLicensingService{},
-		SocialService:    mock,
+		authnService:                &authntest.FakeService{},
+		Cfg:                         cfg,
+		SettingsProvider:            &setting.OSSImpl{Cfg: cfg},
+		License:                     &licensing.OSSLicensingService{},
+		SocialService:               mock,
+		Features:                    featuremgmt.WithFeatures(),
+		promRegister:                promRegister,
+		htmlHandlerRequestsDuration: htmlHandlerRequestsDuration,
 	}
 
-	sc.defaultHandler = routing.Wrap(func(c *models.ReqContext) response.Response {
+	sc.defaultHandler = routing.Wrap(func(c *contextmodel.ReqContext) response.Response {
 		hs.LoginView(c)
 		return response.Empty(http.StatusOK)
 	})
 
-	setting.OAuthAutoLogin = true
+	hs.Cfg.OAuthAutoLogin = true
 	sc.m.Get(sc.url, sc.defaultHandler)
 	sc.fakeReqNoAssertions("GET", sc.url).exec()
 
@@ -526,19 +539,23 @@ func TestLoginInternal(t *testing.T) {
 
 	fakeViewIndex(t)
 	sc := setupScenarioContext(t, "/login")
+	promRegister, htmlHandlerRequestsDuration := setupHTMLHandlerMetrics()
 	hs := &HTTPServer{
-		Cfg:     setting.NewCfg(),
-		License: &licensing.OSSLicensingService{},
-		log:     log.New("test"),
+		Cfg:                         setting.NewCfg(),
+		License:                     &licensing.OSSLicensingService{},
+		log:                         log.New("test"),
+		Features:                    featuremgmt.WithFeatures(),
+		promRegister:                promRegister,
+		htmlHandlerRequestsDuration: htmlHandlerRequestsDuration,
 	}
 
-	sc.defaultHandler = routing.Wrap(func(c *models.ReqContext) response.Response {
+	sc.defaultHandler = routing.Wrap(func(c *contextmodel.ReqContext) response.Response {
 		c.Req.URL.RawQuery = "disableAutoLogin=true"
 		hs.LoginView(c)
 		return response.Empty(http.StatusOK)
 	})
 
-	setting.OAuthAutoLogin = true
+	hs.Cfg.OAuthAutoLogin = true
 	sc.m.Get(sc.url, sc.defaultHandler)
 	sc.fakeReqNoAssertions("GET", sc.url).exec()
 
@@ -567,34 +584,94 @@ func TestAuthProxyLoginWithEnableLoginToken(t *testing.T) {
 	assert.Equal(t, "/", location[0])
 	setCookie := sc.resp.Header()["Set-Cookie"]
 	require.NotNil(t, setCookie, "Set-Cookie should exist")
-	assert.Equal(t, "grafana_session=; Path=/; Max-Age=0; HttpOnly", setCookie[0])
+	assert.Equal(t, fmt.Sprintf("%s=; Path=/; Max-Age=0; HttpOnly", loginCookieName), setCookie[0])
+}
+
+func TestAuthProxyLoginWithEnableLoginTokenAndEnabledOauthAutoLogin(t *testing.T) {
+	fakeSetIndexViewData(t)
+
+	mock := &mockSocialService{
+		oAuthInfo: &social.OAuthInfo{
+			ClientId:     "fake",
+			ClientSecret: "fakefake",
+			Enabled:      true,
+			AllowSignup:  true,
+			Name:         "github",
+		},
+		oAuthInfos: oAuthInfos,
+	}
+
+	sc := setupScenarioContext(t, "/login")
+	sc.cfg.LoginCookieName = loginCookieName
+	sc.cfg.OAuthAutoLogin = true
+	promRegister, htmlHandlerRequestsDuration := setupHTMLHandlerMetrics()
+	hs := &HTTPServer{
+		Cfg:                         sc.cfg,
+		SettingsProvider:            &setting.OSSImpl{Cfg: sc.cfg},
+		License:                     &licensing.OSSLicensingService{},
+		AuthTokenService:            authtest.NewFakeUserAuthTokenService(),
+		log:                         log.New("hello"),
+		SocialService:               mock,
+		Features:                    featuremgmt.WithFeatures(),
+		promRegister:                promRegister,
+		htmlHandlerRequestsDuration: htmlHandlerRequestsDuration,
+	}
+
+	sc.defaultHandler = routing.Wrap(func(c *contextmodel.ReqContext) response.Response {
+		c.IsSignedIn = true
+		c.SignedInUser = &user.SignedInUser{
+			UserID:          10,
+			AuthenticatedBy: loginservice.AuthProxyAuthModule,
+		}
+		hs.LoginView(c)
+		return response.Empty(http.StatusOK)
+	})
+
+	sc.cfg.AuthProxy.Enabled = true
+	sc.cfg.AuthProxy.EnableLoginToken = true
+
+	sc.m.Get(sc.url, sc.defaultHandler)
+	sc.fakeReqNoAssertions("GET", sc.url).exec()
+	require.Equal(t, 302, sc.resp.Code)
+
+	location, ok := sc.resp.Header()["Location"]
+	assert.True(t, ok)
+	assert.Equal(t, "/", location[0])
+	setCookie := sc.resp.Header()["Set-Cookie"]
+	require.NotNil(t, setCookie, "Set-Cookie should exist")
+	assert.Equal(t, fmt.Sprintf("%s=; Path=/; Max-Age=0; HttpOnly", loginCookieName), setCookie[0])
 }
 
 func setupAuthProxyLoginTest(t *testing.T, enableLoginToken bool) *scenarioContext {
 	fakeSetIndexViewData(t)
 
 	sc := setupScenarioContext(t, "/login")
-	sc.cfg.LoginCookieName = "grafana_session"
+	sc.cfg.LoginCookieName = loginCookieName
+	promRegister, htmlHandlerRequestsDuration := setupHTMLHandlerMetrics()
 	hs := &HTTPServer{
-		Cfg:              sc.cfg,
-		SettingsProvider: &setting.OSSImpl{Cfg: sc.cfg},
-		License:          &licensing.OSSLicensingService{},
-		AuthTokenService: auth.NewFakeUserAuthTokenService(),
-		log:              log.New("hello"),
-		SocialService:    &mockSocialService{},
+		Cfg:                         sc.cfg,
+		SettingsProvider:            &setting.OSSImpl{Cfg: sc.cfg},
+		License:                     &licensing.OSSLicensingService{},
+		AuthTokenService:            authtest.NewFakeUserAuthTokenService(),
+		log:                         log.New("hello"),
+		SocialService:               &mockSocialService{},
+		Features:                    featuremgmt.WithFeatures(),
+		promRegister:                promRegister,
+		htmlHandlerRequestsDuration: htmlHandlerRequestsDuration,
 	}
 
-	sc.defaultHandler = routing.Wrap(func(c *models.ReqContext) response.Response {
+	sc.defaultHandler = routing.Wrap(func(c *contextmodel.ReqContext) response.Response {
 		c.IsSignedIn = true
-		c.SignedInUser = &models.SignedInUser{
-			UserId: 10,
+		c.SignedInUser = &user.SignedInUser{
+			UserID:          10,
+			AuthenticatedBy: loginservice.AuthProxyAuthModule,
 		}
 		hs.LoginView(c)
 		return response.Empty(http.StatusOK)
 	})
 
-	sc.cfg.AuthProxyEnabled = true
-	sc.cfg.AuthProxyEnableLoginToken = enableLoginToken
+	sc.cfg.AuthProxy.Enabled = true
+	sc.cfg.AuthProxy.EnableLoginToken = enableLoginToken
 
 	sc.m.Get(sc.url, sc.defaultHandler)
 	sc.fakeReqNoAssertions("GET", sc.url).exec()
@@ -602,110 +679,232 @@ func setupAuthProxyLoginTest(t *testing.T, enableLoginToken bool) *scenarioConte
 	return sc
 }
 
-type loginHookTest struct {
-	info *models.LoginInfo
-}
+func TestLogoutSaml(t *testing.T) {
+	fakeSetIndexViewData(t)
+	fakeViewIndex(t)
+	sc := setupScenarioContextSamlLogout(t, "/logout")
+	license := licensingtest.NewFakeLicensing()
+	license.On("FeatureEnabled", "saml").Return(true)
 
-func (r *loginHookTest) LoginHook(loginInfo *models.LoginInfo, req *models.ReqContext) {
-	r.info = loginInfo
-}
-
-func TestLoginPostRunLokingHook(t *testing.T) {
-	sc := setupScenarioContext(t, "/login")
-	hookService := &hooks.HooksService{}
 	hs := &HTTPServer{
-		log:              log.New("test"),
-		Cfg:              setting.NewCfg(),
-		License:          &licensing.OSSLicensingService{},
-		AuthTokenService: auth.NewFakeUserAuthTokenService(),
-		HooksService:     hookService,
+		authnService: &authntest.FakeService{
+			ExpectedClientConfig: &authntest.FakeSSOClientConfig{
+				ExpectedIsSingleLogoutEnabled: true,
+			},
+		},
+		Cfg:              sc.cfg,
+		SettingsProvider: &setting.OSSImpl{Cfg: sc.cfg},
+		License:          license,
+		SocialService:    &mockSocialService{},
+		Features:         featuremgmt.WithFeatures(),
+		authInfoService: &authinfotest.FakeService{
+			ExpectedUserAuth: &loginservice.UserAuth{AuthModule: loginservice.SAMLAuthModule},
+		},
 	}
 
-	sc.defaultHandler = routing.Wrap(func(c *models.ReqContext) response.Response {
-		c.Req.Header.Set("Content-Type", "application/json")
-		c.Req.Body = io.NopCloser(bytes.NewBufferString(`{"user":"admin","password":"admin"}`))
-		x := hs.LoginPost(c)
-		return x
+	assert.Equal(t, true, hs.samlSingleLogoutEnabled(t.Context()))
+	sc.defaultHandler = routing.Wrap(func(c *contextmodel.ReqContext) response.Response {
+		c.SignedInUser = &user.SignedInUser{
+			UserID:          1,
+			AuthenticatedBy: loginservice.SAMLAuthModule,
+		}
+		hs.Logout(c)
+		return response.Empty(http.StatusOK)
 	})
+	sc.m.Get(sc.url, sc.defaultHandler)
+	sc.fakeReqNoAssertions("GET", sc.url).exec()
+	require.Equal(t, 302, sc.resp.Code)
+}
 
-	testHook := loginHookTest{}
-	hookService.AddLoginHook(testHook.LoginHook)
-
-	testUser := &models.User{
-		Id:    42,
-		Email: "",
-	}
-
-	testCases := []struct {
-		desc       string
-		authUser   *models.User
-		authModule string
-		authErr    error
-		info       models.LoginInfo
+func TestIsExternallySynced(t *testing.T) {
+	testcases := []struct {
+		name                string
+		cfg                 *setting.Cfg
+		provider            string
+		enabledAuthnClients []string
+		authnClientConfig   authn.SSOClientConfig
+		expected            bool
 	}{
+		// Same for all of the OAuth providers
 		{
-			desc:    "invalid credentials",
-			authErr: login.ErrInvalidCredentials,
-			info: models.LoginInfo{
-				AuthModule: "",
-				HTTPStatus: 401,
-				Error:      login.ErrInvalidCredentials,
+			name:                "AzureAD external user should return that it is externally synced",
+			cfg:                 &setting.Cfg{},
+			provider:            loginservice.AzureADAuthModule,
+			enabledAuthnClients: []string{authn.ClientWithPrefix("azuread")},
+			authnClientConfig: &authntest.FakeSSOClientConfig{
+				ExpectedIsSkipOrgRoleSyncEnabled: false,
 			},
+			expected: true,
 		},
 		{
-			desc:    "user disabled",
-			authErr: login.ErrUserDisabled,
-			info: models.LoginInfo{
-				AuthModule: "",
-				HTTPStatus: 401,
-				Error:      login.ErrUserDisabled,
+			name:                "AzureAD external user should return that it is not externally synced when org role sync is set",
+			cfg:                 &setting.Cfg{},
+			provider:            loginservice.AzureADAuthModule,
+			enabledAuthnClients: []string{authn.ClientWithPrefix(strings.TrimPrefix(loginservice.AzureADAuthModule, "oauth_"))},
+			authnClientConfig: &authntest.FakeSSOClientConfig{
+				ExpectedIsSkipOrgRoleSyncEnabled: true,
 			},
+			expected: false,
 		},
 		{
-			desc:       "valid Grafana user",
-			authUser:   testUser,
-			authModule: "grafana",
-			info: models.LoginInfo{
-				AuthModule: "grafana",
-				User:       testUser,
-				HTTPStatus: 200,
+			name:                "AzureAD external user should return that it is not externally synced when the provider is not enabled",
+			cfg:                 &setting.Cfg{},
+			enabledAuthnClients: []string{},
+			authnClientConfig: &authntest.FakeSSOClientConfig{
+				ExpectedIsSkipOrgRoleSyncEnabled: false,
 			},
+			provider: loginservice.AzureADAuthModule,
+			expected: false,
+		},
+		// saml
+		{
+			name:                "SAML synced user should return that it is not externally synced when the provider is disabled",
+			cfg:                 &setting.Cfg{},
+			provider:            loginservice.SAMLAuthModule,
+			enabledAuthnClients: []string{},
+			authnClientConfig: &authntest.FakeSSOClientConfig{
+				ExpectedIsSkipOrgRoleSyncEnabled: false,
+			},
+			expected: false,
 		},
 		{
-			desc:       "valid LDAP user",
-			authUser:   testUser,
-			authModule: "ldap",
-			info: models.LoginInfo{
-				AuthModule: "ldap",
-				User:       testUser,
-				HTTPStatus: 200,
+			name:                "SAML synced user should return that it is externally synced",
+			cfg:                 &setting.Cfg{},
+			provider:            loginservice.SAMLAuthModule,
+			enabledAuthnClients: []string{authn.ClientSAML},
+			authnClientConfig: &authntest.FakeSSOClientConfig{
+				ExpectedIsSkipOrgRoleSyncEnabled: false,
 			},
+			expected: true,
+		},
+		{
+			name:                "SAML synced user should return that it is not externally synced when org role sync is set",
+			cfg:                 &setting.Cfg{},
+			provider:            loginservice.SAMLAuthModule,
+			enabledAuthnClients: []string{authn.ClientSAML},
+			authnClientConfig: &authntest.FakeSSOClientConfig{
+				ExpectedIsSkipOrgRoleSyncEnabled: true,
+			},
+			expected: false,
+		},
+		// ldap
+		{
+			name:     "LDAP synced user should return that it is externally synced",
+			cfg:      &setting.Cfg{LDAPAuthEnabled: true, LDAPSkipOrgRoleSync: false},
+			provider: loginservice.LDAPAuthModule,
+			expected: true,
+		},
+		{
+			name:     "LDAP synced user should return that it is not externally synced when org role sync is set",
+			cfg:      &setting.Cfg{LDAPAuthEnabled: true, LDAPSkipOrgRoleSync: true},
+			provider: loginservice.LDAPAuthModule,
+			expected: false,
+		},
+		// jwt
+		{
+			name:     "JWT synced user should return that it is externally synced",
+			cfg:      &setting.Cfg{JWTAuth: setting.AuthJWTSettings{Enabled: true, SkipOrgRoleSync: false}},
+			provider: loginservice.JWTModule,
+			expected: true,
+		},
+		{
+			name:     "JWT synced user should return that it is not externally synced when org role sync is set",
+			cfg:      &setting.Cfg{JWTAuth: setting.AuthJWTSettings{Enabled: true, SkipOrgRoleSync: true}},
+			provider: loginservice.JWTModule,
+			expected: false,
+		},
+		// IsProvider test
+		{
+			name:     "If no provider enabled should return false",
+			cfg:      &setting.Cfg{JWTAuth: setting.AuthJWTSettings{Enabled: false, SkipOrgRoleSync: true}},
+			provider: loginservice.JWTModule,
+			expected: false,
 		},
 	}
 
-	for _, c := range testCases {
-		t.Run(c.desc, func(t *testing.T) {
-			bus.AddHandler("grafana-auth", func(ctx context.Context, query *models.LoginUserQuery) error {
-				query.User = c.authUser
-				query.AuthModule = c.authModule
-				return c.authErr
-			})
+	for _, tc := range testcases {
+		hs := &HTTPServer{
+			authnService: &authntest.FakeService{
+				ExpectedClientConfig: tc.authnClientConfig,
+				EnabledClients:       tc.enabledAuthnClients,
+			},
+		}
 
-			sc.m.Post(sc.url, sc.defaultHandler)
-			sc.fakeReqNoAssertions("POST", sc.url).exec()
-
-			info := testHook.info
-			assert.Equal(t, c.info.AuthModule, info.AuthModule)
-			assert.Equal(t, "admin", info.LoginUsername)
-			assert.Equal(t, c.info.HTTPStatus, info.HTTPStatus)
-			assert.Equal(t, c.info.Error, info.Error)
-
-			if c.info.User != nil {
-				require.NotEmpty(t, info.User)
-				assert.Equal(t, c.info.User.Id, info.User.Id)
-			}
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, hs.isExternallySynced(t.Context(), tc.cfg, tc.provider))
 		})
 	}
+}
+
+func TestIsProviderEnabled(t *testing.T) {
+	testcases := []struct {
+		name                string
+		provider            string
+		enabledAuthnClients []string
+		expected            bool
+	}{
+		{
+			name:                "Github should return true if enabled",
+			provider:            loginservice.GithubAuthModule,
+			enabledAuthnClients: []string{authn.ClientWithPrefix(strings.TrimPrefix(loginservice.GithubAuthModule, "oauth_"))},
+			expected:            true,
+		},
+		{
+			name:                "Github should return false if not enabled",
+			provider:            loginservice.GithubAuthModule,
+			enabledAuthnClients: []string{},
+			expected:            false,
+		},
+		// saml
+		{
+			name:                "SAML should return true if enabled",
+			provider:            loginservice.SAMLAuthModule,
+			enabledAuthnClients: []string{authn.ClientSAML},
+			expected:            true,
+		},
+		{
+			name:                "SAML should return false if not enabled",
+			provider:            loginservice.SAMLAuthModule,
+			enabledAuthnClients: []string{},
+			expected:            false,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := &HTTPServer{
+				authnService: &authntest.FakeService{
+					EnabledClients: tc.enabledAuthnClients,
+				},
+			}
+			assert.Equal(t, tc.expected, hs.isProviderEnabled(t.Context(), setting.NewCfg(), tc.provider))
+		})
+	}
+}
+
+// countingAuthnService counts calls per client name to the two methods that
+// trigger an SSO settings read, so tests can assert the resolver caches per
+// module and keys the cache correctly.
+type countingAuthnService struct {
+	*authntest.FakeService
+	enabledCalls map[string]int
+	configCalls  map[string]int
+}
+
+func (s *countingAuthnService) IsClientEnabled(ctx context.Context, name string) bool {
+	if s.enabledCalls == nil {
+		s.enabledCalls = map[string]int{}
+	}
+	s.enabledCalls[name]++
+	return s.FakeService.IsClientEnabled(ctx, name)
+}
+
+func (s *countingAuthnService) GetClientConfig(ctx context.Context, name string) (authn.SSOClientConfig, bool) {
+	if s.configCalls == nil {
+		s.configCalls = map[string]int{}
+	}
+	s.configCalls[name]++
+	return s.FakeService.GetClientConfig(ctx, name)
 }
 
 type mockSocialService struct {
@@ -717,22 +916,22 @@ type mockSocialService struct {
 	err             error
 }
 
-func (m *mockSocialService) GetOAuthInfoProvider(name string) *social.OAuthInfo {
-	return m.oAuthInfo
+func (m *mockSocialService) GetOAuthInfoProvider(context.Context, string) (*social.OAuthInfo, error) {
+	return m.oAuthInfo, m.err
 }
 
-func (m *mockSocialService) GetOAuthInfoProviders() map[string]*social.OAuthInfo {
-	return m.oAuthInfos
+func (m *mockSocialService) GetOAuthInfoProviders(context.Context) (map[string]*social.OAuthInfo, error) {
+	return m.oAuthInfos, m.err
 }
 
-func (m *mockSocialService) GetOAuthProviders() map[string]bool {
-	return m.oAuthProviders
+func (m *mockSocialService) GetOAuthProviders(context.Context) (map[string]bool, error) {
+	return m.oAuthProviders, m.err
 }
 
-func (m *mockSocialService) GetOAuthHttpClient(name string) (*http.Client, error) {
+func (m *mockSocialService) GetOAuthHttpClient(context.Context, string) (*http.Client, error) {
 	return m.httpClient, m.err
 }
 
-func (m *mockSocialService) GetConnector(string) (social.SocialConnector, error) {
+func (m *mockSocialService) GetConnector(context.Context, string) (social.SocialConnector, error) {
 	return m.socialConnector, m.err
 }

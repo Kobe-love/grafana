@@ -1,13 +1,15 @@
-import { DataFrame, DataQuery, DataQueryError } from '@grafana/data';
-
-export const SHARED_DASHBOARD_QUERY = '-- Dashboard --';
+import { type DataFrame, type DataQuery, type DataQueryError, type DataTopic } from '@grafana/data';
 
 export interface DashboardQuery extends DataQuery {
   panelId?: number;
+  withTransforms?: boolean;
+  topic?: DataTopic;
+  adHocFiltersEnabled?: boolean;
 }
 
 export type ResultInfo = {
   img: string; // The Datasource
+  name: string;
   refId: string;
   query: string; // As text
   data: DataFrame[];

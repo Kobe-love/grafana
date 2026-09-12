@@ -1,8 +1,13 @@
-import { FieldConfigSource } from '@grafana/data';
+import { type FieldConfigSource } from '@grafana/data';
 
 export interface VizTypeChangeDetails {
   pluginId: string;
-  options?: any;
+  options?: Record<string, unknown>;
   fieldConfig?: FieldConfigSource;
   withModKey?: boolean;
+  fromSuggestions?: boolean;
+  suggestionMetadata?: {
+    suggestionName: string;
+    suggestionIndex: number;
+  };
 }

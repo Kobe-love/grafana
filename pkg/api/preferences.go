@@ -1,100 +1,174 @@
 package api
 
 import (
-	"context"
 	"net/http"
 
+	preferences "github.com/grafana/grafana/apps/preferences/pkg/apis/preferences/v1"
 	"github.com/grafana/grafana/pkg/api/dtos"
 	"github.com/grafana/grafana/pkg/api/response"
-	"github.com/grafana/grafana/pkg/bus"
-	"github.com/grafana/grafana/pkg/models"
+	prefutils "github.com/grafana/grafana/pkg/registry/apis/preferences/utils"
+	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/web"
+	"github.com/open-feature/go-sdk/openfeature"
 )
 
-const (
-	defaultTheme string = ""
-	darkTheme    string = "dark"
-	lightTheme   string = "light"
-)
+var ofClient = openfeature.NewDefaultClient()
 
-// POST /api/preferences/set-home-dash
-func SetHomeDashboard(c *models.ReqContext) response.Response {
-	cmd := models.SavePreferencesCommand{}
-	if err := web.Bind(c.Req, &cmd); err != nil {
-		return response.Error(http.StatusBadRequest, "bad request data", err)
-	}
-	cmd.UserId = c.UserId
-	cmd.OrgId = c.OrgId
-
-	if err := bus.Dispatch(c.Req.Context(), &cmd); err != nil {
-		return response.Error(500, "Failed to set home dashboard", err)
-	}
-
-	return response.Success("Home dashboard set")
+// swagger:route GET /user/preferences signed_in_user preferences getUserPreferences
+//
+// Get user preferences.
+//
+// Use /apis/preferences.grafana.app/v1/namespaces/{namespace}/preferences/user-{uid}
+//
+// Deprecated: true
+//
+// Responses:
+// 200: getPreferencesResponse
+// 401: unauthorisedError
+// 500: internalServerError
+func (hs *HTTPServer) GetUserPreferences(c *contextmodel.ReqContext) response.Response {
+	return hs.preferenceK8sHandler.GetPreferences(c, prefutils.UserOwner(c.GetIdentifier()))
 }
 
-// GET /api/user/preferences
-func (hs *HTTPServer) GetUserPreferences(c *models.ReqContext) response.Response {
-	return hs.getPreferencesFor(c.Req.Context(), c.OrgId, c.UserId, 0)
-}
-
-func (hs *HTTPServer) getPreferencesFor(ctx context.Context, orgID, userID, teamID int64) response.Response {
-	prefsQuery := models.GetPreferencesQuery{UserId: userID, OrgId: orgID, TeamId: teamID}
-
-	if err := hs.SQLStore.GetPreferences(ctx, &prefsQuery); err != nil {
-		return response.Error(500, "Failed to get preferences", err)
-	}
-
-	dto := dtos.Prefs{
-		Theme:           prefsQuery.Result.Theme,
-		HomeDashboardID: prefsQuery.Result.HomeDashboardId,
-		Timezone:        prefsQuery.Result.Timezone,
-		WeekStart:       prefsQuery.Result.WeekStart,
-	}
-
-	return response.JSON(200, &dto)
-}
-
-// PUT /api/user/preferences
-func (hs *HTTPServer) UpdateUserPreferences(c *models.ReqContext) response.Response {
+// swagger:route PUT /user/preferences signed_in_user preferences updateUserPreferences
+//
+// Update user preferences.
+//
+// Use /apis/preferences.grafana.app/v1/namespaces/{namespace}/preferences/user-{uid}
+//
+// Deprecated: true
+//
+// Omitting a key (`theme`, `homeDashboardUID`, `timezone`) will cause the current value to be replaced with the system default value.
+//
+// Responses:
+// 200: okResponse
+// 400: badRequestError
+// 401: unauthorisedError
+// 500: internalServerError
+func (hs *HTTPServer) UpdateUserPreferences(c *contextmodel.ReqContext) response.Response {
 	dtoCmd := dtos.UpdatePrefsCmd{}
 	if err := web.Bind(c.Req, &dtoCmd); err != nil {
 		return response.Error(http.StatusBadRequest, "bad request data", err)
 	}
-	return hs.updatePreferencesFor(c.Req.Context(), c.OrgId, c.UserId, 0, &dtoCmd)
+
+	return hs.preferenceK8sHandler.UpdatePreferences(c, prefutils.UserOwner(c.GetIdentifier()), &dtoCmd)
 }
 
-func (hs *HTTPServer) updatePreferencesFor(ctx context.Context, orgID, userID, teamId int64, dtoCmd *dtos.UpdatePrefsCmd) response.Response {
-	if dtoCmd.Theme != lightTheme && dtoCmd.Theme != darkTheme && dtoCmd.Theme != defaultTheme {
-		return response.Error(400, "Invalid theme", nil)
-	}
-	saveCmd := models.SavePreferencesCommand{
-		UserId:          userID,
-		OrgId:           orgID,
-		TeamId:          teamId,
-		Theme:           dtoCmd.Theme,
-		Timezone:        dtoCmd.Timezone,
-		WeekStart:       dtoCmd.WeekStart,
-		HomeDashboardId: dtoCmd.HomeDashboardID,
+// swagger:route PATCH /user/preferences signed_in_user preferences patchUserPreferences
+//
+// Patch user preferences.
+//
+// Use /apis/preferences.grafana.app/v1/namespaces/{namespace}/preferences/user-{uid}
+//
+// Deprecated: true
+//
+// Responses:
+// 200: okResponse
+// 400: badRequestError
+// 401: unauthorisedError
+// 500: internalServerError
+func (hs *HTTPServer) PatchUserPreferences(c *contextmodel.ReqContext) response.Response {
+	dtoCmd := dtos.PatchPrefsCmd{}
+	if err := web.Bind(c.Req, &dtoCmd); err != nil {
+		return response.Error(http.StatusBadRequest, "bad request data", err)
 	}
 
-	if err := hs.SQLStore.SavePreferences(ctx, &saveCmd); err != nil {
-		return response.Error(500, "Failed to save preferences", err)
-	}
-
-	return response.Success("Preferences updated")
+	return hs.preferenceK8sHandler.PatchPreferences(c, prefutils.UserOwner(c.GetIdentifier()), &dtoCmd)
 }
 
-// GET /api/org/preferences
-func (hs *HTTPServer) GetOrgPreferences(c *models.ReqContext) response.Response {
-	return hs.getPreferencesFor(c.Req.Context(), c.OrgId, 0, 0)
+// swagger:route GET /org/preferences org preferences getOrgPreferences
+//
+// Get Current Org Prefs.
+//
+// Use /apis/preferences.grafana.app/v1/namespaces/{namespace}/preferences/namespace
+//
+// Deprecated: true
+//
+// Responses:
+// 200: getPreferencesResponse
+// 401: unauthorisedError
+// 403: forbiddenError
+// 500: internalServerError
+func (hs *HTTPServer) GetOrgPreferences(c *contextmodel.ReqContext) response.Response {
+	return hs.preferenceK8sHandler.GetPreferences(c, prefutils.NamespaceOwner())
 }
 
-// PUT /api/org/preferences
-func (hs *HTTPServer) UpdateOrgPreferences(c *models.ReqContext) response.Response {
+// swagger:route PUT /org/preferences org preferences updateOrgPreferences
+//
+// Update Current Org Prefs.
+//
+// Use /apis/preferences.grafana.app/v1/namespaces/{namespace}/preferences/namespace
+//
+// Deprecated: true
+//
+// Responses:
+// 200: okResponse
+// 400: badRequestError
+// 401: unauthorisedError
+// 403: forbiddenError
+// 500: internalServerError
+func (hs *HTTPServer) UpdateOrgPreferences(c *contextmodel.ReqContext) response.Response {
 	dtoCmd := dtos.UpdatePrefsCmd{}
 	if err := web.Bind(c.Req, &dtoCmd); err != nil {
 		return response.Error(http.StatusBadRequest, "bad request data", err)
 	}
-	return hs.updatePreferencesFor(c.Req.Context(), c.OrgId, 0, 0, &dtoCmd)
+
+	return hs.preferenceK8sHandler.UpdatePreferences(c, prefutils.NamespaceOwner(), &dtoCmd)
+}
+
+// swagger:route PATCH /org/preferences org preferences patchOrgPreferences
+//
+// Patch Current Org Prefs.
+//
+// Use /apis/preferences.grafana.app/v1/namespaces/{namespace}/preferences/namespace
+//
+// Deprecated: true
+//
+// Responses:
+// 200: okResponse
+// 400: badRequestError
+// 401: unauthorisedError
+// 403: forbiddenError
+// 500: internalServerError
+func (hs *HTTPServer) PatchOrgPreferences(c *contextmodel.ReqContext) response.Response {
+	dtoCmd := dtos.PatchPrefsCmd{}
+	if err := web.Bind(c.Req, &dtoCmd); err != nil {
+		return response.Error(http.StatusBadRequest, "bad request data", err)
+	}
+
+	return hs.preferenceK8sHandler.PatchPreferences(c, prefutils.NamespaceOwner(), &dtoCmd)
+}
+
+// swagger:parameters  updateUserPreferences
+type UpdateUserPreferencesParams struct {
+	// in:body
+	// required:true
+	Body dtos.UpdatePrefsCmd `json:"body"`
+}
+
+// swagger:parameters updateOrgPreferences
+type UpdateOrgPreferencesParams struct {
+	// in:body
+	// required:true
+	Body dtos.UpdatePrefsCmd `json:"body"`
+}
+
+// swagger:response getPreferencesResponse
+type GetPreferencesResponse struct {
+	// in:body
+	Body preferences.PreferencesSpec `json:"body"`
+}
+
+// swagger:parameters patchUserPreferences
+type PatchUserPreferencesParams struct {
+	// in:body
+	// required:true
+	Body dtos.PatchPrefsCmd `json:"body"`
+}
+
+// swagger:parameters patchOrgPreferences
+type PatchOrgPreferencesParams struct {
+	// in:body
+	// required:true
+	Body dtos.PatchPrefsCmd `json:"body"`
 }

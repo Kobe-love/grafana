@@ -1,5 +1,13 @@
-import { DataFrame, Field, TIME_SERIES_VALUE_FIELD_NAME, FieldType, TIME_SERIES_TIME_FIELD_NAME } from '../types';
-import { formatLabels } from '../utils/labels';
+import { isTimeCompareFrame, withComparisonSuffix } from '../dataframe/timeCompare';
+import { type Labels } from '../types/data';
+import {
+  type DataFrame,
+  FieldType,
+  type Field,
+  TIME_SERIES_TIME_FIELD_NAME,
+  TIME_SERIES_VALUE_FIELD_NAME,
+} from '../types/dataFrame';
+import { findUniqueLabels, formatLabels } from '../utils/labels';
 
 /**
  * Get an appropriate display title
@@ -9,20 +17,27 @@ export function getFrameDisplayName(frame: DataFrame, index?: number) {
     return frame.name;
   }
 
-  // Single field with tags
-  const valuesWithLabels: Field[] = [];
+  const valueFieldNames: string[] = [];
   for (const field of frame.fields) {
-    if (field.labels && Object.keys(field.labels).length > 0) {
-      valuesWithLabels.push(field);
+    if (field.type === FieldType.time) {
+      continue;
     }
+
+    // No point in doing more
+    if (valueFieldNames.length > 1) {
+      break;
+    }
+
+    valueFieldNames.push(getFieldDisplayName(field, frame));
   }
 
-  if (valuesWithLabels.length === 1) {
-    return formatLabels(valuesWithLabels[0].labels!);
+  // If the frame has a single value field then use the name of that field as the frame name
+  if (valueFieldNames.length === 1) {
+    return valueFieldNames[0];
   }
 
   // list all the
-  if (index === undefined) {
+  if (index === undefined && frame.fields.length > 0) {
     return frame.fields
       .filter((f) => f.type !== FieldType.time)
       .map((f) => getFieldDisplayName(f, frame))
@@ -36,16 +51,34 @@ export function getFrameDisplayName(frame: DataFrame, index?: number) {
   return `Series (${index})`;
 }
 
-export function getFieldDisplayName(field: Field, frame?: DataFrame, allFrames?: DataFrame[]): string {
-  const existingTitle = field.state?.displayName;
+export function cacheFieldDisplayNames(frames: DataFrame[]) {
+  frames.forEach((frame) => {
+    frame.fields.forEach((field) => {
+      getFieldDisplayName(field, frame, frames);
+      if (field.type === FieldType.nestedFrames) {
+        field.values.forEach(cacheFieldDisplayNames);
+      }
+    });
+  });
+}
 
-  if (existingTitle) {
+export function getFieldDisplayName(
+  field: Field,
+  frame?: DataFrame,
+  allFrames?: DataFrame[],
+  commonLabels?: Labels
+): string {
+  const existingTitle = field.state?.displayName;
+  const multipleFrames = Boolean(allFrames && allFrames.length > 1);
+
+  if (existingTitle && multipleFrames === field.state?.multipleFrames) {
     return existingTitle;
   }
 
-  const displayName = calculateFieldDisplayName(field, frame, allFrames);
+  const displayName = calculateFieldDisplayName(field, frame, allFrames, commonLabels);
   field.state = field.state || {};
   field.state.displayName = displayName;
+  field.state.multipleFrames = multipleFrames;
 
   return displayName;
 }
@@ -53,17 +86,22 @@ export function getFieldDisplayName(field: Field, frame?: DataFrame, allFrames?:
 /**
  * Get an appropriate display name. If the 'displayName' field config is set, use that.
  */
-function calculateFieldDisplayName(field: Field, frame?: DataFrame, allFrames?: DataFrame[]): string {
+function calculateFieldDisplayName(
+  field: Field,
+  frame?: DataFrame,
+  allFrames?: DataFrame[],
+  commonLabels?: Labels
+): string {
   const hasConfigTitle = field.config?.displayName && field.config?.displayName.length;
-
+  const isComparisonSeries = isTimeCompareFrame(frame);
   let displayName = hasConfigTitle ? field.config!.displayName! : field.name;
 
   if (hasConfigTitle) {
-    return displayName;
+    return isComparisonSeries ? withComparisonSuffix(displayName) : displayName;
   }
 
   if (frame && field.config?.displayNameFromDS) {
-    return field.config.displayNameFromDS;
+    return isComparisonSeries ? withComparisonSuffix(field.config.displayNameFromDS) : field.config.displayNameFromDS;
   }
 
   // This is an ugly exception for time field
@@ -102,7 +140,7 @@ function calculateFieldDisplayName(field: Field, frame?: DataFrame, allFrames?: 
     let singleLabelName = getSingleLabelName(allFrames ?? [frame]);
 
     if (!singleLabelName) {
-      let allLabels = formatLabels(field.labels);
+      let allLabels = formatLabels(commonLabels ? findUniqueLabels(field.labels, commonLabels) : field.labels);
       if (allLabels) {
         parts.push(allLabels);
         labelsAdded = true;
@@ -134,10 +172,13 @@ function calculateFieldDisplayName(field: Field, frame?: DataFrame, allFrames?: 
     displayName = getUniqueFieldName(field, frame);
   }
 
+  if (isComparisonSeries) {
+    displayName = withComparisonSuffix(displayName);
+  }
   return displayName;
 }
 
-function getUniqueFieldName(field: Field, frame?: DataFrame) {
+export function getUniqueFieldName(field: Field, frame?: DataFrame) {
   let dupeCount = 0;
   let foundSelf = false;
 

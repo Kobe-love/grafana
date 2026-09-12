@@ -2,36 +2,52 @@ package manager
 
 import (
 	"github.com/grafana/grafana/pkg/services/accesscontrol"
+	"github.com/grafana/grafana/pkg/services/org"
 	"github.com/grafana/grafana/pkg/services/serviceaccounts"
 )
 
-var (
-	ActionApikeyList          = "apikey:list"
-	ActionApikeyAdd           = "apikey:add"
-	ActionApikeyRemove        = "apikey:remove"
-	ActionApikeyAddAdditional = "apikey:addadditional"
-
-	apikeyWriter = "fixed:apikey:writer"
-	apikeyReader = "fixed:apikey:reader"
-
-	//API key actions
-	ActionApikeyListEv          = accesscontrol.EvalPermission(ActionApikeyList)
-	ActionApikeyAddEv           = accesscontrol.EvalPermission(ActionApikeyAdd)
-	ActionApikeyRemoveEv        = accesscontrol.EvalPermission(ActionApikeyRemove) //Improvement:Check here or in database layer that user has permissiono modify the service account attached to this api key
-	ActionApikeyAddAdditionalEv = accesscontrol.EvalPermission(ActionApikeyAddAdditional)
-)
-
-func RegisterRoles(ac accesscontrol.AccessControl) error {
-	role := accesscontrol.RoleRegistration{
+// FixedRoleRegistrations returns the service account role registrations.
+func FixedRoleRegistrations() []accesscontrol.RoleRegistration {
+	saReader := accesscontrol.RoleRegistration{
 		Role: accesscontrol.RoleDTO{
-			Version:     3,
-			Name:        "fixed:serviceaccounts:writer",
-			DisplayName: "Service accounts writer",
-			Description: "Create, delete, read, or query service accounts.",
+			Name:        "fixed:serviceaccounts:reader",
+			DisplayName: "Reader",
+			Description: "Read service accounts and service account tokens.",
 			Group:       "Service accounts",
 			Permissions: []accesscontrol.Permission{
 				{
 					Action: serviceaccounts.ActionRead,
+					Scope:  serviceaccounts.ScopeAll,
+				},
+			},
+		},
+		Grants: []string{string(org.RoleAdmin)},
+	}
+
+	saCreator := accesscontrol.RoleRegistration{
+		Role: accesscontrol.RoleDTO{
+			Name:        "fixed:serviceaccounts:creator",
+			DisplayName: "Creator",
+			Description: "Create service accounts.",
+			Group:       "Service accounts",
+			Permissions: []accesscontrol.Permission{
+				{
+					Action: serviceaccounts.ActionCreate,
+				},
+			},
+		},
+		Grants: []string{string(org.RoleAdmin)},
+	}
+
+	saWriter := accesscontrol.RoleRegistration{
+		Role: accesscontrol.RoleDTO{
+			Name:        "fixed:serviceaccounts:writer",
+			DisplayName: "Writer",
+			Description: "Create, delete and read service accounts, manage service account permissions.",
+			Group:       "Service accounts",
+			Permissions: accesscontrol.ConcatPermissions(saReader.Role.Permissions, []accesscontrol.Permission{
+				{
+					Action: serviceaccounts.ActionWrite,
 					Scope:  serviceaccounts.ScopeAll,
 				},
 				{
@@ -41,58 +57,22 @@ func RegisterRoles(ac accesscontrol.AccessControl) error {
 					Action: serviceaccounts.ActionDelete,
 					Scope:  serviceaccounts.ScopeAll,
 				},
-			},
-		},
-		Grants: []string{"Admin"},
-	}
-
-	if err := ac.DeclareFixedRoles(role); err != nil {
-		return err
-	}
-
-	apikeyAdminReadRole := accesscontrol.RoleRegistration{
-		Role: accesscontrol.RoleDTO{
-			Version:     1,
-			Name:        apikeyReader,
-			DisplayName: "Apikeys reader",
-			Description: "Gives access to list apikeys.",
-			Group:       "Service accounts",
-			Permissions: []accesscontrol.Permission{
 				{
-					Action: ActionApikeyList,
-					Scope:  accesscontrol.ScopeUsersAll,
-				},
-			},
-		},
-		Grants: []string{"Admin"},
-	}
-	if err := ac.DeclareFixedRoles(apikeyAdminReadRole); err != nil {
-		return err
-	}
-
-	apikeyAdminEditRole := accesscontrol.RoleRegistration{
-		Role: accesscontrol.RoleDTO{
-			Version:     1,
-			Name:        apikeyWriter,
-			DisplayName: "Apikeys writer",
-			Description: "Gives access to add and delete api keys.",
-			Group:       "Service accounts",
-			Permissions: accesscontrol.ConcatPermissions(apikeyAdminReadRole.Role.Permissions, []accesscontrol.Permission{
-				{
-					Action: ActionApikeyAdd,
-					Scope:  accesscontrol.ScopeUsersAll,
+					Action: serviceaccounts.ActionPermissionsRead,
+					Scope:  serviceaccounts.ScopeAll,
 				},
 				{
-					Action: ActionApikeyRemove,
-					Scope:  accesscontrol.ScopeUsersAll,
+					Action: serviceaccounts.ActionPermissionsWrite,
+					Scope:  serviceaccounts.ScopeAll,
 				},
 			}),
 		},
-		Grants: []string{"Admin"},
-	}
-	if err := ac.DeclareFixedRoles(apikeyAdminEditRole); err != nil {
-		return err
+		Grants: []string{string(org.RoleAdmin)},
 	}
 
-	return nil
+	return []accesscontrol.RoleRegistration{saReader, saCreator, saWriter}
+}
+
+func RegisterRoles(service accesscontrol.Service) error {
+	return service.DeclareFixedRoles(FixedRoleRegistrations()...)
 }

@@ -1,11 +1,16 @@
-import { AnnotationQueryRequest, DataSourceInstanceSettings, dateTime } from '@grafana/data';
-
+import {
+  type AnnotationQueryRequest,
+  type DataQueryRequest,
+  type DataSourceInstanceSettings,
+  dateTime,
+} from '@grafana/data';
 import { backendSrv } from 'app/core/services/backend_srv'; // will use the version in __mocks__
+
 import { GrafanaDatasource } from './datasource';
-import { GrafanaAnnotationQuery, GrafanaAnnotationType, GrafanaQuery } from './types';
+import { type GrafanaAnnotationQuery, GrafanaAnnotationType, type GrafanaQuery, GrafanaQueryType } from './types';
 
 jest.mock('@grafana/runtime', () => ({
-  ...((jest.requireActual('@grafana/runtime') as unknown) as object),
+  ...jest.requireActual('@grafana/runtime'),
   getBackendSrv: () => backendSrv,
   getTemplateSrv: () => ({
     replace: (val: string) => {
@@ -13,6 +18,45 @@ jest.mock('@grafana/runtime', () => ({
     },
   }),
 }));
+
+describe('RandomWalk query', () => {
+  it('each query emits a response with a distinct key matching its refId', (done) => {
+    const ds = new GrafanaDatasource({} as DataSourceInstanceSettings);
+    const request = {
+      targets: [
+        { refId: 'A', queryType: GrafanaQueryType.RandomWalk },
+        { refId: 'B', queryType: GrafanaQueryType.RandomWalk },
+      ],
+      range: {
+        from: dateTime('2024-01-01T00:00:00Z'),
+        to: dateTime('2024-01-01T01:00:00Z'),
+        raw: { from: 'now-1h', to: 'now' },
+      },
+      intervalMs: 60000,
+      maxDataPoints: 60,
+      requestId: 'test',
+      interval: '1m',
+      scopedVars: {},
+      timezone: 'browser',
+      app: 'dashboard',
+      startTime: 0,
+    } as unknown as DataQueryRequest<GrafanaQuery>;
+
+    const keys: string[] = [];
+    ds.query(request).subscribe({
+      next: (response) => {
+        expect(response.key).toBeDefined();
+        keys.push(response.key!);
+      },
+      complete: () => {
+        expect(keys).toHaveLength(2);
+        expect(keys).toContain('A');
+        expect(keys).toContain('B');
+        done();
+      },
+    });
+  });
+});
 
 describe('grafana data source', () => {
   const getMock = jest.spyOn(backendSrv, 'get');
@@ -22,10 +66,10 @@ describe('grafana data source', () => {
   });
 
   describe('when executing an annotations query', () => {
-    let calledBackendSrvParams: any;
+    let calledBackendSrvParams: Parameters<(typeof backendSrv)['get']>[1];
     let ds: GrafanaDatasource;
     beforeEach(() => {
-      getMock.mockImplementation((url: string, options: any) => {
+      getMock.mockImplementation((url, options) => {
         calledBackendSrvParams = options;
         return Promise.resolve([]);
       });
@@ -41,7 +85,7 @@ describe('grafana data source', () => {
       });
 
       it('should interpolate template variables in tags in query options', () => {
-        expect(calledBackendSrvParams.tags[0]).toBe('tag1:replaced');
+        expect(calledBackendSrvParams?.tags[0]).toBe('tag1:replaced');
       });
     });
 
@@ -53,8 +97,8 @@ describe('grafana data source', () => {
       });
 
       it('should interpolate template variables in tags in query options', () => {
-        expect(calledBackendSrvParams.tags[0]).toBe('replaced');
-        expect(calledBackendSrvParams.tags[1]).toBe('replaced2');
+        expect(calledBackendSrvParams?.tags[0]).toBe('replaced');
+        expect(calledBackendSrvParams?.tags[1]).toBe('replaced2');
       });
     });
 
@@ -64,7 +108,7 @@ describe('grafana data source', () => {
           type: GrafanaAnnotationType.Dashboard,
           tags: ['tag1'],
         },
-        { id: 1 }
+        { uid: 'DSNdW0gVk' }
       );
 
       beforeEach(() => {
@@ -72,14 +116,14 @@ describe('grafana data source', () => {
       });
 
       it('should remove tags from query options', () => {
-        expect(calledBackendSrvParams.tags).toBe(undefined);
+        expect(calledBackendSrvParams?.tags).toBe(undefined);
       });
     });
   });
 });
 
-function setupAnnotationQueryOptions(annotation: Partial<GrafanaAnnotationQuery>, dashboard?: { id: number }) {
-  return ({
+function setupAnnotationQueryOptions(annotation: Partial<GrafanaAnnotationQuery>, dashboard?: { uid: string }) {
+  return {
     annotation: {
       target: annotation,
     },
@@ -89,5 +133,5 @@ function setupAnnotationQueryOptions(annotation: Partial<GrafanaAnnotationQuery>
       to: dateTime(1432288401),
     },
     rangeRaw: { from: 'now-24h', to: 'now' },
-  } as unknown) as AnnotationQueryRequest<GrafanaQuery>;
+  } as unknown as AnnotationQueryRequest<GrafanaQuery>;
 }

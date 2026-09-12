@@ -1,10 +1,13 @@
-import { useFocusRing } from '@react-aria/focus';
-import React from 'react';
-import tinycolor from 'tinycolor2';
-import { useTheme2 } from '../../themes/ThemeContext';
-import { selectors } from '@grafana/e2e-selectors';
-import { GrafanaTheme2 } from '@grafana/data';
 import { css } from '@emotion/css';
+import { useFocusRing } from '@react-aria/focus';
+import * as React from 'react';
+import tinycolor from 'tinycolor2';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { t } from '@grafana/i18n';
+
+import { useTheme2 } from '../../themes/ThemeContext';
 
 /** @internal */
 export enum ColorSwatchVariant {
@@ -22,17 +25,43 @@ export interface Props extends React.HTMLAttributes<HTMLDivElement> {
 
 /** @internal */
 export const ColorSwatch = React.forwardRef<HTMLDivElement, Props>(
-  ({ color, label, variant = ColorSwatchVariant.Small, isSelected, 'aria-label': ariaLabel, ...otherProps }, ref) => {
+  (
+    {
+      color,
+      label,
+      variant = ColorSwatchVariant.Small,
+      isSelected,
+      'aria-label': ariaLabel,
+      'aria-labelledby': ariaLabelledBy,
+      'aria-describedby': ariaDescribedBy,
+      id,
+      ...otherProps
+    },
+    ref
+  ) => {
     const theme = useTheme2();
     const { isFocusVisible, focusProps } = useFocusRing();
     const styles = getStyles(theme, variant, color, isFocusVisible, isSelected);
     const hasLabel = !!label;
-    const colorLabel = `${ariaLabel || label} color`;
-
+    const colorLabel = ariaLabel || label;
     return (
       <div ref={ref} className={styles.wrapper} data-testid={selectors.components.ColorSwatch.name} {...otherProps}>
         {hasLabel && <span className={styles.label}>{label}</span>}
-        <button className={styles.swatch} {...focusProps} aria-label={colorLabel} />
+        <button
+          id={id}
+          className={styles.swatch}
+          {...focusProps}
+          aria-label={
+            ariaLabelledBy
+              ? undefined
+              : colorLabel
+                ? t('grafana-ui.color-swatch.aria-label-selected-color', '{{colorLabel}} color', { colorLabel })
+                : t('grafana-ui.color-swatch.aria-label-default', 'Pick a color')
+          }
+          aria-labelledby={ariaLabelledBy}
+          aria-describedby={ariaDescribedBy}
+          type="button"
+        />
       </div>
     );
   }
@@ -68,17 +97,22 @@ const getStyles = (
       height: swatchSize,
       background: `${color}`,
       border,
-      borderRadius: '50%',
+      borderRadius: theme.shape.radius.circle,
       outlineOffset: '1px',
       outline: isFocusVisible ? `2px solid  ${theme.colors.primary.main}` : 'none',
       boxShadow: isSelected
         ? `inset 0 0 0 2px ${color}, inset 0 0 0 4px ${theme.colors.getContrastText(color)}`
         : 'none',
-      transition: theme.transitions.create(['transform'], {
-        duration: theme.transitions.duration.short,
-      }),
+      [theme.transitions.handleMotion('no-preference')]: {
+        transition: theme.transitions.create(['transform'], {
+          duration: theme.transitions.duration.short,
+        }),
+      },
       '&:hover': {
         transform: 'scale(1.1)',
+      },
+      '@media (forced-colors: active)': {
+        forcedColorAdjust: 'none',
       },
     }),
   };

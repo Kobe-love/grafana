@@ -1,208 +1,116 @@
-import React, { createRef, MutableRefObject, PureComponent, ReactNode } from 'react';
-import SplitPane from 'react-split-pane';
 import { css, cx } from '@emotion/css';
-import { GrafanaTheme } from '@grafana/data';
-import { stylesFactory } from '@grafana/ui';
-import { config } from 'app/core/config';
+import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
+import SplitPane, { type Split } from 'react-split-pane';
 
-enum Pane {
-  Right,
-  Top,
-}
+import { type GrafanaTheme2 } from '@grafana/data';
+import { getDragStyles, useStyles2 } from '@grafana/ui';
 
 interface Props {
-  leftPaneComponents: ReactNode[] | ReactNode;
-  rightPaneComponents: ReactNode;
-  uiState: { topPaneSize: number; rightPaneSize: number };
-  rightPaneVisible?: boolean;
-  updateUiState: (uiState: { topPaneSize?: number; rightPaneSize?: number }) => void;
+  splitOrientation?: Split;
+  paneSize: number;
+  splitVisible?: boolean;
+  minSize?: number;
+  maxSize?: number;
+  primary?: 'first' | 'second';
+  onDragFinished?: (size?: number) => void;
+  parentStyle?: React.CSSProperties;
+  paneStyle?: React.CSSProperties;
+  secondaryPaneStyle?: React.CSSProperties;
 }
 
-export class SplitPaneWrapper extends PureComponent<Props> {
-  rafToken = createRef<number>();
-  static defaultProps = {
-    rightPaneVisible: true,
-  };
+export const SplitPaneWrapper = memo(function SplitPaneWrapper({
+  children,
+  paneSize,
+  splitOrientation,
+  maxSize,
+  minSize,
+  primary,
+  parentStyle,
+  paneStyle,
+  secondaryPaneStyle,
+  splitVisible = true,
+  onDragFinished,
+}: React.PropsWithChildren<Props>) {
+  const [dimensions, setDimensions] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const rafToken = useRef<number | null>(null);
 
-  componentDidMount() {
-    window.addEventListener('resize', this.updateSplitPaneSize);
-  }
+  // Limit options pane width to 90% of screen.
+  const styles = useStyles2(getStyles, splitVisible);
+  const dragStyles = useStyles2(getDragStyles);
 
-  componentWillUnmount() {
-    window.removeEventListener('resize', this.updateSplitPaneSize);
-  }
-
-  updateSplitPaneSize = () => {
-    if (this.rafToken.current !== undefined) {
-      window.cancelAnimationFrame(this.rafToken.current!);
-    }
-    (this.rafToken as MutableRefObject<number>).current = window.requestAnimationFrame(() => {
-      this.forceUpdate();
-    });
-  };
-
-  onDragFinished = (pane: Pane, size?: number) => {
-    document.body.style.cursor = 'auto';
-
-    // When the drag handle is just clicked size is undefined
-    if (!size) {
-      return;
-    }
-
-    const { updateUiState } = this.props;
-    if (pane === Pane.Top) {
-      updateUiState({
-        topPaneSize: size / window.innerHeight,
-      });
-    } else {
-      updateUiState({
-        rightPaneSize: size / window.innerWidth,
-      });
-    }
-  };
-
-  onDragStarted = () => {
-    document.body.style.cursor = 'row-resize';
-  };
-
-  renderHorizontalSplit() {
-    const { leftPaneComponents, uiState } = this.props;
-    const styles = getStyles(config.theme);
-    const topPaneSize =
-      uiState.topPaneSize >= 1 ? (uiState.topPaneSize as number) : (uiState.topPaneSize as number) * window.innerHeight;
-
-    /*
-      Guesstimate the height of the browser window minus
-      panel toolbar and editor toolbar (~120px). This is to prevent resizing
-      the preview window beyond the browser window.
-     */
-
-    if (Array.isArray(leftPaneComponents)) {
-      return (
-        <SplitPane
-          split="horizontal"
-          maxSize={-200}
-          primary="first"
-          size={topPaneSize}
-          pane2Style={{ minHeight: 0 }}
-          resizerClassName={styles.resizerH}
-          onDragStarted={this.onDragStarted}
-          onDragFinished={(size) => this.onDragFinished(Pane.Top, size)}
-        >
-          {leftPaneComponents}
-        </SplitPane>
-      );
-    }
-
-    return leftPaneComponents;
-  }
-
-  render() {
-    const { rightPaneVisible, rightPaneComponents, uiState } = this.props;
-    // Limit options pane width to 90% of screen.
-    const styles = getStyles(config.theme);
-
-    // Need to handle when width is relative. ie a percentage of the viewport
-    const rightPaneSize =
-      uiState.rightPaneSize <= 1
-        ? (uiState.rightPaneSize as number) * window.innerWidth
-        : (uiState.rightPaneSize as number);
-
-    if (!rightPaneVisible) {
-      return this.renderHorizontalSplit();
-    }
-
-    return (
-      <SplitPane
-        split="vertical"
-        maxSize={-300}
-        size={rightPaneSize}
-        primary="second"
-        resizerClassName={styles.resizerV}
-        onDragStarted={() => (document.body.style.cursor = 'col-resize')}
-        onDragFinished={(size) => this.onDragFinished(Pane.Right, size)}
-      >
-        {this.renderHorizontalSplit()}
-        {rightPaneComponents}
-      </SplitPane>
-    );
-  }
-}
-
-const getStyles = stylesFactory((theme: GrafanaTheme) => {
-  const handleColor = theme.palette.blue95;
-  const paneSpacing = theme.spacing.md;
-
-  const resizer = css`
-    position: relative;
-
-    &::before {
-      content: '';
-      position: absolute;
-      transition: 0.2s border-color ease-in-out;
-    }
-
-    &::after {
-      background: ${theme.colors.panelBorder};
-      content: '';
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      transition: 0.2s background ease-in-out;
-      transform: translate(-50%, -50%);
-      border-radius: 4px;
-    }
-
-    &:hover {
-      &::before {
-        border-color: ${handleColor};
+  useEffect(() => {
+    const updateSplitPaneSize = () => {
+      if (rafToken.current !== null) {
+        window.cancelAnimationFrame(rafToken.current);
       }
+      rafToken.current = window.requestAnimationFrame(() => {
+        setDimensions({ width: window.innerWidth, height: window.innerHeight });
+      });
+    };
 
-      &::after {
-        background: ${handleColor};
+    window.addEventListener('resize', updateSplitPaneSize);
+    return () => {
+      window.removeEventListener('resize', updateSplitPaneSize);
+    };
+  }, []);
+
+  const handleDragFinished = useCallback(
+    (size?: number) => {
+      document.body.style.cursor = 'auto';
+      if (onDragFinished && size !== undefined) {
+        onDragFinished(size);
       }
-    }
-  `;
+    },
+    [onDragFinished]
+  );
 
-  return {
-    resizerV: cx(
-      resizer,
-      css`
-        cursor: col-resize;
-        width: ${paneSpacing};
+  const handleDragStarted = useCallback(() => {
+    document.body.style.cursor = splitOrientation === 'horizontal' ? 'row-resize' : 'col-resize';
+  }, [splitOrientation]);
 
-        &::before {
-          border-right: 1px solid transparent;
-          height: 100%;
-          left: 50%;
-          transform: translateX(-50%);
-        }
+  let childrenArr = [];
+  if (Array.isArray(children)) {
+    childrenArr = children;
+  } else {
+    childrenArr.push(children);
+  }
 
-        &::after {
-          height: 200px;
-          width: 4px;
-        }
-      `
-    ),
-    resizerH: cx(
-      resizer,
-      css`
-        height: ${paneSpacing};
-        cursor: row-resize;
-        margin-left: ${paneSpacing};
+  // Need to handle when width is relative. ie a percentage of the viewport
+  const paneSizePx =
+    paneSize <= 1 ? paneSize * (splitOrientation === 'horizontal' ? dimensions.height : dimensions.width) : paneSize;
 
-        &::before {
-          border-top: 1px solid transparent;
-          top: 50%;
-          transform: translateY(-50%);
-          width: 100%;
-        }
+  // the react split pane library always wants 2 children. This logic ensures that happens, even if one child is passed in
+  const childrenFragments = [
+    <React.Fragment key="leftPane">{childrenArr[0]}</React.Fragment>,
+    <React.Fragment key="rightPane">{childrenArr[1] || undefined}</React.Fragment>,
+  ];
 
-        &::after {
-          height: 4px;
-          width: 200px;
-        }
-      `
-    ),
-  };
+  return (
+    <SplitPane
+      split={splitOrientation}
+      minSize={minSize}
+      maxSize={maxSize}
+      size={splitVisible ? paneSizePx : 0}
+      primary={splitVisible ? primary : 'second'}
+      resizerClassName={cx(
+        styles.resizer,
+        splitOrientation === 'horizontal' ? dragStyles.dragHandleHorizontal : dragStyles.dragHandleVertical
+      )}
+      onDragStarted={() => handleDragStarted()}
+      onDragFinished={(size) => handleDragFinished(size)}
+      style={parentStyle}
+      paneStyle={paneStyle}
+      pane2Style={secondaryPaneStyle}
+    >
+      {childrenFragments}
+    </SplitPane>
+  );
 });
+
+const getStyles = (theme: GrafanaTheme2, hasSplit: boolean) => {
+  return {
+    resizer: css({
+      display: hasSplit ? 'block' : 'none',
+    }),
+  };
+};

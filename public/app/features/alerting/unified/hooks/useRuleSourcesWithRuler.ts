@@ -1,22 +1,66 @@
-import { DataSourceInstanceSettings } from '@grafana/data';
-import { useEffect, useMemo } from 'react';
-import { useDispatch } from 'react-redux';
-import { checkIfLotexSupportsEditingRulesAction } from '../state/actions';
+import { useEffect, useState } from 'react';
+
+import { type DataSourceInstanceSettings } from '@grafana/data';
+
+import { logWarning } from '../Analytics';
+import { featureDiscoveryApi } from '../api/featureDiscoveryApi';
 import { getRulesDataSources } from '../utils/datasource';
-import { useUnifiedAlertingSelector } from './useUnifiedAlertingSelector';
 
-export function useRulesSourcesWithRuler(): DataSourceInstanceSettings[] {
-  const checkEditingRequests = useUnifiedAlertingSelector((state) => state.lotexSupportsRuleEditing);
-  const dispatch = useDispatch();
+const { useLazyDiscoverDsFeaturesQuery } = featureDiscoveryApi;
 
-  // try fetching rules for each prometheus to see if it has ruler
+const CONCURRENCY_LIMIT = 10;
+
+export function useRulesSourcesWithRuler(): {
+  rulesSourcesWithRuler: DataSourceInstanceSettings[];
+  isLoading: boolean;
+} {
+  const [rulesSourcesWithRuler, setRulesSourcesWithRuler] = useState<DataSourceInstanceSettings[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [discoverDsFeatures] = useLazyDiscoverDsFeaturesQuery();
+
   useEffect(() => {
-    getRulesDataSources()
-      .filter((ds) => checkEditingRequests[ds.name] === undefined)
-      .forEach((ds) => dispatch(checkIfLotexSupportsEditingRulesAction(ds.name)));
-  }, [dispatch, checkEditingRequests]);
+    const dataSources = getRulesDataSources();
+    if (dataSources.length === 0) {
+      return;
+    }
 
-  return useMemo(() => getRulesDataSources().filter((ds) => checkEditingRequests[ds.name]?.result), [
-    checkEditingRequests,
-  ]);
+    // per-effect-run flag that prevents stale state updates after the component unmounts
+    // or the effect re-runs with new dependencies
+    let cancelled = false;
+    setIsLoading(true);
+
+    async function discoverDsFeaturesInBatches() {
+      for (let i = 0; i < dataSources.length; i += CONCURRENCY_LIMIT) {
+        if (cancelled) {
+          return;
+        }
+
+        const batch = dataSources.slice(i, i + CONCURRENCY_LIMIT);
+        await Promise.all(
+          batch.map(async (ds) => {
+            try {
+              const { data: dsFeatures } = await discoverDsFeatures({ uid: ds.uid }, true);
+              if (!cancelled && dsFeatures?.rulerConfig) {
+                setRulesSourcesWithRuler((prev) => [...prev, ds]);
+              }
+            } catch (err) {
+              logWarning('Failed to discover datasource features', { error: String(err) });
+            }
+          })
+        );
+      }
+
+      if (!cancelled) {
+        setIsLoading(false);
+      }
+    }
+
+    discoverDsFeaturesInBatches();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [discoverDsFeatures]);
+
+  return { rulesSourcesWithRuler, isLoading };
 }

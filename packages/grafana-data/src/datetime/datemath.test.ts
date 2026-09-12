@@ -1,15 +1,13 @@
-import sinon, { SinonFakeTimers } from 'sinon';
 import { each } from 'lodash';
 
 import * as dateMath from './datemath';
-import { dateTime, DurationUnit, DateTime } from './moment_wrapper';
+import { dateTime, type DurationUnit, type DateTime } from './moment_wrapper';
 
 describe('DateMath', () => {
   const spans: DurationUnit[] = ['s', 'm', 'h', 'd', 'w', 'M', 'y'];
   const anchor = '2014-01-01T06:06:06.666Z';
   const unix = dateTime(anchor).valueOf();
   const format = 'YYYY-MM-DDTHH:mm:ss.SSSZ';
-  let clock: SinonFakeTimers;
 
   describe('errors', () => {
     it('should return undefined if passed empty string', () => {
@@ -54,12 +52,59 @@ describe('DateMath', () => {
     expect(startOfDay).toBe(expected.getTime());
   });
 
+  describe('with fiscal quarters', () => {
+    beforeEach(() => {
+      const fixedTime = dateTime('2023-07-05T06:06:06.666Z').valueOf();
+      jest.useFakeTimers({ now: fixedTime });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('should parse current fiscal quarter correctly', () => {
+      const today = new Date();
+      const expected = new Date(Date.UTC(today.getUTCFullYear(), 6, 1, 0, 0, 0, 0));
+
+      const startOfDay = dateMath.parse('now/fQ', false, 'utc', 0)!.valueOf();
+      expect(startOfDay).toBe(expected.getTime());
+    });
+
+    it('should parse previous fiscal quarter correctly', () => {
+      const today = new Date();
+      const expected = new Date(Date.UTC(today.getUTCFullYear(), 3, 1, 0, 0, 0, 0));
+
+      const startOfDay = dateMath.parse('now-1Q/fQ', false, 'utc', 0)!.valueOf();
+      expect(startOfDay).toBe(expected.getTime());
+    });
+
+    describe('with a custom fiscal year start month', () => {
+      const FISCAL_YEAR_START_MONTH = 7; // August
+
+      it('should parse current fiscal quarter correctly', () => {
+        const today = new Date();
+        const expected = new Date(Date.UTC(today.getUTCFullYear(), 4, 1, 0, 0, 0, 0));
+
+        const startOfDay = dateMath.parse('now/fQ', false, 'utc', FISCAL_YEAR_START_MONTH)!.valueOf();
+        expect(startOfDay).toBe(expected.getTime());
+      });
+
+      it('should parse previous fiscal quarter correctly', () => {
+        const today = new Date();
+        const expected = new Date(Date.UTC(today.getUTCFullYear(), 1, 1, 0, 0, 0, 0));
+
+        const startOfDay = dateMath.parse('now-1Q/fQ', false, 'utc', FISCAL_YEAR_START_MONTH)!.valueOf();
+        expect(startOfDay).toBe(expected.getTime());
+      });
+    });
+  });
+
   describe('subtraction', () => {
     let now: DateTime;
     let anchored: DateTime;
 
     beforeEach(() => {
-      clock = sinon.useFakeTimers(unix);
+      jest.useFakeTimers({ now: unix });
       now = dateTime();
       anchored = dateTime(anchor);
     });
@@ -78,7 +123,7 @@ describe('DateMath', () => {
     });
 
     afterEach(() => {
-      clock.restore();
+      jest.useRealTimers();
     });
   });
 
@@ -86,7 +131,7 @@ describe('DateMath', () => {
     let now: DateTime;
 
     beforeEach(() => {
-      clock = sinon.useFakeTimers(unix);
+      jest.useFakeTimers({ now: unix });
       now = dateTime();
     });
 
@@ -101,7 +146,7 @@ describe('DateMath', () => {
     });
 
     afterEach(() => {
-      clock.restore();
+      jest.useRealTimers();
     });
   });
 
@@ -120,9 +165,19 @@ describe('DateMath', () => {
       expect(date!.valueOf()).toEqual(dateTime([2014, 1, 3]).valueOf());
     });
 
-    it('should handle multiple math expressions', () => {
-      const date = dateMath.parseDateMath('-2d-6h', dateTime([2014, 1, 5]));
-      expect(date!.valueOf()).toEqual(dateTime([2014, 1, 2, 18]).valueOf());
+    it.each([
+      ['-2d-6h', [2014, 1, 5], [2014, 1, 2, 18]],
+      ['-30m-2d', [2014, 1, 5], [2014, 1, 2, 23, 30]],
+      ['-2d-1d', [2014, 1, 5], [2014, 1, 2]],
+      ['-1h-30m', [2014, 1, 5, 12, 0], [2014, 1, 5, 10, 30]],
+      ['-1d-1h-30m', [2014, 1, 5, 12, 0], [2014, 1, 4, 10, 30]],
+      ['-0d+8h+30m+30s', [2014, 1, 5, 12, 0], [2014, 1, 5, 20, 30, 30]],
+      ['+1d-6h', [2014, 1, 5], [2014, 1, 5, 18]],
+      ['-1w-1d', [2014, 1, 14], [2014, 1, 6]],
+      ['-1w/w', [2014, 1, 21], [2014, 1, 9]],
+    ])('should handle multiple math expressions: %s', (expression, inputDate, expectedDate) => {
+      const date = dateMath.parseDateMath(expression, dateTime(inputDate));
+      expect(date!.valueOf()).toEqual(dateTime(expectedDate).valueOf());
     });
 
     it('should return false when invalid expression', () => {
@@ -130,9 +185,48 @@ describe('DateMath', () => {
       expect(date).toEqual(undefined);
     });
 
+    it('should return false when numeric token is too large', () => {
+      const date = dateMath.parseDateMath('-12345678901h', dateTime([2014, 1, 5]));
+      expect(date).toEqual(undefined);
+    });
+
+    it('should return false when a complex expression has an oversized token', () => {
+      const date = dateMath.parseDateMath('-1d+12345678901h', dateTime([2014, 1, 5]));
+      expect(date).toEqual(undefined);
+    });
+
     it('should strip whitespace from string', () => {
       const date = dateMath.parseDateMath(' - 2d', dateTime([2014, 1, 5]));
       expect(date!.valueOf()).toEqual(dateTime([2014, 1, 3]).valueOf());
+    });
+
+    it('should not mutate dateTime passed in', () => {
+      const dateInput = dateTime([2014, 1, 5]);
+      dateMath.parseDateMath(' - 2d', dateInput);
+      expect(dateInput.valueOf()).toEqual(dateTime([2014, 1, 5]).valueOf());
+    });
+  });
+
+  describe('isMathString', () => {
+    it('should return true when valid date text', () => {
+      expect(dateMath.isMathString('now-1h')).toBe(true);
+    });
+
+    it('should return false when an absolute date is inserted', () => {
+      const date = new Date();
+      const result = dateMath.isMathString(date);
+      expect(result).toBe(false);
+    });
+
+    it('should return false when invalid date text', () => {
+      expect(dateMath.isMathString('2 + 2')).toBe(false);
+    });
+
+    it('should return false if no text is passed', () => {
+      expect(dateMath.isMathString('')).toBe(false);
+    });
+    it('should return false if nothing is passed ', () => {
+      expect(dateMath.isMathString(' ')).toBe(false);
     });
   });
 
@@ -175,8 +269,8 @@ describe('DateMath', () => {
 
     //fq1 = 2021-02-01 - 2021-04-30
     //fq2 = 2021-05-01 - 2021-07-31
-    //fq4 = 2021-08-01 - 2021-10-31
-    //fq5 = 2021-11-01 - 2022-01-31
+    //fq3 = 2021-08-01 - 2021-10-31
+    //fq4 = 2021-11-01 - 2022-01-31
 
     it('Should round to start of q2 when one month into q2', () => {
       let date = dateMath.roundToFiscal(1, dateTime([2021, 6, 1]), 'Q', false);
@@ -199,6 +293,16 @@ describe('DateMath', () => {
     it('Should round to end of q4 when datetime is in next year from fiscal year start', () => {
       let date = dateMath.roundToFiscal(1, dateTime([2022, 0, 1]), 'Q', true);
       let expected = dateTime([2022, 0, 31]).endOf('M');
+      expect(date!.valueOf()).toEqual(expected.valueOf());
+    });
+
+    it('should handle fyStartMonths set later in the year correctly', () => {
+      // Use fyStartMonth to 10 (November)
+      // Fiscal quarters are then Nov-Jan, Feb-Apr, May-Jul, Aug-Oct
+      // Use 1st Jan as the date to round
+      let date = dateMath.roundToFiscal(10, dateTime([2022, 0, 1]), 'Q', false);
+      // This should round back to 1st Nov 2021
+      let expected = dateTime([2021, 10, 1]);
       expect(date!.valueOf()).toEqual(expected.valueOf());
     });
   });

@@ -1,10 +1,11 @@
-/* eslint-disable id-blacklist, no-restricted-imports, @typescript-eslint/ban-types */
-import moment, { MomentInput } from 'moment-timezone';
-import { DateTimeInput, DateTime, isDateTime } from './moment_wrapper';
-import { DateTimeOptions, getTimeZone } from './common';
-import { parse, isValid } from './datemath';
+/* eslint-disable id-blacklist, no-restricted-imports */
 import { lowerCase } from 'lodash';
+
+import { type DateTimeOptions, getTimeZone } from './common';
+import { parse, isValid } from './datemath';
 import { systemDateFormats } from './formats';
+import moment from './moment_implementation';
+import { type DateTimeInput, type DateTime, isDateTime, dateTime, toUtc, dateTimeForTimeZone } from './moment_wrapper';
 
 /**
  * The type that describes options that can be passed when parsing a date and time value.
@@ -54,42 +55,64 @@ export const dateTimeParse: DateTimeParser<DateTimeOptionsWhenParsing> = (value,
 const parseString = (value: string, options?: DateTimeOptionsWhenParsing): DateTime => {
   if (value.indexOf('now') !== -1) {
     if (!isValid(value)) {
-      return moment() as DateTime;
+      return dateTime();
     }
 
     const parsed = parse(value, options?.roundUp, options?.timeZone, options?.fiscalYearStartMonth);
-    return parsed || (moment() as DateTime);
+    return parsed || dateTime();
   }
 
-  const timeZone = getTimeZone(options);
-  const zone = moment.tz.zone(timeZone);
-  const format = options?.format ?? systemDateFormats.fullDate;
+  let timeZone = getTimeZone(options);
+  let format = options?.format ?? systemDateFormats.fullDate;
+  if (value.endsWith('Z')) {
+    // This is a special case when we have an ISO date string
+    // In this case we want to force the format to be ISO and the timeZone to be UTC
+    // This logic is needed for initial load when parsing the URL params
+    format = 'YYYY-MM-DDTHH:mm:ss.SSSZ';
+    timeZone = 'utc';
+  }
 
-  if (zone && zone.name) {
-    return moment.tz(value, format, zone.name) as DateTime;
+  const parsed = parseWithFormat(value, format, timeZone);
+
+  // An all-digit string that the format could not parse is an epoch millisecond value, e.g.
+  // "1704067200000" from a URL param like ?from=1704067200000 checked against the default
+  // "YYYY-MM-DD HH:mm:ss". Without this fallback moment returns an invalid DateTime whose
+  // valueOf() is NaN, which reaches $__from/$__to and emits a literal "NaN" in SQL (#119445).
+  // Formats that legitimately parse digits (X, x, YYYYMMDD) parse above and are left alone.
+  if (!parsed.isValid() && /^\d+$/.test(value)) {
+    return parseOthers(parseInt(value, 10), options);
+  }
+
+  return parsed;
+};
+
+const parseWithFormat = (value: string, format: string, timeZone: string): DateTime => {
+  const zone = moment.tz.zone(timeZone);
+  if (zone) {
+    return dateTimeForTimeZone(zone.name, value, format);
   }
 
   switch (lowerCase(timeZone)) {
     case 'utc':
-      return moment.utc(value, format) as DateTime;
+      return toUtc(value, format);
     default:
-      return moment(value, format) as DateTime;
+      return dateTime(value, format);
   }
 };
 
 const parseOthers = (value: DateTimeInput, options?: DateTimeOptionsWhenParsing): DateTime => {
-  const date = value as MomentInput;
+  const date = value;
   const timeZone = getTimeZone(options);
   const zone = moment.tz.zone(timeZone);
 
-  if (zone && zone.name) {
-    return moment.tz(date, zone.name) as DateTime;
+  if (zone) {
+    return dateTimeForTimeZone(zone.name, date);
   }
 
   switch (lowerCase(timeZone)) {
     case 'utc':
-      return moment.utc(date) as DateTime;
+      return toUtc(date);
     default:
-      return moment(date) as DateTime;
+      return dateTime(date);
   }
 };

@@ -1,10 +1,11 @@
-import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
-import { Organization, OrganizationState, UserOrg } from 'app/types';
+import { type OrganizationState, type Organization } from 'app/types/organization';
+import { type UserOrg } from 'app/types/user';
 
 export const initialState: OrganizationState = {
   organization: {} as Organization,
-  userOrgs: [] as UserOrg[],
+  userOrgs: [],
 };
 
 const organizationSlice = createSlice({

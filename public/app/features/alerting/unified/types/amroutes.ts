@@ -1,22 +1,18 @@
-import { MatcherFieldValue } from './silence-form';
+import { type MatcherFieldValue } from './silence-form';
 
 export interface FormAmRoute {
   id: string;
+  name?: string;
   object_matchers: MatcherFieldValue[];
   continue: boolean;
   receiver: string;
-  groupBy: string[];
+  overrideGrouping: boolean;
+  groupBy?: string[];
+  overrideTimings: boolean;
   groupWaitValue: string;
-  groupWaitValueType: string;
   groupIntervalValue: string;
-  groupIntervalValueType: string;
   repeatIntervalValue: string;
-  repeatIntervalValueType: string;
   muteTimeIntervals: string[];
+  activeTimeIntervals: string[];
   routes: FormAmRoute[];
-}
-
-export interface AmRouteReceiver {
-  label: string;
-  value: string;
 }

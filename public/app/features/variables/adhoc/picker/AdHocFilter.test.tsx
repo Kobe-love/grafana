@@ -1,10 +1,18 @@
-import React from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import selectEvent from 'react-select-event';
+
+import { type AdHocVariableFilter, type DataSourceApi } from '@grafana/data';
+import { getDataSourceInstance } from '@grafana/runtime/unstable';
+
 import { AdHocFilter } from './AdHocFilter';
-import { AdHocVariableFilter } from '../../types';
-import { setDataSourceSrv } from '../../../../../../packages/grafana-runtime';
+
+jest.mock('@grafana/runtime/unstable', () => ({
+  ...jest.requireActual('@grafana/runtime/unstable'),
+  getDataSourceInstance: jest.fn(),
+}));
+
+const mockGetDataSourceInstance = getDataSourceInstance as jest.MockedFunction<typeof getDataSourceInstance>;
 
 describe('AdHocFilter', () => {
   it('renders filters', async () => {
@@ -20,13 +28,13 @@ describe('AdHocFilter', () => {
     const { addFilter } = setup();
 
     // Select key
-    userEvent.click(screen.getByLabelText('Add Filter'));
+    await userEvent.click(screen.getByLabelText('Add Filter'));
     const selectEl = screen.getByTestId('AdHocFilterKey-add-key-wrapper');
     expect(selectEl).toBeInTheDocument();
     await selectEvent.select(selectEl, 'key3', { container: document.body });
 
     // Select value
-    userEvent.click(screen.getByText('select value'));
+    await userEvent.click(screen.getByText('Select value'));
     // There are already some filters rendered
     const selectEl2 = screen.getAllByTestId('AdHocFilterValue-value-wrapper')[2];
     await selectEvent.select(selectEl2, 'val3', { container: document.body });
@@ -39,7 +47,7 @@ describe('AdHocFilter', () => {
     const { removeFilter } = setup();
 
     // Select key
-    userEvent.click(screen.getByText('key1'));
+    await userEvent.click(screen.getByText('key1'));
     const selectEl = screen.getAllByTestId('AdHocFilterKey-key-wrapper')[0];
     expect(selectEl).toBeInTheDocument();
     await selectEvent.select(selectEl, '-- remove filter --', { container: document.body });
@@ -52,7 +60,7 @@ describe('AdHocFilter', () => {
     const { changeFilter } = setup();
 
     // Select key
-    userEvent.click(screen.getByText('val1'));
+    await userEvent.click(screen.getByText('val1'));
     const selectEl = screen.getAllByTestId('AdHocFilterValue-value-wrapper')[0];
     expect(selectEl).toBeInTheDocument();
     await selectEvent.select(selectEl, 'val4', { container: document.body });
@@ -63,31 +71,25 @@ describe('AdHocFilter', () => {
 });
 
 function setup() {
-  setDataSourceSrv({
-    get() {
-      return {
-        getTagKeys() {
-          return [{ text: 'key3' }];
-        },
-        getTagValues() {
-          return [{ text: 'val3' }, { text: 'val4' }];
-        },
-      };
+  mockGetDataSourceInstance.mockResolvedValue({
+    getTagKeys() {
+      return [{ text: 'key3' }];
     },
-  } as any);
+    getTagValues() {
+      return [{ text: 'val3' }, { text: 'val4' }];
+    },
+  } as unknown as DataSourceApi);
 
   const filters: AdHocVariableFilter[] = [
     {
       key: 'key1',
       operator: '=',
       value: 'val1',
-      condition: '',
     },
     {
       key: 'key2',
       operator: '=',
       value: 'val2',
-      condition: '',
     },
   ];
   const addFilter = jest.fn();

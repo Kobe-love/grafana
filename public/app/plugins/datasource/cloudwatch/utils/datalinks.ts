@@ -1,7 +1,18 @@
-import { DataFrame, DataLink, DataQueryRequest, DataQueryResponse, ScopedVars, TimeRange } from '@grafana/data';
-import { CloudWatchLogsQuery, CloudWatchQuery } from '../types';
-import { AwsUrl, encodeUrl } from '../aws_url';
-import { getDataSourceSrv } from '@grafana/runtime';
+import {
+  type DataFrame,
+  type DataLink,
+  type DataQueryRequest,
+  type DataQueryResponse,
+  FieldType,
+  type ScopedVars,
+  type TimeRange,
+} from '@grafana/data';
+import { config } from '@grafana/runtime';
+import { getDataSourceInstanceSettings } from '@grafana/runtime/unstable';
+
+import { type AwsUrl, encodeUrl } from '../aws_url';
+import { type CloudWatchLogsQuery } from '../dataquery.gen';
+import { type CloudWatchQuery } from '../types';
 
 type ReplaceFn = (
   target?: string,
@@ -13,12 +24,13 @@ type ReplaceFn = (
 export async function addDataLinksToLogsResponse(
   response: DataQueryResponse,
   request: DataQueryRequest<CloudWatchQuery>,
-  range: TimeRange,
   replaceFn: ReplaceFn,
+  getVariableValueFn: (value: string, scopedVars: ScopedVars) => string[],
   getRegion: (region: string) => string,
   tracingDatasourceUid?: string
 ): Promise<void> {
-  const replace = (target: string, fieldName?: string) => replaceFn(target, request.scopedVars, true, fieldName);
+  const replace = (target: string, fieldName?: string) => replaceFn(target, request.scopedVars, false, fieldName);
+  const getVariableValue = (target: string) => getVariableValueFn(target, request.scopedVars);
 
   for (const dataFrame of response.data as DataFrame[]) {
     const curTarget = request.targets.find((target) => target.refId === dataFrame.refId) as CloudWatchLogsQuery;
@@ -31,21 +43,39 @@ export async function addDataLinksToLogsResponse(
         if (xrayLink) {
           field.config.links = [xrayLink];
         }
-      } else {
-        // Right now we add generic link to open the query in xray console to every field so it shows in the logs row
-        // details. Unfortunately this also creates link for all values inside table which look weird.
-        field.config.links = [createAwsConsoleLink(curTarget, range, interpolatedRegion, replace)];
       }
+    }
+
+    // add a link to the cloudwatch console as a separate field that will be displayed as a link
+    // @ts-ignore ignore feature toggle type error
+    if (config.featureToggles.cloudWatchLogsInsightsDataLinks && dataFrame.fields.length) {
+      dataFrame.fields.push({
+        name: '',
+        type: FieldType.string,
+        values: dataFrame.fields[0]?.values?.length
+          ? new Array(dataFrame.fields[0].values.length).fill('View this query in CloudWatch console')
+          : [],
+        config: {
+          links: [createAwsConsoleLink(curTarget, request.range, interpolatedRegion, replace, getVariableValue)],
+        },
+      });
     }
   }
 }
 
-async function createInternalXrayLink(datasourceUid: string, region: string) {
+async function createInternalXrayLink(datasourceUid: string, region: string): Promise<DataLink | undefined> {
   let ds;
   try {
-    ds = await getDataSourceSrv().get(datasourceUid);
+    ds = await getDataSourceInstanceSettings(datasourceUid);
   } catch (e) {
-    console.error('Could not load linked xray data source, it was probably deleted after it was linked', e);
+    console.error('Could not load linked X-Ray data source', e);
+    return undefined;
+  }
+
+  if (!ds) {
+    console.error(
+      `Could not find linked X-Ray data source with uid: ${datasourceUid}, it was probably deleted after it was linked`
+    );
     return undefined;
   }
 
@@ -57,17 +87,23 @@ async function createInternalXrayLink(datasourceUid: string, region: string) {
       datasourceUid: datasourceUid,
       datasourceName: ds.name,
     },
-  } as DataLink;
+  };
 }
 
 function createAwsConsoleLink(
   target: CloudWatchLogsQuery,
   range: TimeRange,
   region: string,
-  replace: (target: string, fieldName?: string) => string
+  replace: (target: string, fieldName?: string) => string,
+  getVariableValue: (value: string) => string[]
 ) {
+  const arns = (target.logGroups ?? [])
+    .filter((group) => group?.arn)
+    .map((group) => (group.arn ?? '').replace(/:\*$/, '')); // remove `:*` from end of arn
+  const logGroupNames = target.logGroupNames ?? [];
+  const sources = arns?.length ? arns : logGroupNames;
   const interpolatedExpression = target.expression ? replace(target.expression) : '';
-  const interpolatedGroups = target.logGroupNames?.map((logGroup: string) => replace(logGroup, 'log groups')) ?? [];
+  const interpolatedGroups = sources?.flatMap(getVariableValue);
 
   const urlProps: AwsUrl = {
     end: range.to.toISOString(),

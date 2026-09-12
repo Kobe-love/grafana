@@ -1,11 +1,13 @@
-import React, { PureComponent, ReactNode, ComponentType } from 'react';
-import { captureException } from '@sentry/browser';
+import { PureComponent, type ReactNode, type ComponentType, type ErrorInfo, memo } from 'react';
+
+import { faro } from '@grafana/faro-web-sdk';
+import { t } from '@grafana/i18n';
+
 import { Alert } from '../Alert/Alert';
+
 import { ErrorWithStack } from './ErrorWithStack';
 
-export interface ErrorInfo {
-  componentStack: string;
-}
+export type { ErrorInfo };
 
 export interface ErrorBoundaryApi {
   error: Error | null;
@@ -13,13 +15,18 @@ export interface ErrorBoundaryApi {
 }
 
 interface Props {
+  /** Name of the error boundary. Used when reporting errors in Faro. */
+  boundaryName?: string;
+
   children: (r: ErrorBoundaryApi) => ReactNode;
   /** Will re-render children after error if recover values changes */
-  dependencies?: any[];
+  dependencies?: unknown[];
   /** Callback called on error */
   onError?: (error: Error) => void;
   /** Callback error state is cleared due to recover props change */
   onRecover?: () => void;
+  /** Default error logger - Faro by default */
+  errorLogger?: (error: Error) => void;
 }
 
 interface State {
@@ -27,6 +34,11 @@ interface State {
   errorInfo: ErrorInfo | null;
 }
 
+/**
+ * A React component that catches errors in child components. Useful for logging or displaying a fallback UI in case of errors. More information about error boundaries is available at [React documentation website](https://reactjs.org/docs/error-boundaries.html).
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/utilities-errorboundary--docs
+ */
 export class ErrorBoundary extends PureComponent<Props, State> {
   readonly state: State = {
     error: null,
@@ -34,7 +46,17 @@ export class ErrorBoundary extends PureComponent<Props, State> {
   };
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    captureException(error, { contexts: { react: { componentStack: errorInfo.componentStack } } });
+    if (this.props.errorLogger) {
+      this.props.errorLogger(error);
+    } else {
+      faro?.api?.pushError(error, {
+        context: {
+          type: 'boundary',
+          source: this.props.boundaryName ?? 'unknown',
+        },
+      });
+    }
+
     this.setState({ error, errorInfo });
 
     if (this.props.onError) {
@@ -77,6 +99,9 @@ export class ErrorBoundary extends PureComponent<Props, State> {
  * @public
  */
 export interface ErrorBoundaryAlertProps {
+  /** Name of the error boundary. Used when reporting errors in Faro. */
+  boundaryName?: string;
+
   /** Title for the error boundary alert */
   title?: string;
 
@@ -87,20 +112,16 @@ export interface ErrorBoundaryAlertProps {
   style?: 'page' | 'alertbox';
 
   /** Will re-render children after error if recover values changes */
-  dependencies?: any[];
+  dependencies?: unknown[];
+  /** Default error logger - Faro by default */
+  errorLogger?: (error: Error) => void;
 }
 
-export class ErrorBoundaryAlert extends PureComponent<ErrorBoundaryAlertProps> {
-  static defaultProps: Partial<ErrorBoundaryAlertProps> = {
-    title: 'An unexpected error happened',
-    style: 'alertbox',
-  };
-
-  render() {
-    const { title, children, style, dependencies } = this.props;
-
+export const ErrorBoundaryAlert = memo(
+  ({ title, children, style = 'alertbox', dependencies, errorLogger, boundaryName }: ErrorBoundaryAlertProps) => {
+    const alertTitle = title ?? t('grafana-ui.error-boundary.title', 'An unexpected error happened');
     return (
-      <ErrorBoundary dependencies={dependencies}>
+      <ErrorBoundary dependencies={dependencies} errorLogger={errorLogger} boundaryName={boundaryName}>
         {({ error, errorInfo }) => {
           if (!errorInfo) {
             return children;
@@ -108,7 +129,7 @@ export class ErrorBoundaryAlert extends PureComponent<ErrorBoundaryAlertProps> {
 
           if (style === 'alertbox') {
             return (
-              <Alert title={title || ''}>
+              <Alert title={alertTitle}>
                 <details style={{ whiteSpace: 'pre-wrap' }}>
                   {error && error.toString()}
                   <br />
@@ -118,12 +139,14 @@ export class ErrorBoundaryAlert extends PureComponent<ErrorBoundaryAlertProps> {
             );
           }
 
-          return <ErrorWithStack title={title || ''} error={error} errorInfo={errorInfo} />;
+          return <ErrorWithStack title={alertTitle} error={error} errorInfo={errorInfo} />;
         }}
       </ErrorBoundary>
     );
   }
-}
+);
+
+ErrorBoundaryAlert.displayName = 'ErrorBoundaryAlert';
 
 /**
  * HOC for wrapping a component in an error boundary.
@@ -133,7 +156,7 @@ export class ErrorBoundaryAlert extends PureComponent<ErrorBoundaryAlertProps> {
  *
  * @public
  */
-export function withErrorBoundary<P = {}>(
+export function withErrorBoundary<P extends {} = {}>(
   Component: ComponentType<P>,
   errorBoundaryProps: Omit<ErrorBoundaryAlertProps, 'children'> = {}
 ): ComponentType<P> {

@@ -1,13 +1,13 @@
 // Libraries
-import Papa, { ParseConfig, Parser, ParseResult } from 'papaparse';
-import { defaults } from 'lodash';
+import { defaults, isObject } from 'lodash';
+import Papa, { type ParseConfig, type Parser, type ParseResult } from 'papaparse';
 
 // Types
-import { DataFrame, Field, FieldConfig, FieldType } from '../types';
-import { guessFieldTypeFromValue } from '../dataframe/processDataFrame';
 import { MutableDataFrame } from '../dataframe/MutableDataFrame';
-import { getFieldDisplayName } from '../field';
-import { formattedValueToString } from '../valueFormats';
+import { guessFieldTypeFromValue } from '../dataframe/guessFieldType';
+import { getFieldDisplayName } from '../field/fieldState';
+import { type DataFrame, type Field, type FieldConfig, FieldType } from '../types/dataFrame';
+import { formattedValueToString } from '../valueFormats/baseFormatters';
 
 export enum CSVHeaderStyle {
   full,
@@ -34,7 +34,7 @@ export interface CSVParseCallbacks {
   onHeader: (fields: Field[]) => void;
 
   // Called after each row is read
-  onRow: (row: any[]) => void;
+  onRow: (row: string[]) => void;
 }
 
 export interface CSVOptions {
@@ -73,9 +73,9 @@ export class CSVReader {
   }
 
   // PapaParse callback on each line
-  private chunk = (results: ParseResult<any>, parser: Parser): void => {
+  private chunk = (results: ParseResult<string[]>, parser: Parser): void => {
     for (let i = 0; i < results.data.length; i++) {
-      const line: string[] = results.data[i];
+      const line = results.data[i];
       if (line.length < 1) {
         continue;
       }
@@ -87,7 +87,7 @@ export class CSVReader {
           // #{columkey}#a,b,c
           const idx = first.indexOf('#', 2);
           if (idx > 0) {
-            const k = first.substr(1, idx - 1);
+            const k = first.slice(1, idx);
             const isName = 'name' === k;
 
             // Simple object used to check if headers match
@@ -103,7 +103,7 @@ export class CSVReader {
                 this.data.push(this.current);
               }
 
-              const v = first.substr(idx + 1);
+              const v = first.slice(idx + 1);
               if (isName) {
                 this.current.addFieldFor(undefined, v);
                 for (let j = 1; j < line.length; j++) {
@@ -115,7 +115,7 @@ export class CSVReader {
                   if (!fields[j].config) {
                     fields[j].config = {};
                   }
-                  const disp = fields[j].config as any; // any lets name lookup
+                  const disp: any = fields[j].config; // any lets name lookup
                   disp[k] = j === 0 ? v : line[j];
                 }
               }
@@ -191,15 +191,18 @@ export class CSVReader {
   }
 }
 
-type FieldWriter = (value: any) => string;
+type FieldWriter = (value: unknown) => string;
 
-function writeValue(value: any, config: CSVConfig): string {
+function writeValue(value: unknown, config: CSVConfig): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
   const str = value.toString();
   if (str.includes('"')) {
     // Escape the double quote characters
     return config.quoteChar + str.replace(/"/gi, '""') + config.quoteChar;
   }
-  if (str.includes('\n') || str.includes(config.delimiter)) {
+  if (str.includes('\n') || (config.delimiter && str.includes(config.delimiter))) {
     return config.quoteChar + str + config.quoteChar;
   }
   return str;
@@ -207,13 +210,13 @@ function writeValue(value: any, config: CSVConfig): string {
 
 function makeFieldWriter(field: Field, config: CSVConfig): FieldWriter {
   if (field.display) {
-    return (value: any) => {
+    return (value: unknown) => {
       const displayValue = field.display!(value);
       return writeValue(formattedValueToString(displayValue), config);
     };
   }
 
-  return (value: any) => writeValue(value, config);
+  return (value: unknown) => writeValue(value, config);
 }
 
 function getHeaderLine(key: string, fields: Field[], config: CSVConfig): string {
@@ -229,7 +232,7 @@ function getHeaderLine(key: string, fields: Field[], config: CSVConfig): string 
           line = line + config.delimiter;
         }
 
-        let v: any = fields[i].name;
+        let v = fields[i].name;
         if (isType) {
           v = fields[i].type;
         } else if (isName) {
@@ -260,6 +263,8 @@ export function toCSV(data: DataFrame[], config?: CSVConfig): string {
     return '';
   }
 
+  data = expandNestedFrames(data);
+
   config = defaults(config, {
     delimiter: getLocaleDelimiter(),
     newline: '\r\n',
@@ -270,7 +275,8 @@ export function toCSV(data: DataFrame[], config?: CSVConfig): string {
   });
   let csv = config.useExcelHeader ? `sep=${config.delimiter}${config.newline}` : '';
 
-  for (const series of data) {
+  for (let s = 0; s < data.length; s++) {
+    const series = data[s];
     const { fields } = series;
 
     // ignore frames with no fields
@@ -302,19 +308,119 @@ export function toCSV(data: DataFrame[], config?: CSVConfig): string {
       for (let i = 0; i < length; i++) {
         for (let j = 0; j < fields.length; j++) {
           if (j > 0) {
-            csv = csv + config.delimiter;
+            csv += config.delimiter;
           }
 
-          const v = fields[j].values.get(i);
+          let v = fields[j].values[i];
+
           if (v !== null) {
-            csv = csv + writers[j](v);
+            // For FieldType frame, use value if it exists to prevent exporting [object object]
+            if (fields[j].type === FieldType.frame && 'value' in v) {
+              v = v.value;
+            }
+
+            if (fields[j].type === FieldType.other && isObject(v)) {
+              v = JSON.stringify(v);
+            }
+
+            csv += writers[j](v);
           }
         }
-        csv = csv + config.newline;
+
+        if (i !== length - 1) {
+          csv += config.newline;
+        }
       }
     }
-    csv = csv + config.newline;
+
+    if (s !== data.length - 1) {
+      csv = csv + config.newline;
+    }
   }
 
   return csv;
+}
+
+function expandNestedFrames(data: DataFrame[]): DataFrame[] {
+  const expanded: DataFrame[] = [];
+
+  for (const series of data) {
+    const nestedField = series.fields.find((field) => field.type === FieldType.nestedFrames);
+    if (!nestedField) {
+      expanded.push(series);
+      continue;
+    }
+
+    const parentFields = series.fields.filter((field) => field !== nestedField);
+    const childFields = getFirstNestedFields(nestedField.values);
+    const flattenedFields = [...parentFields, ...childFields].map((field) => ({
+      ...field,
+      values: field.values.slice(0, 0),
+    }));
+
+    const parentFieldCount = parentFields.length;
+    const childFieldCount = childFields.length;
+
+    const pushRow = (parentValues: unknown[], childValues: unknown[]) => {
+      for (let i = 0; i < flattenedFields.length; i++) {
+        const value = i < parentFieldCount ? parentValues[i] : childValues[i - parentFieldCount];
+        flattenedFields[i].values.push(value);
+      }
+    };
+
+    for (let rowIndex = 0; rowIndex < series.length; rowIndex++) {
+      const parentValues = parentFields.map((field) => field.values[rowIndex]);
+      const nestedFrames = nestedField.values[rowIndex] ?? [];
+      let addedChildRow = false;
+
+      for (const childFrame of nestedFrames) {
+        if (!childFrame || childFrame.length === 0 || childFieldCount === 0) {
+          continue;
+        }
+
+        const fieldIndexByName = new Map(childFrame.fields.map((field: Field, index: number) => [field.name, index]));
+        for (let childRowIndex = 0; childRowIndex < childFrame.length; childRowIndex++) {
+          const childValues = childFields.map((field) => {
+            const fieldIndex = fieldIndexByName.get(field.name);
+            if (fieldIndex === undefined || typeof fieldIndex !== 'number') {
+              return null;
+            }
+            const fieldValue = childFrame.fields[fieldIndex].values[childRowIndex];
+            if (fieldValue === undefined || fieldValue === null) {
+              return null;
+            }
+            return fieldValue;
+          });
+
+          pushRow(parentValues, childValues);
+          addedChildRow = true;
+        }
+      }
+
+      if (!addedChildRow) {
+        pushRow(parentValues, new Array(childFieldCount).fill(null));
+      }
+    }
+
+    const length = flattenedFields[0]?.values.length ?? 0;
+    expanded.push({
+      ...series,
+      fields: flattenedFields,
+      length,
+    });
+  }
+
+  return expanded;
+}
+
+function getFirstNestedFields(values: Array<DataFrame[] | undefined>): Field[] {
+  for (const nestedFrames of values) {
+    for (const nestedFrame of nestedFrames ?? []) {
+      if (nestedFrame.fields.length > 0) {
+        return nestedFrame.fields;
+      }
+    }
+  }
+
+  return [];
 }

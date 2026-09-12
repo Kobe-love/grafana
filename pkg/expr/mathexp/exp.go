@@ -5,9 +5,12 @@ import (
 	"math"
 	"reflect"
 	"runtime"
+	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+
 	"github.com/grafana/grafana/pkg/expr/mathexp/parse"
+	"github.com/grafana/grafana/pkg/infra/tracing"
 )
 
 // Expr holds a parsed math command expression.
@@ -23,7 +26,16 @@ type State struct {
 	// Could hold more properties that change behavior around:
 	//  - Unions (How many result A and many Result B in case A + B are joined)
 	//  - NaN/Null behavior
-	RefID string
+	RefID     string
+	Drops     map[string]map[string][]data.Labels // binary node text -> LH/RH -> Drop Labels
+	DropCount int64
+
+	// MemoryLimit is the maximum estimated output size (in bytes) for a single
+	// binary operation. If the estimated allocation exceeds this, walkBinary
+	// returns an error instead of proceeding. A value of 0 disables the limit.
+	MemoryLimit int64
+
+	tracer tracing.Tracer
 }
 
 // Vars holds the results of datasource queries or other expression commands.
@@ -42,19 +54,38 @@ func New(expr string, funcs ...map[string]parse.Func) (*Expr, error) {
 	return e, nil
 }
 
+// ExecuteOption is a functional option for configuring expression execution.
+type ExecuteOption func(*State)
+
+// WithMemoryLimit sets the maximum estimated memory (in bytes) that a single
+// binary operation may allocate for its output. When the estimate exceeds
+// this limit, evaluation returns a descriptive error. A value of 0 disables
+// the limit.
+func WithMemoryLimit(limit int64) ExecuteOption {
+	return func(s *State) {
+		s.MemoryLimit = limit
+	}
+}
+
 // Execute applies a parse expression to the context and executes it
-func (e *Expr) Execute(refID string, vars Vars) (r Results, err error) {
+func (e *Expr) Execute(refID string, vars Vars, tracer tracing.Tracer, opts ...ExecuteOption) (r Results, err error) {
 	s := &State{
 		Expr:  e,
 		Vars:  vars,
 		RefID: refID,
+
+		tracer: tracer,
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	return e.executeState(s)
 }
 
 func (e *Expr) executeState(s *State) (r Results, err error) {
 	defer errRecover(&err, s)
-	r, err = s.walk(e.Tree.Root)
+	r, err = s.walk(e.Root)
+	s.addDropNotices(&r)
 	return
 }
 
@@ -117,6 +148,8 @@ func (e *State) walkUnary(node *parse.UnaryNode) (Results, error) {
 			newVal, err = e.unaryNumber(rt, node.OpStr)
 		case Series:
 			newVal, err = e.unarySeries(rt, node.OpStr)
+		case NoData:
+			newVal = NoData{}.New()
 		default:
 			return newResults, fmt.Errorf("can not perform a unary operation on type %v", rt.Type())
 		}
@@ -130,21 +163,17 @@ func (e *State) walkUnary(node *parse.UnaryNode) (Results, error) {
 
 func (e *State) unarySeries(s Series, op string) (Series, error) {
 	newSeries := NewSeries(e.RefID, s.GetLabels(), s.Len())
-	for i := 0; i < s.Len(); i++ {
+	for i := range s.Len() {
 		t, f := s.GetPoint(i)
 		if f == nil {
-			if err := newSeries.SetPoint(i, t, nil); err != nil {
-				return newSeries, err
-			}
+			newSeries.SetPoint(i, t, nil)
 			continue
 		}
 		newF, err := unaryOp(op, *f)
 		if err != nil {
 			return newSeries, err
 		}
-		if err := newSeries.SetPoint(i, t, &newF); err != nil {
-			return newSeries, err
-		}
+		newSeries.SetPoint(i, t, &newF)
 	}
 	return newSeries, nil
 }
@@ -194,13 +223,64 @@ type Union struct {
 // within a collection of Series or Numbers. The Unions are used with binary
 // operations. The labels of the Union will the taken from result with a greater
 // number of tags.
-func union(aResults, bResults Results) []*Union {
+func (e *State) union(aResults, bResults Results, biNode *parse.BinaryNode) []*Union {
 	unions := []*Union{}
-	if len(aResults.Values) == 0 || len(bResults.Values) == 0 {
+	appendUnions := func(u *Union) {
+		unions = append(unions, u)
+	}
+
+	aVar := biNode.Args[0].String()
+	bVar := biNode.Args[1].String()
+
+	aMatched := make([]bool, len(aResults.Values))
+	bMatched := make([]bool, len(bResults.Values))
+	collectDrops := func() {
+		check := func(v string, matchArray []bool, r *Results) {
+			for i, b := range matchArray {
+				if b {
+					continue
+				}
+				if e.Drops == nil {
+					e.Drops = make(map[string]map[string][]data.Labels)
+				}
+				if e.Drops[biNode.String()] == nil {
+					e.Drops[biNode.String()] = make(map[string][]data.Labels)
+				}
+
+				if r.Values[i].Type() == parse.TypeNoData {
+					continue
+				}
+
+				e.DropCount++
+				e.Drops[biNode.String()][v] = append(e.Drops[biNode.String()][v], r.Values[i].GetLabels())
+			}
+		}
+		check(aVar, aMatched, &aResults)
+		check(bVar, bMatched, &bResults)
+	}
+
+	aValueLen := len(aResults.Values)
+	bValueLen := len(bResults.Values)
+	if aValueLen == 0 || bValueLen == 0 {
 		return unions
 	}
-	for _, a := range aResults.Values {
-		for _, b := range bResults.Values {
+
+	if aValueLen == 1 || bValueLen == 1 {
+		aNoData := aResults.Values[0].Type() == parse.TypeNoData
+		bNoData := bResults.Values[0].Type() == parse.TypeNoData
+		if aNoData || bNoData {
+			appendUnions(&Union{
+				Labels: nil,
+				A:      aResults.Values[0],
+				B:      bResults.Values[0],
+			})
+			collectDrops()
+			return unions
+		}
+	}
+
+	for iA, a := range aResults.Values {
+		for iB, b := range bResults.Values {
 			var labels data.Labels
 			aLabels := a.GetLabels()
 			bLabels := b.GetLabels()
@@ -225,25 +305,190 @@ func union(aResults, bResults Results) []*Union {
 				A:      a,
 				B:      b,
 			}
-			unions = append(unions, u)
+			appendUnions(u)
+			aMatched[iA] = true
+			bMatched[iB] = true
 		}
 	}
+
 	if len(unions) == 0 && len(aResults.Values) == 1 && len(bResults.Values) == 1 {
 		// In the case of only 1 thing on each side of the operator, we combine them
 		// and strip the tags.
 		// This isn't ideal for understanding behavior, but will make more stuff work when
 		// combining different datasources without munging.
 		// This choice is highly questionable in the long term.
-		unions = append(unions, &Union{
+		appendUnions(&Union{
 			A: aResults.Values[0],
 			B: bResults.Values[0],
 		})
 	}
+
+	collectDrops()
 	return unions
 }
 
+const (
+	// bytesPerDatapoint is the estimated heap cost per datapoint in the output
+	// series: 24 bytes for time.Time (wall, ext, loc) + 16 bytes for *float64
+	// (pointer + value).
+	bytesPerDatapoint = 40
+
+	// bytesPerBPoint is the estimated heap cost per entry in the bPoints map
+	// used by biSeriesSeries: ~30 bytes for the time string key + 8 bytes for
+	// *float64 + ~50 bytes for map bucket overhead.
+	bytesPerBPoint = 88
+
+	// frameOverhead is the estimated fixed cost per output Value for the
+	// data.Frame, data.Field structs, and metadata.
+	frameOverhead = 500
+)
+
+// labelBytes returns the total byte size of all keys and values in a label set.
+func labelBytes(labels data.Labels) int {
+	n := 0
+	for k, v := range labels {
+		n += len(k) + len(v)
+	}
+	return n
+}
+
+// binaryMemoryEstimate holds the result of estimateBinaryMemory.
+type binaryMemoryEstimate struct {
+	unions int   // actual number of unions label matching would produce
+	bytes  int64 // estimated total output allocation in bytes
+	aCount int   // number of Values on the A side
+	bCount int   // number of Values on the B side
+}
+
+// seriesLen returns the datapoint count for a Value if it is a Series, or 0.
+func seriesLen(v Value) int {
+	if s, ok := v.(Series); ok {
+		return s.Len()
+	}
+	return 0
+}
+
+// estimateBinaryMemory replays the label matching logic from union() to count
+// the exact number of unions and accumulate a per-pair memory estimate, without
+// allocating Union structs or output frames.
+//
+// For each matching pair, the estimate accounts for the actual types and sizes
+// of both values (Series length, label bytes). The only remaining
+// over-estimation is using max(aLen, bLen) for the output series length instead
+// of the timestamp intersection, which is not knowable without scanning
+// datapoints.
+func estimateBinaryMemory(aResults, bResults Results) binaryMemoryEstimate {
+	est := binaryMemoryEstimate{
+		aCount: len(aResults.Values),
+		bCount: len(bResults.Values),
+	}
+	if est.aCount == 0 || est.bCount == 0 {
+		return est
+	}
+
+	addPair := func(a, b Value) {
+		est.unions++
+
+		aDP := seriesLen(a)
+		bDP := seriesLen(b)
+		outputDP := max(aDP, bDP)
+
+		aLB := labelBytes(a.GetLabels())
+		bLB := labelBytes(b.GetLabels())
+		outputLB := max(aLB, bLB)
+
+		pairCost := int64(outputDP)*bytesPerDatapoint +
+			int64(outputLB) +
+			frameOverhead
+		// biSeriesSeries builds a bPoints map from one side.
+		if aDP > 0 && bDP > 0 {
+			pairCost += int64(outputDP) * bytesPerBPoint
+		}
+
+		est.bytes += pairCost
+	}
+
+	if est.aCount == 1 || est.bCount == 1 {
+		aNoData := aResults.Values[0].Type() == parse.TypeNoData
+		bNoData := bResults.Values[0].Type() == parse.TypeNoData
+		if aNoData || bNoData {
+			addPair(aResults.Values[0], bResults.Values[0])
+			return est
+		}
+	}
+
+	for _, a := range aResults.Values {
+		for _, b := range bResults.Values {
+			aLabels := a.GetLabels()
+			bLabels := b.GetLabels()
+			switch {
+			case aLabels.Equals(bLabels) || len(aLabels) == 0 || len(bLabels) == 0:
+				addPair(a, b)
+			case len(aLabels) == len(bLabels):
+				// skip: invalid union
+			case aLabels.Contains(bLabels):
+				addPair(a, b)
+			case bLabels.Contains(aLabels):
+				addPair(a, b)
+			}
+		}
+	}
+
+	// Mirror the fallback in union(): if nothing matched and both sides have
+	// exactly one value, they get combined anyway.
+	if est.unions == 0 && est.aCount == 1 && est.bCount == 1 {
+		addPair(aResults.Values[0], bResults.Values[0])
+	}
+
+	return est
+}
+
+// checkBinaryMemoryLimit estimates the output cost of a binary operation by
+// replaying the label matching logic and computing per-pair costs. Returns a
+// descriptive error if the estimate exceeds the configured memory limit.
+func (e *State) checkBinaryMemoryLimit(ar, br Results, node *parse.BinaryNode) error {
+	est := estimateBinaryMemory(ar, br)
+
+	if est.bytes <= e.MemoryLimit {
+		return nil
+	}
+
+	aVar := node.Args[0].String()
+	bVar := node.Args[1].String()
+
+	return fmt.Errorf(
+		"expression %q attempted to combine %d series from %s with %d series from %s, "+
+			"producing %d series pairs (estimated memory: %s, limit: %s). "+
+			"This usually means the label sets returned by your queries are no longer compatible. "+
+			"When labels match, this expression would produce ~%d pairs. "+
+			"Check that the queries for %s and %s return series with the same label names and values",
+		node.String(),
+		est.aCount, aVar,
+		est.bCount, bVar,
+		est.unions,
+		formatBytes(est.bytes),
+		formatBytes(e.MemoryLimit),
+		max(est.aCount, est.bCount),
+		aVar, bVar,
+	)
+}
+
+// formatBytes returns a human-readable byte size string.
+func formatBytes(b int64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(b)/float64(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(b)/float64(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(b)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
 func (e *State) walkBinary(node *parse.BinaryNode) (Results, error) {
-	res := Results{Values{}}
+	res := Results{Values: Values{}}
 	ar, err := e.walk(node.Args[0])
 	if err != nil {
 		return res, err
@@ -252,7 +497,14 @@ func (e *State) walkBinary(node *parse.BinaryNode) (Results, error) {
 	if err != nil {
 		return res, err
 	}
-	unions := union(ar, br)
+
+	if e.MemoryLimit > 0 {
+		if err := e.checkBinaryMemoryLimit(ar, br, node); err != nil {
+			return res, err
+		}
+	}
+
+	unions := e.union(ar, br, node)
 	for _, uni := range unions {
 		var value Value
 		switch at := uni.A.(type) {
@@ -280,6 +532,8 @@ func (e *State) walkBinary(node *parse.BinaryNode) (Results, error) {
 			// Scalar op Series
 			case Series:
 				value, err = e.biSeriesNumber(uni.Labels, node.OpStr, bt, aFloat, false)
+			case NoData:
+				value = uni.B
 			default:
 				return res, fmt.Errorf("not implemented: binary %v on %T and %T", node.OpStr, uni.A, uni.B)
 			}
@@ -296,6 +550,8 @@ func (e *State) walkBinary(node *parse.BinaryNode) (Results, error) {
 			// case Series op Series
 			case Series:
 				value, err = e.biSeriesSeries(uni.Labels, node.OpStr, at, bt)
+			case NoData:
+				value = uni.B
 			default:
 				return res, fmt.Errorf("not implemented: binary %v on %T and %T", node.OpStr, uni.A, uni.B)
 			}
@@ -310,9 +566,13 @@ func (e *State) walkBinary(node *parse.BinaryNode) (Results, error) {
 				value, err = e.biScalarNumber(uni.Labels, node.OpStr, at, bFloat, true)
 			case Series:
 				value, err = e.biSeriesNumber(uni.Labels, node.OpStr, bt, aFloat, false)
+			case NoData:
+				value = uni.B
 			default:
 				return res, fmt.Errorf("not implemented: binary %v on %T and %T", node.OpStr, uni.A, uni.B)
 			}
+		case NoData:
+			value = uni.A
 		default:
 			return res, fmt.Errorf("not implemented: binary %v on %T and %T", node.OpStr, uni.A, uni.B)
 		}
@@ -433,13 +693,11 @@ func (e *State) biScalarNumber(labels data.Labels, op string, number Number, sca
 func (e *State) biSeriesNumber(labels data.Labels, op string, s Series, scalarVal *float64, seriesFirst bool) (Series, error) {
 	newSeries := NewSeries(e.RefID, labels, s.Len())
 	var err error
-	for i := 0; i < s.Len(); i++ {
+	for i := range s.Len() {
 		nF := math.NaN()
 		t, f := s.GetPoint(i)
 		if f == nil || scalarVal == nil {
-			if err := newSeries.SetPoint(i, t, nil); err != nil {
-				return newSeries, err
-			}
+			newSeries.SetPoint(i, t, nil)
 			continue
 		}
 		if seriesFirst {
@@ -450,9 +708,7 @@ func (e *State) biSeriesNumber(labels data.Labels, op string, s Series, scalarVa
 		if err != nil {
 			return newSeries, err
 		}
-		if err := newSeries.SetPoint(i, t, &nF); err != nil {
-			return newSeries, err
-		}
+		newSeries.SetPoint(i, t, &nF)
 	}
 	return newSeries, nil
 }
@@ -462,7 +718,7 @@ func (e *State) biSeriesNumber(labels data.Labels, op string, s Series, scalarVa
 // are equal. If there are datapoints in A or B that do not share a time, they will be dropped.
 func (e *State) biSeriesSeries(labels data.Labels, op string, aSeries, bSeries Series) (Series, error) {
 	bPoints := make(map[string]*float64)
-	for i := 0; i < bSeries.Len(); i++ {
+	for i := range bSeries.Len() {
 		t, f := bSeries.GetPoint(i)
 		bPoints[t.UTC().String()] = f
 	}
@@ -475,18 +731,14 @@ func (e *State) biSeriesSeries(labels data.Labels, op string, aSeries, bSeries S
 			continue
 		}
 		if aF == nil || bF == nil {
-			if err := newSeries.AppendPoint(aIdx, aTime, nil); err != nil {
-				return newSeries, err
-			}
+			newSeries.AppendPoint(aTime, nil)
 			continue
 		}
 		nF, err := binaryOp(op, *aF, *bF)
 		if err != nil {
 			return newSeries, err
 		}
-		if err := newSeries.AppendPoint(aIdx, aTime, &nF); err != nil {
-			return newSeries, err
-		}
+		newSeries.AppendPoint(aTime, &nF)
 	}
 	return newSeries, nil
 }
@@ -494,9 +746,10 @@ func (e *State) biSeriesSeries(labels data.Labels, op string, aSeries, bSeries S
 func (e *State) walkFunc(node *parse.FuncNode) (Results, error) {
 	var res Results
 	var err error
-	var in []reflect.Value
-	for _, a := range node.Args {
-		var v interface{}
+
+	in := make([]reflect.Value, len(node.Args))
+	for i, a := range node.Args {
+		var v any
 		switch t := a.(type) {
 		case *parse.StringNode:
 			v = t.Text
@@ -516,7 +769,8 @@ func (e *State) walkFunc(node *parse.FuncNode) (Results, error) {
 		if err != nil {
 			return res, err
 		}
-		in = append(in, reflect.ValueOf(v))
+
+		in[i] = reflect.ValueOf(v)
 	}
 
 	f := reflect.ValueOf(node.F.F)
@@ -531,4 +785,60 @@ func (e *State) walkFunc(node *parse.FuncNode) (Results, error) {
 		}
 	}
 	return res, nil
+}
+
+func (e *State) addDropNotices(r *Results) {
+	nT := strings.Builder{}
+
+	if e.DropCount > 0 && len(r.Values) > 0 {
+		itemsPerNodeLimit := 5 // Limit on dropped items shown per each node in the binary node
+
+		nT.WriteString(fmt.Sprintf("%v items dropped from union(s)", e.DropCount))
+		if len(e.Drops) > 0 {
+			nT.WriteString(": ")
+
+			biNodeDropCount := 0
+			for biNodeText, biNodeDrops := range e.Drops {
+				nT.WriteString(fmt.Sprintf(`["%s": `, biNodeText))
+
+				nodeCount := 0
+				for inputNode, droppedItems := range biNodeDrops {
+					nT.WriteString(fmt.Sprintf("(%s: ", inputNode))
+
+					itemCount := 0
+					for _, item := range droppedItems {
+						nT.WriteString(fmt.Sprintf("{%s}", item))
+
+						itemCount++
+						if itemCount == itemsPerNodeLimit {
+							nT.WriteString(fmt.Sprintf("...%v more...", len(droppedItems)-itemsPerNodeLimit))
+							break
+						}
+						if itemCount < len(droppedItems) {
+							nT.WriteString(" ")
+						}
+					}
+
+					nT.WriteString(")")
+
+					nodeCount++
+					if nodeCount < len(biNodeDrops) {
+						nT.WriteString(" ")
+					}
+				}
+
+				nT.WriteString("]")
+
+				biNodeDropCount++
+				if biNodeDropCount < len(biNodeDrops) {
+					nT.WriteString(" ")
+				}
+			}
+		}
+
+		r.Values[0].AddNotice(data.Notice{
+			Severity: data.NoticeSeverityWarning,
+			Text:     nT.String(),
+		})
+	}
 }

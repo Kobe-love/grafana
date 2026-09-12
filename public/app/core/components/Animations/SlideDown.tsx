@@ -1,4 +1,5 @@
-import React, { CSSProperties, FC } from 'react';
+import { type CSSProperties, type FC, useRef } from 'react';
+import * as React from 'react';
 import Transition from 'react-transition-group/Transition';
 
 interface Style {
@@ -11,7 +12,7 @@ interface Style {
 const defaultMaxHeight = '200px';
 const defaultDuration = 200;
 
-export const defaultStyle: Style = {
+const defaultStyle: Style = {
   transition: `max-height ${defaultDuration}ms ease-in-out`,
   overflow: 'hidden',
 };
@@ -24,6 +25,7 @@ export interface Props {
 }
 
 export const SlideDown: FC<Props> = ({ children, in: inProp, maxHeight = defaultMaxHeight, style = defaultStyle }) => {
+  const transitionRef = useRef(null);
   // There are 4 main states a Transition can be in:
   // ENTERING, ENTERED, EXITING, EXITED
   // https://reactcommunity.or[g/react-transition-group/
@@ -35,13 +37,14 @@ export const SlideDown: FC<Props> = ({ children, in: inProp, maxHeight = default
   };
 
   return (
-    <Transition in={inProp} timeout={defaultDuration}>
+    <Transition in={inProp} timeout={defaultDuration} nodeRef={transitionRef}>
       {(state) => (
         <div
           style={{
             ...style,
             ...transitionStyles[state],
           }}
+          ref={transitionRef}
         >
           {children}
         </div>

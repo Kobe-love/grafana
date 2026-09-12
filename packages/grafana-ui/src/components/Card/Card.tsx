@@ -1,24 +1,37 @@
-import React, { memo, cloneElement, FC, useMemo, useContext, ReactNode } from 'react';
 import { css, cx } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
-import { useStyles2, useTheme2 } from '../../themes';
-import { CardContainer, CardContainerProps, getCardContainerStyles } from './CardContainer';
+import { memo, cloneElement, type FC, useId, useMemo, useContext, type ReactNode } from 'react';
+import * as React from 'react';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { t } from '@grafana/i18n';
+
+import { useStyles2 } from '../../themes/ThemeContext';
 import { getFocusStyles } from '../../themes/mixins';
+import { RadioButtonDot } from '../Forms/RadioButtonList/RadioButtonDot';
+
+import { CardContainer, type CardContainerProps, getCardContainerStyles } from './CardContainer';
 
 /**
  * @public
  */
-export interface Props extends Omit<CardContainerProps, 'disableEvents' | 'disableHover'> {
+export interface Props
+  extends Omit<CardContainerProps, 'disableEvents' | 'disableHover' | 'hasDescriptionComponent' | 'hasTagsComponent'> {
   /** Indicates if the card and all its actions can be interacted with */
   disabled?: boolean;
   /** Link to redirect to on card click. If provided, the Card inner content will be rendered inside `a` */
   href?: string;
   /** On click handler for the Card */
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent<HTMLElement>) => void;
   /** @deprecated Use `Card.Heading` instead */
   heading?: ReactNode;
   /** @deprecated Use `Card.Description` instead */
   description?: string;
+  isSelected?: boolean;
+  /** If true, the padding of the Card will be smaller */
+  isCompact?: boolean;
+  /** Remove the bottom margin */
+  noMargin?: boolean;
 }
 
 export interface CardInterface extends FC<Props> {
@@ -33,13 +46,15 @@ export interface CardInterface extends FC<Props> {
 
 const CardContext = React.createContext<{
   href?: string;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent<HTMLElement>) => void;
   disabled?: boolean;
+  isSelected?: boolean;
 } | null>(null);
 
 /**
  * Generic card component
  *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/layout-card--docs
  * @public
  */
 export const Card: CardInterface = ({
@@ -47,48 +62,62 @@ export const Card: CardInterface = ({
   href,
   onClick,
   children,
-  heading: deprecatedHeading,
-  description: deprecatedDescription,
+  isSelected,
+  isCompact,
   className,
+  noMargin,
   ...htmlProps
 }) => {
   const hasHeadingComponent = useMemo(
-    () =>
-      React.Children.toArray(children).some(
-        (c) => React.isValidElement(c) && (c.type as any).displayName === Heading.displayName
-      ),
+    () => React.Children.toArray(children).some((c) => React.isValidElement(c) && c.type === Heading),
+    [children]
+  );
+  const hasDescriptionComponent = useMemo(
+    () => React.Children.toArray(children).some((c) => React.isValidElement(c) && c.type === Description),
+    [children]
+  );
+  const hasTagsComponent = useMemo(
+    () => React.Children.toArray(children).some((c) => React.isValidElement(c) && c.type === Tags),
     [children]
   );
 
   const disableHover = disabled || (!onClick && !href);
   const onCardClick = onClick && !disabled ? onClick : undefined;
-  const theme = useTheme2();
-  const styles = getCardContainerStyles(theme, disabled, disableHover);
+  const styles = useStyles2(
+    getCardContainerStyles,
+    disabled,
+    disableHover,
+    hasDescriptionComponent,
+    hasTagsComponent,
+    isSelected,
+    isCompact,
+    noMargin
+  );
 
   return (
     <CardContainer
       disableEvents={disabled}
       disableHover={disableHover}
+      isSelected={isSelected}
       className={cx(styles.container, className)}
+      noMargin={noMargin}
+      hasDescriptionComponent={hasDescriptionComponent}
+      hasTagsComponent={hasTagsComponent}
       {...htmlProps}
     >
-      <CardContext.Provider value={{ href, onClick: onCardClick, disabled }}>
+      <CardContext.Provider value={{ href, onClick: onCardClick, disabled, isSelected }}>
         {!hasHeadingComponent && <Heading />}
-        {deprecatedHeading && <Heading>{deprecatedHeading}</Heading>}
-        {deprecatedDescription && <Description>{deprecatedDescription}</Description>}
         {children}
       </CardContext.Provider>
     </CardContainer>
   );
 };
+Card.displayName = 'Card';
 
 interface ChildProps {
   className?: string;
   disabled?: boolean;
   children?: React.ReactNode;
-
-  /** @deprecated Use `className` to add new styles */
-  styles?: ReturnType<typeof getCardStyles>;
 }
 
 /** Main heading for the card */
@@ -96,22 +125,38 @@ const Heading = ({ children, className, 'aria-label': ariaLabel }: ChildProps & 
   const context = useContext(CardContext);
   const styles = useStyles2(getHeadingStyles);
 
-  const { href, onClick } = context ?? { href: undefined, onClick: undefined };
+  const { href, onClick, isSelected } = context ?? {
+    href: undefined,
+    onClick: undefined,
+    isSelected: undefined,
+  };
+  const optionLabel = t('grafana-ui.card.option', 'option');
+  const headingId = useId();
+  const radioId = useId();
+  const hasHeadingContent = React.Children.count(children) > 0;
 
   return (
-    <h2 className={cx(styles.heading, className)}>
+    <div data-testid={selectors.components.Card.heading} className={cx(styles.heading, className)}>
       {href ? (
-        <a href={href} className={styles.linkHack} aria-label={ariaLabel}>
+        <a id={headingId} href={href} className={styles.linkHack} aria-label={ariaLabel} onClick={onClick}>
           {children}
         </a>
       ) : onClick ? (
-        <button onClick={onClick} className={styles.linkHack} aria-label={ariaLabel}>
+        <button id={headingId} onClick={onClick} className={styles.linkHack} aria-label={ariaLabel} type="button">
           {children}
         </button>
       ) : (
-        <>{children}</>
+        <span id={headingId}>{children}</span>
       )}
-    </h2>
+      {isSelected !== undefined && (
+        <RadioButtonDot
+          {...(hasHeadingContent ? { 'aria-labelledby': headingId } : { 'aria-label': optionLabel })}
+          id={radioId}
+          name={radioId}
+          checked={isSelected}
+        />
+      )}
+    </div>
   );
 };
 Heading.displayName = 'Heading';
@@ -130,6 +175,9 @@ const getHeadingStyles = (theme: GrafanaTheme2) => ({
     lineHeight: theme.typography.body.lineHeight,
     color: theme.colors.text.primary,
     fontWeight: theme.typography.fontWeightMedium,
+    '& input': {
+      pointerEvents: 'none',
+    },
   }),
   linkHack: css({
     all: 'unset',
@@ -140,7 +188,7 @@ const getHeadingStyles = (theme: GrafanaTheme2) => ({
       bottom: 0,
       left: 0,
       right: 0,
-      borderRadius: theme.shape.borderRadius(1),
+      borderRadius: theme.shape.radius.default,
     },
 
     '&:focus-visible': {
@@ -173,7 +221,8 @@ const getTagStyles = (theme: GrafanaTheme2) => ({
 /** Card description text */
 const Description = ({ children, className }: ChildProps) => {
   const styles = useStyles2(getDescriptionStyles);
-  return <p className={cx(styles.description, className)}>{children}</p>;
+  const Element = typeof children === 'string' ? 'p' : 'div';
+  return <Element className={cx(styles.description, className)}>{children}</Element>;
 };
 Description.displayName = 'Description';
 
@@ -194,9 +243,9 @@ const Figure = ({ children, align = 'start', className }: ChildProps & { align?:
       className={cx(
         styles.media,
         className,
-        css`
-          align-self: ${align};
-        `
+        css({
+          alignSelf: align,
+        })
       )}
     >
       {children}
@@ -227,12 +276,17 @@ const Meta = memo(({ children, className, separator = '|' }: ChildProps & { sepa
   const styles = useStyles2(getMetaStyles);
   let meta = children;
 
+  const filtered = React.Children.toArray(children).filter(Boolean);
+  if (!filtered.length) {
+    return null;
+  }
+  meta = filtered.map((element, i) => (
+    <div key={`element_${i}`} className={styles.metadataItem}>
+      {element}
+    </div>
+  ));
   // Join meta data elements by separator
-  if (Array.isArray(children) && separator) {
-    const filtered = React.Children.toArray(children).filter(Boolean);
-    if (!filtered.length) {
-      return null;
-    }
+  if (filtered.length > 1 && separator) {
     meta = filtered.reduce((prev, curr, i) => [
       prev,
       <span key={`separator_${i}`} className={styles.separator}>
@@ -257,6 +311,10 @@ const getMetaStyles = (theme: GrafanaTheme2) => ({
     lineHeight: theme.typography.bodySmall.lineHeight,
     overflowWrap: 'anywhere',
   }),
+  metadataItem: css({
+    // Needed to allow for clickable children in metadata
+    zIndex: 0,
+  }),
   separator: css({
     margin: `0 ${theme.spacing(1)}`,
   }),
@@ -276,7 +334,9 @@ const BaseActions = ({ children, disabled, variant, className }: ActionsProps) =
   return (
     <div className={cx(css, className)}>
       {React.Children.map(children, (child) => {
-        return React.isValidElement(child) ? cloneElement(child, { disabled: isDisabled, ...child.props }) : null;
+        return React.isValidElement<Record<string, unknown>>(child)
+          ? cloneElement(child, child.type !== React.Fragment ? { disabled: isDisabled, ...child.props } : undefined)
+          : null;
       })}
     </div>
   );
@@ -284,22 +344,22 @@ const BaseActions = ({ children, disabled, variant, className }: ActionsProps) =
 
 const getActionStyles = (theme: GrafanaTheme2) => ({
   actions: css({
+    display: 'flex',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing(1),
     gridArea: 'Actions',
     marginTop: theme.spacing(2),
-    '& > *': {
-      marginRight: theme.spacing(1),
-    },
   }),
   secondaryActions: css({
-    display: 'flex',
-    gridArea: 'Secondary',
     alignSelf: 'center',
     color: theme.colors.text.secondary,
-    marginTtop: theme.spacing(2),
-
-    '& > *': {
-      marginRight: `${theme.spacing(1)} !important`,
-    },
+    display: 'flex',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing(1),
+    gridArea: 'Secondary',
+    marginTop: theme.spacing(2),
   }),
 });
 
@@ -327,13 +387,13 @@ SecondaryActions.displayName = 'SecondaryActions';
  */
 export const getCardStyles = (theme: GrafanaTheme2) => {
   return {
-    inner: css`
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      width: 100%;
-      flex-wrap: wrap;
-    `,
+    inner: css({
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      width: '100%',
+      flexWrap: 'wrap',
+    }),
     ...getHeadingStyles(theme),
     ...getMetaStyles(theme),
     ...getDescriptionStyles(theme),

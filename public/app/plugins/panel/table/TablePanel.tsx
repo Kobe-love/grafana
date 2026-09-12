@@ -1,163 +1,153 @@
-import React, { Component } from 'react';
-import { Select, Table } from '@grafana/ui';
-import { DataFrame, FieldMatcherID, getFrameDisplayName, PanelProps, SelectableValue } from '@grafana/data';
-import { PanelOptions } from './models.gen';
-import { css } from '@emotion/css';
-import { config } from 'app/core/config';
-import { FilterItem, TableSortByFieldState } from '@grafana/ui/src/components/Table/types';
-import { dispatch } from '../../../store/store';
-import { applyFilterFromTable } from '../../../features/variables/adhoc/actions';
-import { getDashboardSrv } from '../../../features/dashboard/services/DashboardSrv';
-import { getFooterCells } from './footer';
+import { type DataFrame, getFrameDisplayName, type PanelProps, type SelectableValue } from '@grafana/data';
+import { t } from '@grafana/i18n';
+import { PanelDataErrorView } from '@grafana/runtime';
+import { TableCellHeight, type TableOptions } from '@grafana/schema';
+import { Box, Combobox, Field, Stack, usePanelContext, useTheme2 } from '@grafana/ui';
+import { TableNG } from '@grafana/ui/unstable';
+import {
+  useCacheFieldDisplayNames,
+  useCellActions,
+  useCommonTableProps,
+  useTableSharedCrosshair,
+} from 'app/features/table/hooks';
+import { getCurrentFrameIndex, onColumnResize, onSortByChange } from 'app/features/table/utils';
 
-interface Props extends PanelProps<PanelOptions> {}
+import { hasDeprecatedParentRowIndex, migrateFromParentRowIndexToNestedFrames } from './migrations';
 
-export class TablePanel extends Component<Props> {
-  constructor(props: Props) {
-    super(props);
+interface Props extends PanelProps<TableOptions> {
+  initialRowIndex?: number;
+  sortByBehavior?: 'initial' | 'managed';
+}
+
+export function TablePanel(props: Props) {
+  const {
+    data,
+    height,
+    width,
+    options,
+    fieldConfig,
+    id,
+    timeRange,
+    replaceVariables,
+    transparent,
+    initialRowIndex,
+    sortByBehavior = 'initial',
+    fitContent,
+  } = props;
+
+  useCacheFieldDisplayNames(data.series);
+
+  const theme = useTheme2();
+  const panelContext = usePanelContext();
+  const getActions = useCellActions(replaceVariables);
+  const commonTableProps = useCommonTableProps(options, fieldConfig);
+  const enableSharedCrosshair = useTableSharedCrosshair();
+  const frames = hasDeprecatedParentRowIndex(data.series)
+    ? migrateFromParentRowIndexToNestedFrames(data.series)
+    : data.series;
+  const count = frames?.length;
+  const hasFields = frames.some((frame) => frame.fields.length > 0);
+  const currentIndex = getCurrentFrameIndex(frames, options);
+  const main = frames[currentIndex];
+
+  // Fit-content: the panel has no fixed height, so self-size from the row count.
+  // The cell's CSS min/max bounds (and scrolls) the result.
+  let tableHeight = fitContent ? getNaturalTableHeight(main, options) : height;
+
+  if (!count || !hasFields) {
+    return <PanelDataErrorView panelId={id} fieldConfig={fieldConfig} data={data} />;
   }
 
-  onColumnResize = (fieldDisplayName: string, width: number) => {
-    const { fieldConfig } = this.props;
-    const { overrides } = fieldConfig;
+  // Under `table.refresh` the panel drops its own padding so the table can run edge to edge, so the
+  // frame picker below it has to bring its own.
+  const framePickerPadding = commonTableProps.tableRefreshEnabled ? 1 : 0;
 
-    const matcherId = FieldMatcherID.byName;
-    const propId = 'custom.width';
+  if (count > 1 && !fitContent) {
+    const inputHeight = theme.spacing.gridSize * theme.components.height.md;
+    const padding = theme.spacing.gridSize * (1 + framePickerPadding);
 
-    // look for existing override
-    const override = overrides.find((o) => o.matcher.id === matcherId && o.matcher.options === fieldDisplayName);
+    tableHeight = height - inputHeight - padding;
+  }
 
-    if (override) {
-      // look for existing property
-      const property = override.properties.find((prop) => prop.id === propId);
-      if (property) {
-        property.value = width;
-      } else {
-        override.properties.push({ id: propId, value: width });
+  const tableElement = (
+    <TableNG
+      {...commonTableProps}
+      initialRowIndex={initialRowIndex}
+      height={tableHeight}
+      width={width}
+      data={main}
+      sortByBehavior={sortByBehavior}
+      onSortByChange={(sortBy) => onSortByChange(sortBy, props)}
+      onColumnResize={(displayName, resizedWidth, fieldScope) =>
+        onColumnResize(displayName, resizedWidth, fieldScope, props)
       }
-    } else {
-      overrides.push({
-        matcher: { id: matcherId, options: fieldDisplayName },
-        properties: [{ id: propId, value: width }],
-      });
-    }
+      onCellFilterAdded={panelContext.onAddAdHocFilter}
+      timeRange={timeRange}
+      enableSharedCrosshair={enableSharedCrosshair}
+      fieldConfig={fieldConfig}
+      getActions={getActions}
+      structureRev={data.structureRev}
+      transparent={transparent}
+      noPanelPadding={commonTableProps.tableRefreshEnabled}
+    />
+  );
 
-    this.props.onFieldConfigChange({
-      ...fieldConfig,
-      overrides,
-    });
-  };
-
-  onSortByChange = (sortBy: TableSortByFieldState[]) => {
-    this.props.onOptionsChange({
-      ...this.props.options,
-      sortBy,
-    });
-  };
-
-  onChangeTableSelection = (val: SelectableValue<number>) => {
-    this.props.onOptionsChange({
-      ...this.props.options,
-      frameIndex: val.value || 0,
-    });
-
-    // Force a redraw -- but no need to re-query
-    this.forceUpdate();
-  };
-
-  onCellFilterAdded = (filter: FilterItem) => {
-    const { key, value, operator } = filter;
-    const panelModel = getDashboardSrv().getCurrent()?.getPanelById(this.props.id);
-    const datasource = panelModel?.datasource;
-
-    if (!datasource) {
-      return;
-    }
-
-    dispatch(applyFilterFromTable({ datasource, key, operator, value }));
-  };
-
-  renderTable(frame: DataFrame, width: number, height: number) {
-    const { options } = this.props;
-    const footerValues = options.footer?.show ? getFooterCells(frame, options.footer) : undefined;
-
-    return (
-      <Table
-        height={height}
-        width={width}
-        data={frame}
-        noHeader={!options.showHeader}
-        showTypeIcons={options.showTypeIcons}
-        resizable={true}
-        initialSortBy={options.sortBy}
-        onSortByChange={this.onSortByChange}
-        onColumnResize={this.onColumnResize}
-        onCellFilterAdded={this.onCellFilterAdded}
-        footerValues={footerValues}
-      />
-    );
+  if (count === 1) {
+    return tableElement;
   }
 
-  getCurrentFrameIndex(frames: DataFrame[], options: PanelOptions) {
-    return options.frameIndex > 0 && options.frameIndex < frames.length ? options.frameIndex : 0;
-  }
+  const names = frames.map((frame, index) => {
+    return {
+      label: getFrameDisplayName(frame),
+      value: index,
+    };
+  });
 
-  render() {
-    const { data, height, width, options } = this.props;
+  return (
+    <Stack direction="column" gap={1.5} justifyContent="space-between" height="100%">
+      {tableElement}
+      <Box paddingX={framePickerPadding} paddingBottom={framePickerPadding}>
+        <Field noMargin>
+          <Combobox
+            aria-label={t('table.frame-picker.label', 'Query')}
+            options={names}
+            value={names[currentIndex]}
+            onChange={(val) => onChangeTableSelection(val, props)}
+          />
+        </Field>
+      </Box>
+    </Stack>
+  );
+}
 
-    const frames = data.series;
-    const count = frames?.length;
-    const hasFields = frames[0]?.fields.length;
+// Approximate row/header pixel sizes used to self-size in fit-content mode.
+// Mirrors getDefaultRowHeight in TableNG; exact pixels are not critical because
+// the cell's CSS max-height ultimately bounds the panel.
+const TABLE_ROW_HEIGHT_SM = 36;
+const TABLE_ROW_HEIGHT_MD = 42;
+const TABLE_ROW_HEIGHT_LG = 60;
+const TABLE_HEADER_HEIGHT = 36;
 
-    if (!count || !hasFields) {
-      return <div className={tableStyles.noData}>No data</div>;
-    }
-
-    if (count > 1) {
-      const inputHeight = config.theme.spacing.formInputHeight;
-      const padding = 8 * 2;
-      const currentIndex = this.getCurrentFrameIndex(frames, options);
-      const names = frames.map((frame, index) => {
-        return {
-          label: getFrameDisplayName(frame),
-          value: index,
-        };
-      });
-
-      return (
-        <div className={tableStyles.wrapper}>
-          {this.renderTable(data.series[currentIndex], width, height - inputHeight - padding)}
-          <div className={tableStyles.selectWrapper}>
-            <Select
-              menuShouldPortal
-              options={names}
-              value={names[currentIndex]}
-              onChange={this.onChangeTableSelection}
-            />
-          </div>
-        </div>
-      );
-    }
-
-    return this.renderTable(data.series[0], width, height - 12);
+function getRowPixelHeight(cellHeight: TableCellHeight | undefined): number {
+  switch (cellHeight) {
+    case TableCellHeight.Sm:
+      return TABLE_ROW_HEIGHT_SM;
+    case TableCellHeight.Lg:
+      return TABLE_ROW_HEIGHT_LG;
+    case TableCellHeight.Md:
+    default:
+      return TABLE_ROW_HEIGHT_MD;
   }
 }
 
-const tableStyles = {
-  wrapper: css`
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    height: 100%;
-  `,
-  noData: css`
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-  `,
-  selectWrapper: css`
-    padding: 8px;
-  `,
-};
+function getNaturalTableHeight(frame: DataFrame | undefined, options: TableOptions): number {
+  const rowCount = frame?.length ?? 0;
+  const headerHeight = options.showHeader === false ? 0 : TABLE_HEADER_HEIGHT;
+  return headerHeight + rowCount * getRowPixelHeight(options.cellHeight);
+}
+function onChangeTableSelection(val: SelectableValue<number>, props: Props) {
+  props.onOptionsChange({
+    ...props.options,
+    frameIndex: val.value || 0,
+  });
+}

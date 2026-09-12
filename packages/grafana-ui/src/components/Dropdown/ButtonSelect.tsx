@@ -1,98 +1,81 @@
-import React, { HTMLAttributes } from 'react';
-import { PopoverContent } from '../Tooltip/Tooltip';
-import { GrafanaTheme2, SelectableValue } from '@grafana/data';
-import { ToolbarButtonVariant, ToolbarButton, ButtonGroup } from '../Button';
-import { ClickOutsideWrapper } from '../ClickOutsideWrapper/ClickOutsideWrapper';
-import { css } from '@emotion/css';
-import { useStyles2 } from '../../themes/ThemeContext';
+import { memo, type HTMLAttributes, useState } from 'react';
+
+import { type SelectableValue } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+
 import { Menu } from '../Menu/Menu';
 import { MenuItem } from '../Menu/MenuItem';
-import { FocusScope } from '@react-aria/focus';
-import { useMenuTriggerState } from '@react-stately/menu';
-import { useMenuTrigger } from '@react-aria/menu';
-import { useButton } from '@react-aria/button';
+import { ScrollContainer } from '../ScrollContainer/ScrollContainer';
+import { ToolbarButton, type ToolbarButtonVariant } from '../ToolbarButton/ToolbarButton';
+import { type PopoverContent } from '../Tooltip/types';
+
+import { Dropdown } from './Dropdown';
 
 export interface Props<T> extends HTMLAttributes<HTMLButtonElement> {
   className?: string;
   options: Array<SelectableValue<T>>;
   value?: SelectableValue<T>;
   onChange: (item: SelectableValue<T>) => void;
+  /** @deprecated use tooltip instead, tooltipContent is not being processed in ToolbarButton*/
   tooltipContent?: PopoverContent;
   narrow?: boolean;
   variant?: ToolbarButtonVariant;
+  tooltip?: string;
+  root?: HTMLElement;
 }
 
 /**
- * @internal
- * A temporary component until we have a proper dropdown component
+ * @deprecated Use Combobox or Dropdown instead
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/inputs-deprecated-buttonselect--docs
  */
 const ButtonSelectComponent = <T,>(props: Props<T>) => {
-  const { className, options, value, onChange, narrow, variant, ...restProps } = props;
-  const styles = useStyles2(getStyles);
-  const state = useMenuTriggerState({});
+  const { className, options, value, onChange, narrow, variant, root, ...restProps } = props;
+  const [isOpen, setIsOpen] = useState(false);
 
-  const ref = React.useRef(null);
-  const { menuTriggerProps, menuProps } = useMenuTrigger({}, state, ref);
-  const { buttonProps } = useButton(menuTriggerProps, ref);
+  const renderMenu = () => (
+    <Menu tabIndex={-1} onClose={() => setIsOpen(false)}>
+      <ScrollContainer maxHeight="100vh">
+        {options.map((item) => {
+          // Keyed on the option's value, not its label, so the selector survives translation.
+          // Objects and undefined have no meaningful string form, so those options get the
+          // bare selector without a disambiguator.
+          const testIdValue =
+            typeof item.value === 'string' || typeof item.value === 'number' || typeof item.value === 'boolean'
+              ? String(item.value)
+              : undefined;
 
-  const onChangeInternal = (item: SelectableValue<T>) => {
-    onChange(item);
-    state.close();
-  };
+          return (
+            <MenuItem
+              key={`${item.value}`}
+              testId={selectors.components.ButtonSelect.option(testIdValue ?? '')}
+              label={item.label ?? String(item.value)}
+              onClick={() => onChange(item)}
+              active={item.value === value?.value}
+              ariaChecked={item.value === value?.value}
+              ariaLabel={item.ariaLabel || item.label}
+              disabled={item.isDisabled}
+              component={item.component}
+              role="menuitemradio"
+            />
+          );
+        })}
+      </ScrollContainer>
+    </Menu>
+  );
 
   return (
-    <ButtonGroup className={styles.wrapper}>
-      <ToolbarButton
-        className={className}
-        isOpen={state.isOpen}
-        narrow={narrow}
-        variant={variant}
-        ref={ref}
-        {...buttonProps}
-        {...restProps}
-      >
-        {value?.label || value?.value}
+    <Dropdown root={root} overlay={renderMenu} placement="bottom-end">
+      <ToolbarButton className={className} isOpen={isOpen} narrow={narrow} variant={variant} {...restProps}>
+        {value?.label || (value?.value != null ? String(value?.value) : null)}
       </ToolbarButton>
-      {state.isOpen && (
-        <div className={styles.menuWrapper}>
-          <ClickOutsideWrapper onClick={state.close} parent={document} includeButtonPress={false}>
-            <FocusScope contain autoFocus restoreFocus>
-              <Menu onClose={state.close} {...menuProps}>
-                {options.map((item) => (
-                  <MenuItem
-                    key={`${item.value}`}
-                    label={(item.label || item.value) as string}
-                    onClick={() => onChangeInternal(item)}
-                    active={item.value === value?.value}
-                    ariaChecked={item.value === value?.value}
-                    ariaLabel={item.ariaLabel || item.label}
-                    role="menuitemradio"
-                  />
-                ))}
-              </Menu>
-            </FocusScope>
-          </ClickOutsideWrapper>
-        </div>
-      )}
-    </ButtonGroup>
+    </Dropdown>
   );
 };
 
 ButtonSelectComponent.displayName = 'ButtonSelect';
 
-export const ButtonSelect = React.memo(ButtonSelectComponent) as typeof ButtonSelectComponent;
-
-const getStyles = (theme: GrafanaTheme2) => {
-  return {
-    wrapper: css`
-      position: relative;
-      display: inline-flex;
-    `,
-    menuWrapper: css`
-      position: absolute;
-      z-index: ${theme.zIndex.dropdown};
-      top: ${theme.spacing(4)};
-      right: 0;
-    `,
-  };
-};
+// needed to properly forward the generic type through React.memo
+// see https://github.com/DefinitelyTyped/DefinitelyTyped/issues/37087#issuecomment-656596623
+// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+export const ButtonSelect = memo(ButtonSelectComponent) as typeof ButtonSelectComponent;

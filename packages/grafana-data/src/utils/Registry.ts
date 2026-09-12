@@ -1,5 +1,5 @@
-import { PluginState } from '../types';
-import { SelectableValue } from '../types/select';
+import { PluginState } from '../types/plugin';
+import { type SelectableValue } from '../types/select';
 
 export interface RegistryItem {
   id: string; // Unique Key -- saved in configs
@@ -41,7 +41,9 @@ export class Registry<T extends RegistryItem> {
   private byId = new Map<string, T>();
   private initialized = false;
 
-  constructor(private init?: () => T[]) {}
+  constructor(private init?: () => T[]) {
+    this.init = init;
+  }
 
   setInit = (init: () => T[]) => {
     if (this.initialized) {
@@ -80,15 +82,19 @@ export class Registry<T extends RegistryItem> {
     return v;
   }
 
-  selectOptions(current?: string[], filter?: (ext: T) => boolean): RegistrySelectInfo {
+  selectOptions(
+    current?: string[],
+    filter?: (ext: T) => boolean,
+    formatLabel: (ext: T) => string = (ext) => ext.name
+  ): RegistrySelectInfo {
     if (!this.initialized) {
       this.initialize();
     }
 
-    const select = {
+    const select: RegistrySelectInfo = {
       options: [],
       current: [],
-    } as RegistrySelectInfo;
+    };
 
     const currentOptions: Record<string, SelectableValue<string>> = {};
     if (current) {
@@ -107,7 +113,7 @@ export class Registry<T extends RegistryItem> {
 
       const option = {
         value: ext.id,
-        label: ext.name,
+        label: formatLabel(ext),
         description: ext.description,
       };
 
@@ -132,7 +138,7 @@ export class Registry<T extends RegistryItem> {
   /**
    * Return a list of values by ID, or all values if not specified
    */
-  list(ids?: any[]): T[] {
+  list(ids?: string[]): T[] {
     if (!this.initialized) {
       this.initialize();
     }

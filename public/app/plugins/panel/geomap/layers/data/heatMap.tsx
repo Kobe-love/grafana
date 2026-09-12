@@ -1,17 +1,12 @@
-import {
-  FieldType,
-  getFieldColorModeForField,
-  GrafanaTheme2,
-  MapLayerOptions,
-  MapLayerRegistryItem,
-  PanelData,
-} from '@grafana/data';
-import Map from 'ol/Map';
+import { type Point } from 'ol/geom';
 import * as layer from 'ol/layer';
-import { getLocationMatchers } from 'app/features/geo/utils/location';
-import { ScaleDimensionConfig, getScaledDimension } from 'app/features/dimensions';
-import { ScaleDimensionEditor } from 'app/features/dimensions/editors';
+
+import { FieldType, getFieldColorModeForField, type MapLayerRegistryItem, type PanelData } from '@grafana/data';
+import { type ScaleDimensionConfig } from '@grafana/schema';
+import { ScaleDimensionEditor } from 'app/features/dimensions/editors/ScaleDimensionEditor';
+import { getScaledDimension } from 'app/features/dimensions/scale';
 import { FrameVectorSource } from 'app/features/geo/utils/frameVectorSource';
+import { getLocationMatchers } from 'app/features/geo/utils/location';
 
 // Configuration options for Heatmap overlays
 export interface HeatmapConfig {
@@ -36,20 +31,22 @@ const defaultOptions: HeatmapConfig = {
 export const heatmapLayer: MapLayerRegistryItem<HeatmapConfig> = {
   id: 'heatmap',
   name: 'Heatmap',
-  description: 'visualizes a heatmap of the data',
+  description: 'Visualizes a heatmap of the data',
   isBaseMap: false,
   showLocation: true,
 
   /**
    * Function that configures transformation and returns a transformer
+   * @param map
    * @param options
+   * @param theme
    */
-  create: async (map: Map, options: MapLayerOptions<HeatmapConfig>, theme: GrafanaTheme2) => {
+  create: async (_map, options, _eventBus, theme) => {
     const config = { ...defaultOptions, ...options.config };
-    
+
     const location = await getLocationMatchers(options.location);
-    const source = new FrameVectorSource(location);
-    const WEIGHT_KEY = "_weight";
+    const source = new FrameVectorSource<Point>(location);
+    const WEIGHT_KEY = '_weight';
 
     // Create a new Heatmap layer
     // Weight function takes a feature as attribute and returns a normalized weight value
@@ -72,9 +69,9 @@ export const heatmapLayer: MapLayerRegistryItem<HeatmapConfig> = {
         source.update(frame);
 
         const weightDim = getScaledDimension(frame, config.weight);
-        source.forEachFeature( (f) => {
-          const idx = f.get('rowIndex') as number;
-          if(idx != null) {
+        source.forEachFeature((f) => {
+          const idx: number = f.get('rowIndex');
+          if (idx != null) {
             f.set(WEIGHT_KEY, weightDim.get(idx));
           }
         });
@@ -117,7 +114,7 @@ export const heatmapLayer: MapLayerRegistryItem<HeatmapConfig> = {
           })
           .addSliderInput({
             path: 'config.radius',
-            description: 'configures the size of clusters',
+            description: 'Configures the size of clusters',
             name: 'Radius',
             defaultValue: defaultOptions.radius,
             settings: {
@@ -128,7 +125,7 @@ export const heatmapLayer: MapLayerRegistryItem<HeatmapConfig> = {
           })
           .addSliderInput({
             path: 'config.blur',
-            description: 'configures the amount of blur of clusters',
+            description: 'Configures the amount of blur of clusters',
             name: 'Blur',
             defaultValue: defaultOptions.blur,
             settings: {

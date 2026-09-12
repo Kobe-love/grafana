@@ -1,80 +1,112 @@
-// Libraries
-import { each, find, findIndex, flattenDeep, isArray, isBoolean, isNumber, isString, map, max, some } from 'lodash';
-// Utils
-import getFactors from 'app/core/utils/factors';
-import kbn from 'app/core/utils/kbn';
-// Types
-import { PanelModel } from './PanelModel';
-import { DashboardModel } from './DashboardModel';
+import { each, find, findIndex, isArray, map } from 'lodash';
+
 import {
-  AnnotationQuery,
-  DataLink,
+  type AnnotationQuery,
+  type ConstantVariableModel,
+  type DataLink,
   DataLinkBuiltInVars,
-  DataQuery,
-  DataSourceRef,
-  DataTransformerConfig,
+  type DataQuery,
+  type DataSourceRef,
+  type FieldConfigSource,
+  FieldMatcherID,
+  FieldType,
   getActiveThreshold,
   getDataSourceRef,
   isDataSourceRef,
+  isEmptyObject,
   MappingType,
-  PanelPlugin,
+  type ReducerID,
   SpecialValueMatch,
   standardEditorsRegistry,
   standardFieldConfigEditorRegistry,
-  ThresholdsConfig,
+  type TextBoxVariableModel,
+  type ThresholdsConfig,
   urlUtil,
-  ValueMap,
-  ValueMapping,
+  type ValueMap,
+  type ValueMapping,
+  VariableHide,
 } from '@grafana/data';
-// Constants
+import { labelsToFieldsTransformer, mergeTransformer } from '@grafana/data/internal';
+import { getDataSourceSrv, setDataSourceSrv } from '@grafana/runtime';
+import { type DataTransformerConfig } from '@grafana/schema';
+import { AxisPlacement, type GraphFieldConfig } from '@grafana/ui';
+import { migrateTableDisplayModeToCellOptions } from '@grafana/ui/internal';
+import { getAllOptionEditors, getAllStandardFieldConfigs } from 'app/core/components/OptionsUI/registry';
+import { GRID_COLUMN_COUNT } from 'app/core/constants';
+import getFactors from 'app/core/utils/factors';
+import kbn from 'app/core/utils/kbn';
+import { DatasourceSrv } from 'app/features/plugins/datasource_srv';
 import {
-  DEFAULT_PANEL_SPAN,
-  DEFAULT_ROW_HEIGHT,
-  GRID_CELL_HEIGHT,
-  GRID_CELL_VMARGIN,
-  GRID_COLUMN_COUNT,
-  MIN_PANEL_HEIGHT,
-} from 'app/core/constants';
+  type RefIdTransformerOptions,
+  type TimeSeriesTableTransformerOptions,
+} from 'app/features/transformers/timeSeriesTable/timeSeriesTableTransformer';
 import { isConstant, isMulti } from 'app/features/variables/guard';
 import { alignCurrentWithMulti } from 'app/features/variables/shared/multiOptions';
-import { VariableHide } from '../../variables/types';
-import { config } from 'app/core/config';
-import { plugin as statPanelPlugin } from 'app/plugins/panel/stat/module';
-import { plugin as gaugePanelPlugin } from 'app/plugins/panel/gauge/module';
-import { getStandardFieldConfigs, getStandardOptionEditors } from '@grafana/ui';
-import { getDataSourceSrv } from '@grafana/runtime';
-import { labelsToFieldsTransformer } from '../../../../../packages/grafana-data/src/transformations/transformers/labelsToFields';
-import { mergeTransformer } from '../../../../../packages/grafana-data/src/transformations/transformers/merge';
+import { type CloudWatchMetricsQuery } from 'app/plugins/datasource/cloudwatch/dataquery.gen';
+import { type LegacyAnnotationQuery } from 'app/plugins/datasource/cloudwatch/types';
+import { MIXED_DATASOURCE_NAME } from 'app/plugins/datasource/mixed/MixedDataSource';
+
 import {
   migrateCloudWatchQuery,
   migrateMultipleStatsAnnotationQuery,
   migrateMultipleStatsMetricsQuery,
-} from 'app/plugins/datasource/cloudwatch/migrations';
-import { CloudWatchAnnotationQuery, CloudWatchMetricsQuery } from 'app/plugins/datasource/cloudwatch/types';
+} from '../../../plugins/datasource/cloudwatch/migrations/dashboardMigrations';
 
-standardEditorsRegistry.setInit(getStandardOptionEditors);
-standardFieldConfigEditorRegistry.setInit(getStandardFieldConfigs);
+import { type DashboardModel } from './DashboardModel';
+import { PanelModel } from './PanelModel';
+import { convertRowsToGridPanels } from './convertRowsToGridPanels';
+import { getPanelPluginToMigrateTo } from './getPanelPluginToMigrateTo';
+
+standardEditorsRegistry.setInit(getAllOptionEditors);
+standardFieldConfigEditorRegistry.setInit(getAllStandardFieldConfigs);
 
 type PanelSchemeUpgradeHandler = (panel: PanelModel) => PanelModel;
+
+/**
+ * The current version of the dashboard schema.
+ *
+ * NOTE: Schema version 42 is the FINAL version for the v1 dashboard API.
+ * DO NOT increment this number or add new schema migrations.
+ *
+ * This is necessary due to the migration of the legacy dashboards API to the app platform.
+ *
+ * For panel-specific migrations, implement them as panel migrations in the
+ * individual panel plugin migration handlers instead of adding new schema versions.
+ *
+ * Legacy migration instructions (for reference only):
+ * To add a dashboard migration increment this number
+ * and then add your migration at the bottom of 'updateSchema'
+ * hint: search "Add migration here"
+ *
+ * This number also needs to be updated on the CUE schema:
+ * kinds/dashboard/dashboard_kind.cue
+ * Example PR: #87712
+ */
+export const DASHBOARD_SCHEMA_VERSION = 42;
 export class DashboardMigrator {
   dashboard: DashboardModel;
 
   constructor(dashboardModel: DashboardModel) {
     this.dashboard = dashboardModel;
+
+    // for tests to pass
+    if (!getDataSourceSrv()) {
+      setDataSourceSrv(new DatasourceSrv());
+    }
   }
 
-  updateSchema(old: any) {
+  updateSchema(old: any, targetSchemaVersion?: number) {
     let i, j, k, n;
     const oldVersion = this.dashboard.schemaVersion;
     const panelUpgrades: PanelSchemeUpgradeHandler[] = [];
-    this.dashboard.schemaVersion = 34;
+    const finalTargetVersion = targetSchemaVersion || DASHBOARD_SCHEMA_VERSION;
 
-    if (oldVersion === this.dashboard.schemaVersion) {
+    if (oldVersion === finalTargetVersion) {
       return;
     }
 
     // version 2 schema changes
-    if (oldVersion < 2) {
+    if (oldVersion < 2 && finalTargetVersion >= 2) {
       if (old.services) {
         if (old.services.filter) {
           this.dashboard.time = old.services.filter.time;
@@ -82,87 +114,25 @@ export class DashboardMigrator {
         }
       }
 
-      panelUpgrades.push((panel: any) => {
-        // rename panel type
-        if (panel.type === 'graphite') {
-          panel.type = 'graph';
-        }
-
-        if (panel.type !== 'graph') {
-          return panel;
-        }
-
-        if (isBoolean(panel.legend)) {
-          panel.legend = { show: panel.legend };
-        }
-
-        if (panel.grid) {
-          if (panel.grid.min) {
-            panel.grid.leftMin = panel.grid.min;
-            delete panel.grid.min;
-          }
-
-          if (panel.grid.max) {
-            panel.grid.leftMax = panel.grid.max;
-            delete panel.grid.max;
-          }
-        }
-
-        if (panel.y_format) {
-          if (!panel.y_formats) {
-            panel.y_formats = [];
-          }
-          panel.y_formats[0] = panel.y_format;
-          delete panel.y_format;
-        }
-
-        if (panel.y2_format) {
-          if (!panel.y_formats) {
-            panel.y_formats = [];
-          }
-          panel.y_formats[1] = panel.y2_format;
-          delete panel.y2_format;
-        }
-
-        return panel;
-      });
+      // we used to have graphite panel type migration logic here
+      // but this is handled by auto migration, see public/app/features/dashboard/state/getPanelPluginToMigrateTo.ts
     }
 
     // schema version 3 changes
-    if (oldVersion < 3) {
-      // ensure panel IDs
-      let maxId = this.dashboard.getNextPanelId();
-      panelUpgrades.push((panel: any) => {
-        if (!panel.id) {
-          panel.id = maxId;
-          maxId += 1;
-        }
-
-        return panel;
-      });
+    if (oldVersion < 3 && finalTargetVersion >= 3) {
+      // Panel ID assignment is now handled by ensurePanelsHaveUniqueIds() in DashboardModel
+      // and the grid layout migration properly handles panels without IDs in rows
     }
 
     // schema version 4 changes
-    if (oldVersion < 4) {
-      // move aliasYAxis changes
-      panelUpgrades.push((panel: any) => {
-        if (panel.type !== 'graph') {
-          return panel;
-        }
-
-        each(panel.aliasYAxis, (value, key) => {
-          panel.seriesOverrides = [{ alias: key, yaxis: value }];
-        });
-
-        delete panel.aliasYAxis;
-
-        return panel;
-      });
+    if (oldVersion < 4 && finalTargetVersion >= 4) {
+      // graph migration is handled through the auto migration
+      // see autoMigrateAngular map in public/app/features/dashboard/state/PanelModel.ts
     }
 
-    if (oldVersion < 6) {
+    if (oldVersion < 6 && finalTargetVersion >= 6) {
       // move drop-downs to new schema
-      const annotations: any = find(old.pulldowns, { type: 'annotations' });
+      const annotations = find(old.pulldowns, { type: 'annotations' });
 
       if (annotations) {
         this.dashboard.annotations = {
@@ -183,29 +153,18 @@ export class DashboardMigrator {
           variable.type = 'query';
         }
         if (variable.allFormat === void 0) {
-          variable.allFormat = 'glob';
+          delete variable.allFormat;
         }
       }
     }
 
-    if (oldVersion < 7) {
+    if (oldVersion < 7 && finalTargetVersion >= 7) {
       if (old.nav && old.nav.length) {
         this.dashboard.timepicker = old.nav[0];
       }
-
-      // ensure query refIds
-      panelUpgrades.push((panel: any) => {
-        each(panel.targets, (target) => {
-          if (!target.refId) {
-            target.refId = panel.getNextQueryLetter && panel.getNextQueryLetter();
-          }
-        });
-
-        return panel;
-      });
     }
 
-    if (oldVersion < 8) {
+    if (oldVersion < 8 && finalTargetVersion >= 8) {
       panelUpgrades.push((panel: any) => {
         each(panel.targets, (target) => {
           // update old influxdb query schema
@@ -251,28 +210,13 @@ export class DashboardMigrator {
     }
 
     // schema version 9 changes
-    if (oldVersion < 9) {
-      // move aliasYAxis changes
-      panelUpgrades.push((panel: any) => {
-        if (panel.type !== 'singlestat' && panel.thresholds !== '') {
-          return panel;
-        }
-
-        if (panel.thresholds) {
-          const k = panel.thresholds.split(',');
-
-          if (k.length >= 3) {
-            k.shift();
-            panel.thresholds = k.join(',');
-          }
-        }
-
-        return panel;
-      });
+    if (oldVersion < 9 && finalTargetVersion >= 9) {
+      // singlestat panel is automigrated to stat panel
+      // see autoMigrateAngular map in public/app/features/dashboard/state/PanelModel.ts
     }
 
     // schema version 10 changes
-    if (oldVersion < 10) {
+    if (oldVersion < 10 && finalTargetVersion >= 10) {
       // move aliasYAxis changes
       panelUpgrades.push((panel: any) => {
         if (panel.type !== 'table') {
@@ -291,152 +235,39 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 12) {
+    if (oldVersion < 12 && finalTargetVersion >= 12) {
       // update template variables
-      each(this.dashboard.getVariables(), (templateVariable: any) => {
-        if (templateVariable.refresh) {
-          templateVariable.refresh = 1;
+      each(this.dashboard.getVariables(), (templateVariable) => {
+        if ('refresh' in templateVariable) {
+          if (templateVariable.refresh) {
+            templateVariable.refresh = 1;
+          }
+          if (!templateVariable.refresh) {
+            templateVariable.refresh = 0;
+          }
         }
-        if (!templateVariable.refresh) {
-          templateVariable.refresh = 0;
-        }
-        if (templateVariable.hideVariable) {
+        if ('hideVariable' in templateVariable && templateVariable.hideVariable) {
           templateVariable.hide = 2;
-        } else if (templateVariable.hideLabel) {
+        } else if ('hideLabel' in templateVariable && templateVariable.hideLabel) {
           templateVariable.hide = 1;
         }
       });
     }
 
-    if (oldVersion < 12) {
-      // update graph yaxes changes
-      panelUpgrades.push((panel: any) => {
-        if (panel.type !== 'graph') {
-          return panel;
-        }
-        if (!panel.grid) {
-          return panel;
-        }
-
-        if (!panel.yaxes) {
-          panel.yaxes = [
-            {
-              show: panel['y-axis'],
-              min: panel.grid.leftMin,
-              max: panel.grid.leftMax,
-              logBase: panel.grid.leftLogBase,
-              format: panel.y_formats[0],
-              label: panel.leftYAxisLabel,
-            },
-            {
-              show: panel['y-axis'],
-              min: panel.grid.rightMin,
-              max: panel.grid.rightMax,
-              logBase: panel.grid.rightLogBase,
-              format: panel.y_formats[1],
-              label: panel.rightYAxisLabel,
-            },
-          ];
-
-          panel.xaxis = {
-            show: panel['x-axis'],
-          };
-
-          delete panel.grid.leftMin;
-          delete panel.grid.leftMax;
-          delete panel.grid.leftLogBase;
-          delete panel.grid.rightMin;
-          delete panel.grid.rightMax;
-          delete panel.grid.rightLogBase;
-          delete panel.y_formats;
-          delete panel.leftYAxisLabel;
-          delete panel.rightYAxisLabel;
-          delete panel['y-axis'];
-          delete panel['x-axis'];
-        }
-
-        return panel;
-      });
+    if (oldVersion < 13 && finalTargetVersion >= 13) {
+      // graph panel auto migrates to either barchart, bargauge, histogram or timeseries (all standard Grafana plugins)
+      // see public/app/features/dashboard/state/getPanelPluginToMigrateTo.ts
     }
 
-    if (oldVersion < 13) {
-      // update graph yaxes changes
-      panelUpgrades.push((panel: any) => {
-        if (panel.type !== 'graph') {
-          return panel;
-        }
-        if (!panel.grid) {
-          return panel;
-        }
-
-        if (!panel.thresholds) {
-          panel.thresholds = [];
-        }
-        const t1: any = {},
-          t2: any = {};
-
-        if (panel.grid.threshold1 !== null) {
-          t1.value = panel.grid.threshold1;
-          if (panel.grid.thresholdLine) {
-            t1.line = true;
-            t1.lineColor = panel.grid.threshold1Color;
-            t1.colorMode = 'custom';
-          } else {
-            t1.fill = true;
-            t1.fillColor = panel.grid.threshold1Color;
-            t1.colorMode = 'custom';
-          }
-        }
-
-        if (panel.grid.threshold2 !== null) {
-          t2.value = panel.grid.threshold2;
-          if (panel.grid.thresholdLine) {
-            t2.line = true;
-            t2.lineColor = panel.grid.threshold2Color;
-            t2.colorMode = 'custom';
-          } else {
-            t2.fill = true;
-            t2.fillColor = panel.grid.threshold2Color;
-            t2.colorMode = 'custom';
-          }
-        }
-
-        if (isNumber(t1.value)) {
-          if (isNumber(t2.value)) {
-            if (t1.value > t2.value) {
-              t1.op = t2.op = 'lt';
-              panel.thresholds.push(t1);
-              panel.thresholds.push(t2);
-            } else {
-              t1.op = t2.op = 'gt';
-              panel.thresholds.push(t1);
-              panel.thresholds.push(t2);
-            }
-          } else {
-            t1.op = 'gt';
-            panel.thresholds.push(t1);
-          }
-        }
-
-        delete panel.grid.threshold1;
-        delete panel.grid.threshold1Color;
-        delete panel.grid.threshold2;
-        delete panel.grid.threshold2Color;
-        delete panel.grid.thresholdLine;
-
-        return panel;
-      });
-    }
-
-    if (oldVersion < 14) {
+    if (oldVersion < 14 && finalTargetVersion >= 14) {
       this.dashboard.graphTooltip = old.sharedCrosshair ? 1 : 0;
     }
 
-    if (oldVersion < 16) {
+    if (oldVersion < 16 && finalTargetVersion >= 16) {
       this.upgradeToGridLayout(old);
     }
 
-    if (oldVersion < 17) {
+    if (oldVersion < 17 && finalTargetVersion >= 17) {
       panelUpgrades.push((panel: any) => {
         if (panel.minSpan) {
           const max = GRID_COLUMN_COUNT / panel.minSpan;
@@ -457,7 +288,7 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 18) {
+    if (oldVersion < 18 && finalTargetVersion >= 18) {
       // migrate change to gauge options
       panelUpgrades.push((panel: any) => {
         if (panel['options-gauge']) {
@@ -489,7 +320,7 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 19) {
+    if (oldVersion < 19 && finalTargetVersion >= 19) {
       // migrate change to gauge options
       panelUpgrades.push((panel: any) => {
         if (panel.links && isArray(panel.links)) {
@@ -500,7 +331,7 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 20) {
+    if (oldVersion < 20 && finalTargetVersion >= 20) {
       const updateLinks = (link: DataLink) => {
         return {
           ...link,
@@ -529,7 +360,7 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 21) {
+    if (oldVersion < 21 && finalTargetVersion >= 21) {
       const updateLinks = (link: DataLink) => {
         return {
           ...link,
@@ -553,7 +384,7 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 22) {
+    if (oldVersion < 22 && finalTargetVersion >= 22) {
       panelUpgrades.push((panel: any) => {
         if (panel.type !== 'table') {
           return panel;
@@ -567,17 +398,20 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 23) {
+    if (oldVersion < 23 && finalTargetVersion >= 23) {
       for (const variable of this.dashboard.templating.list) {
         if (!isMulti(variable)) {
           continue;
         }
         const { multi, current } = variable;
+        if (isEmptyObject(current)) {
+          continue;
+        }
         variable.current = alignCurrentWithMulti(current, multi);
       }
     }
 
-    if (oldVersion < 24) {
+    if (oldVersion < 24 && finalTargetVersion >= 24) {
       // 7.0
       // - migrate existing tables to 'table-old'
       panelUpgrades.push((panel: any) => {
@@ -590,16 +424,24 @@ export class DashboardMigrator {
           return panel;
         }
         panel.type = wasAngularTable ? 'table-old' : 'table';
+        // Hacky way to call the automigrate feature
+        if (panel.type === 'table-old') {
+          const newType = getPanelPluginToMigrateTo(panel);
+          if (newType) {
+            panel.autoMigrateFrom = panel.type;
+            panel.type = newType;
+          }
+        }
         return panel;
       });
     }
 
-    if (oldVersion < 25) {
+    if (oldVersion < 25 && finalTargetVersion >= 25) {
       // tags are removed in version 28
     }
 
-    if (oldVersion < 26) {
-      panelUpgrades.push((panel: any) => {
+    if (oldVersion < 26 && finalTargetVersion >= 26) {
+      panelUpgrades.push((panel: PanelModel) => {
         const wasReactText = panel.type === 'text2';
         if (!wasReactText) {
           return panel;
@@ -611,30 +453,34 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 27) {
-      for (const variable of this.dashboard.templating.list) {
+    if (oldVersion < 27 && finalTargetVersion >= 27) {
+      // remove old repeated panel left-overs
+      this.removeRepeatedPanels();
+
+      this.dashboard.templating.list = this.dashboard.templating.list.map((variable) => {
         if (!isConstant(variable)) {
-          continue;
+          return variable;
         }
 
-        if (variable.hide === VariableHide.dontHide || variable.hide === VariableHide.hideLabel) {
-          variable.type = 'textbox';
+        const newVariable: ConstantVariableModel | TextBoxVariableModel = {
+          ...variable,
+        };
+
+        newVariable.current = { selected: true, text: newVariable.query ?? '', value: newVariable.query ?? '' };
+        newVariable.options = [newVariable.current];
+
+        if (newVariable.hide === VariableHide.dontHide || newVariable.hide === VariableHide.hideLabel) {
+          return {
+            ...newVariable,
+            type: 'textbox',
+          };
         }
 
-        variable.current = { selected: true, text: variable.query ?? '', value: variable.query ?? '' };
-        variable.options = [variable.current];
-      }
+        return newVariable;
+      });
     }
 
-    if (oldVersion < 28) {
-      panelUpgrades.push((panel: PanelModel) => {
-        if (panel.type === 'singlestat') {
-          return migrateSinglestat(panel);
-        }
-
-        return panel;
-      });
-
+    if (oldVersion < 28 && finalTargetVersion >= 28) {
       for (const variable of this.dashboard.templating.list) {
         if (variable.tags) {
           delete variable.tags;
@@ -654,7 +500,7 @@ export class DashboardMigrator {
       }
     }
 
-    if (oldVersion < 29) {
+    if (oldVersion < 29 && finalTargetVersion >= 29) {
       for (const variable of this.dashboard.templating.list) {
         if (variable.type !== 'query') {
           continue;
@@ -670,12 +516,12 @@ export class DashboardMigrator {
       }
     }
 
-    if (oldVersion < 30) {
+    if (oldVersion < 30 && finalTargetVersion >= 30) {
       panelUpgrades.push(upgradeValueMappingsForPanel);
       panelUpgrades.push(migrateTooltipOptions);
     }
 
-    if (oldVersion < 31) {
+    if (oldVersion < 31 && finalTargetVersion >= 31) {
       panelUpgrades.push((panel: PanelModel) => {
         if (panel.transformations) {
           for (const t of panel.transformations) {
@@ -691,21 +537,21 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 32) {
+    if (oldVersion < 32 && finalTargetVersion >= 32) {
       // CloudWatch migrations have been moved to version 34
     }
 
     // Replace datasource name with reference, uid and type
-    if (oldVersion < 33) {
+    if (oldVersion < 33 && finalTargetVersion >= 33) {
       panelUpgrades.push((panel) => {
-        panel.datasource = migrateDatasourceNameToRef(panel.datasource);
+        panel.datasource = migrateDatasourceNameToRef(panel.datasource, { returnDefaultAsNull: true });
 
         if (!panel.targets) {
           return panel;
         }
 
         for (const target of panel.targets) {
-          const targetRef = migrateDatasourceNameToRef(target.datasource);
+          const targetRef = migrateDatasourceNameToRef(target.datasource, { returnDefaultAsNull: true });
           if (targetRef != null) {
             target.datasource = targetRef;
           }
@@ -715,7 +561,7 @@ export class DashboardMigrator {
       });
     }
 
-    if (oldVersion < 34) {
+    if (oldVersion < 34 && finalTargetVersion >= 34) {
       panelUpgrades.push((panel: PanelModel) => {
         this.migrateCloudWatchQueries(panel);
         return panel;
@@ -724,20 +570,207 @@ export class DashboardMigrator {
       this.migrateCloudWatchAnnotationQuery();
     }
 
-    if (panelUpgrades.length === 0) {
-      return;
+    if (oldVersion < 35 && finalTargetVersion >= 35) {
+      panelUpgrades.push(ensureXAxisVisibility);
     }
 
-    for (j = 0; j < this.dashboard.panels.length; j++) {
-      for (k = 0; k < panelUpgrades.length; k++) {
-        this.dashboard.panels[j] = panelUpgrades[k].call(this, this.dashboard.panels[j]);
-        if (this.dashboard.panels[j].panels) {
-          for (n = 0; n < this.dashboard.panels[j].panels.length; n++) {
-            this.dashboard.panels[j].panels[n] = panelUpgrades[k].call(this, this.dashboard.panels[j].panels[n]);
+    if (oldVersion < 36 && finalTargetVersion >= 36) {
+      // Migrate datasource to refs in annotations
+      for (const query of this.dashboard.annotations.list) {
+        query.datasource = migrateDatasourceNameToRef(query.datasource, { returnDefaultAsNull: false });
+      }
+
+      // Migrate datasource: null to current default
+      const defaultDs = getDataSourceSrv().getInstanceSettings(null);
+      if (defaultDs) {
+        for (const variable of this.dashboard.templating.list) {
+          if (variable.type === 'query' && variable.datasource === null) {
+            variable.datasource = getDataSourceRef(defaultDs);
+          }
+        }
+
+        panelUpgrades.push((panel: PanelModel) => {
+          if (panel.targets) {
+            let panelDataSourceWasDefault = false;
+            if (panel.datasource == null && panel.targets.length > 0) {
+              panel.datasource = getDataSourceRef(defaultDs);
+              panelDataSourceWasDefault = true;
+            }
+
+            for (const target of panel.targets) {
+              if (target.datasource == null || target.datasource.uid == null) {
+                if (panel.datasource?.uid !== MIXED_DATASOURCE_NAME) {
+                  target.datasource = { ...panel.datasource };
+                } else {
+                  target.datasource = migrateDatasourceNameToRef(target.datasource, { returnDefaultAsNull: false });
+                }
+              }
+
+              if (panelDataSourceWasDefault && target.datasource?.uid !== '__expr__') {
+                // We can have situations when default ds changed and the panel level data source is different from the queries
+                // In this case we use the query level data source as source for truth
+                panel.datasource = target.datasource;
+              }
+            }
+          }
+          return panel;
+        });
+      }
+    }
+
+    if (oldVersion < 37 && finalTargetVersion >= 37) {
+      panelUpgrades.push((panel: PanelModel) => {
+        if (panel.options?.legend && typeof panel.options.legend === 'object') {
+          // There were two ways to hide the legend, this normalizes to `legend.showLegend`
+          if (panel.options.legend.displayMode === 'hidden' || panel.options.legend.showLegend === false) {
+            panel.options.legend.displayMode = 'list';
+            panel.options.legend.showLegend = false;
+          } else {
+            panel.options.legend = { ...panel.options.legend, showLegend: true };
+          }
+        }
+
+        return panel;
+      });
+    }
+
+    // Update old table cell display configuration to the new
+    // format which uses an object for configuration
+    if (oldVersion < 38 && finalTargetVersion >= 38) {
+      panelUpgrades.push((panel: PanelModel) => {
+        if (panel.type === 'table' && panel.fieldConfig !== undefined) {
+          const displayMode = panel.fieldConfig.defaults?.custom?.displayMode;
+
+          // Update field configuration
+          if (displayMode !== undefined) {
+            // Migrate any options for the panel
+            panel.fieldConfig.defaults.custom.cellOptions = migrateTableDisplayModeToCellOptions(displayMode);
+
+            // Delete the legacy field
+            delete panel.fieldConfig.defaults.custom.displayMode;
+          }
+
+          // Update any overrides referencing the cell display mode
+          if (panel.fieldConfig?.overrides) {
+            for (const override of panel.fieldConfig.overrides) {
+              for (let j = 0; j < (override.properties?.length || 0); j++) {
+                let overrideDisplayMode = override.properties[j].value;
+                if (override.properties[j].id === 'custom.displayMode') {
+                  override.properties[j].id = 'custom.cellOptions';
+                  override.properties[j].value = migrateTableDisplayModeToCellOptions(overrideDisplayMode);
+                }
+              }
+            }
+          }
+        }
+
+        return panel;
+      });
+    }
+
+    // Update the configuration of the Timeseries to table transformation
+    // to support multiple options per query
+    if (oldVersion < 39 && finalTargetVersion >= 39) {
+      panelUpgrades.push((panel: PanelModel) => {
+        panel.transformations?.forEach((transformation) => {
+          // If we run into a timeSeriesTable transformation
+          // and it doesn't have undefined options then we migrate
+          if (
+            transformation.id === 'timeSeriesTable' &&
+            transformation.options !== undefined &&
+            transformation.options.refIdToStat !== undefined
+          ) {
+            let tableTransformOptions: TimeSeriesTableTransformerOptions = {};
+
+            // For each {refIdtoStat} record which maps refId to a statistic
+            // we add that to the stat property of the new
+            // RefIdTransformerOptions interface which includes multiple settings
+            for (const [refId, stat] of Object.entries(transformation.options.refIdToStat)) {
+              let newSettings: RefIdTransformerOptions = {};
+              // In this case the easiest way is just to do a type
+              // assertion as iterated entries have unknown types
+              newSettings.stat = stat as ReducerID;
+              tableTransformOptions[refId] = newSettings;
+            }
+
+            // Update the options
+            transformation.options = tableTransformOptions;
+          }
+        });
+
+        return panel;
+      });
+    }
+
+    if (oldVersion < 40 && finalTargetVersion >= 40) {
+      // In old dashboards refresh property can be a boolean
+      if (typeof this.dashboard.refresh !== 'string') {
+        this.dashboard.refresh = '';
+      }
+    }
+
+    if (oldVersion < 41 && finalTargetVersion >= 41) {
+      // time_options is a legacy property that was not used since grafana version 5
+      //  therefore deprecating this property from the schema
+      if ('time_options' in this.dashboard.timepicker) {
+        delete this.dashboard.timepicker.time_options;
+      }
+    }
+
+    if (oldVersion < 42 && finalTargetVersion >= 42) {
+      panelUpgrades.push(migrateHideFromFunctionality);
+    }
+
+    /**
+     * ⚠️  WARNING: DO NOT ADD NEW MIGRATIONS HERE ⚠️
+     *
+     * Schema version 42 is the FINAL version for the v1 dashboard API.
+     * This is due to the migration of the legacy dashboards API to the app platform.
+     *
+     * For panel-specific migrations, implement them as panel migrations in the
+     * individual panel plugin migration handlers instead of adding new schema versions.
+     */
+
+    // Apply panel upgrades if any exist
+    if (panelUpgrades.length > 0) {
+      for (j = 0; j < this.dashboard.panels.length; j++) {
+        for (k = 0; k < panelUpgrades.length; k++) {
+          this.dashboard.panels[j] = panelUpgrades[k].call(this, this.dashboard.panels[j]);
+          const rowPanels = this.dashboard.panels[j].panels;
+          if (rowPanels) {
+            for (n = 0; n < rowPanels.length; n++) {
+              rowPanels[n] = panelUpgrades[k].call(this, rowPanels[n]);
+            }
           }
         }
       }
     }
+
+    // Always update schema version after migrations, regardless of panel upgrades
+    // Only update schema version if migrations were actually needed
+    if (oldVersion < finalTargetVersion) {
+      this.dashboard.schemaVersion = finalTargetVersion;
+    }
+  }
+
+  private removeRepeatedPanels() {
+    const newPanels = [];
+
+    for (const panel of this.dashboard.panels) {
+      // @ts-expect-error
+      if (panel.repeatPanelId || panel.repeatByRow) {
+        continue;
+      }
+
+      // Filter out repeats in collapsed rows
+      if (panel.type === 'row' && Array.isArray(panel.panels)) {
+        panel.panels = panel.panels.filter((x) => !x.repeatPanelId);
+      }
+
+      newPanels.push(panel);
+    }
+
+    this.dashboard.panels = newPanels;
   }
 
   // Migrates metric queries and/or annotation queries that use more than one statistic.
@@ -758,6 +791,10 @@ export class DashboardMigrator {
     }
   }
 
+  // Migrates CloudWatch annotation queries that use multiple statistics into separate queries.
+  // For example, if an annotation query uses ['Max', 'Min'] statistics, it will be split into
+  // two separate annotation queries - one with 'Max' and another with 'Min'.
+  // The new annotation queries are added to the end of the annotations list.
   migrateCloudWatchAnnotationQuery() {
     for (const annotation of this.dashboard.annotations.list) {
       if (isLegacyCloudWatchAnnotationQuery(annotation)) {
@@ -770,183 +807,16 @@ export class DashboardMigrator {
   }
 
   upgradeToGridLayout(old: any) {
-    let yPos = 0;
-    const widthFactor = GRID_COLUMN_COUNT / 12;
-
-    const maxPanelId = max(
-      flattenDeep(
-        map(old.rows, (row) => {
-          return map(row.panels, 'id');
-        })
-      )
-    );
-    let nextRowId = maxPanelId + 1;
-
     if (!old.rows) {
       return;
     }
 
-    // Add special "row" panels if even one row is collapsed, repeated or has visible title
-    const showRows = some(old.rows, (row) => row.collapse || row.showTitle || row.repeat);
+    // Top-level panels may have been assigned IDs by ensurePanelsHaveUniqueIds
+    const topLevelPanelIds = map(this.dashboard.panels, 'id');
 
-    for (const row of old.rows) {
-      if (row.repeatIteration) {
-        continue;
-      }
-
-      const height: any = row.height || DEFAULT_ROW_HEIGHT;
-      const rowGridHeight = getGridHeight(height);
-
-      const rowPanel: any = {};
-      let rowPanelModel: PanelModel | undefined;
-
-      if (showRows) {
-        // add special row panel
-        rowPanel.id = nextRowId;
-        rowPanel.type = 'row';
-        rowPanel.title = row.title;
-        rowPanel.collapsed = row.collapse;
-        rowPanel.repeat = row.repeat;
-        rowPanel.panels = [];
-        rowPanel.gridPos = {
-          x: 0,
-          y: yPos,
-          w: GRID_COLUMN_COUNT,
-          h: rowGridHeight,
-        };
-        rowPanelModel = new PanelModel(rowPanel);
-        nextRowId++;
-        yPos++;
-      }
-
-      const rowArea = new RowArea(rowGridHeight, GRID_COLUMN_COUNT, yPos);
-
-      for (const panel of row.panels) {
-        panel.span = panel.span || DEFAULT_PANEL_SPAN;
-        if (panel.minSpan) {
-          panel.minSpan = Math.min(GRID_COLUMN_COUNT, (GRID_COLUMN_COUNT / 12) * panel.minSpan);
-        }
-        const panelWidth = Math.floor(panel.span) * widthFactor;
-        const panelHeight = panel.height ? getGridHeight(panel.height) : rowGridHeight;
-
-        const panelPos = rowArea.getPanelPosition(panelHeight, panelWidth);
-        yPos = rowArea.yPos;
-        panel.gridPos = {
-          x: panelPos.x,
-          y: yPos + panelPos.y,
-          w: panelWidth,
-          h: panelHeight,
-        };
-        rowArea.addPanel(panel.gridPos);
-
-        delete panel.span;
-
-        if (rowPanelModel && rowPanel.collapsed) {
-          rowPanelModel.panels.push(panel);
-        } else {
-          this.dashboard.panels.push(new PanelModel(panel));
-        }
-      }
-
-      if (rowPanelModel) {
-        this.dashboard.panels.push(rowPanelModel);
-      }
-
-      if (!(rowPanelModel && rowPanel.collapsed)) {
-        yPos += rowGridHeight;
-      }
+    for (const panel of convertRowsToGridPanels(old.rows, topLevelPanelIds)) {
+      this.dashboard.panels.push(new PanelModel(panel));
     }
-  }
-}
-
-function getGridHeight(height: number | string) {
-  if (isString(height)) {
-    height = parseInt(height.replace('px', ''), 10);
-  }
-
-  if (height < MIN_PANEL_HEIGHT) {
-    height = MIN_PANEL_HEIGHT;
-  }
-
-  const gridHeight = Math.ceil(height / (GRID_CELL_HEIGHT + GRID_CELL_VMARGIN));
-  return gridHeight;
-}
-
-/**
- * RowArea represents dashboard row filled by panels
- * area is an array of numbers represented filled column's cells like
- *  -----------------------
- * |******** ****
- * |******** ****
- * |********
- *  -----------------------
- *  33333333 2222 00000 ...
- */
-class RowArea {
-  area: number[];
-  yPos: number;
-  height: number;
-
-  constructor(height: number, width = GRID_COLUMN_COUNT, rowYPos = 0) {
-    this.area = new Array(width).fill(0);
-    this.yPos = rowYPos;
-    this.height = height;
-  }
-
-  reset() {
-    this.area.fill(0);
-  }
-
-  /**
-   * Update area after adding the panel.
-   */
-  addPanel(gridPos: any) {
-    for (let i = gridPos.x; i < gridPos.x + gridPos.w; i++) {
-      if (!this.area[i] || gridPos.y + gridPos.h - this.yPos > this.area[i]) {
-        this.area[i] = gridPos.y + gridPos.h - this.yPos;
-      }
-    }
-    return this.area;
-  }
-
-  /**
-   * Calculate position for the new panel in the row.
-   */
-  getPanelPosition(panelHeight: number, panelWidth: number, callOnce = false): any {
-    let startPlace, endPlace;
-    let place;
-    for (let i = this.area.length - 1; i >= 0; i--) {
-      if (this.height - this.area[i] > 0) {
-        if (endPlace === undefined) {
-          endPlace = i;
-        } else {
-          if (i < this.area.length - 1 && this.area[i] <= this.area[i + 1]) {
-            startPlace = i;
-          } else {
-            break;
-          }
-        }
-      } else {
-        break;
-      }
-    }
-
-    if (startPlace !== undefined && endPlace !== undefined && endPlace - startPlace >= panelWidth - 1) {
-      const yPos = max(this.area.slice(startPlace));
-      place = {
-        x: startPlace,
-        y: yPos,
-      };
-    } else if (!callOnce) {
-      // wrap to next row
-      this.yPos += this.height;
-      this.reset();
-      return this.getPanelPosition(panelHeight, panelWidth, true);
-    } else {
-      return null;
-    }
-
-    return place;
   }
 }
 
@@ -1008,42 +878,15 @@ function updateVariablesSyntax(text: string) {
   });
 }
 
-function migrateSinglestat(panel: PanelModel) {
-  // If   'grafana-singlestat-panel' exists, move to that
-  if (config.panels['grafana-singlestat-panel']) {
-    panel.type = 'grafana-singlestat-panel';
-    return panel;
-  }
-
-  let returnSaveModel = false;
-
-  if (!panel.changePlugin) {
-    returnSaveModel = true;
-    panel = new PanelModel(panel);
-  }
-
-  // To make sure PanelModel.isAngularPlugin logic thinks the current panel is angular
-  // And since this plugin no longer exist we just fake it here
-  panel.plugin = { angularPanelCtrl: {} } as PanelPlugin;
-
-  // Otheriwse use gauge or stat panel
-  if ((panel as any).gauge?.show) {
-    gaugePanelPlugin.meta = config.panels['gauge'];
-    panel.changePlugin(gaugePanelPlugin);
-  } else {
-    statPanelPlugin.meta = config.panels['stat'];
-    panel.changePlugin(statPanelPlugin);
-  }
-
-  if (returnSaveModel) {
-    return panel.getSaveModel();
-  }
-
-  return panel;
+interface MigrateDatasourceNameOptions {
+  returnDefaultAsNull: boolean;
 }
 
-export function migrateDatasourceNameToRef(nameOrRef?: string | DataSourceRef | null): DataSourceRef | null {
-  if (nameOrRef == null || nameOrRef === 'default') {
+export function migrateDatasourceNameToRef(
+  nameOrRef: string | DataSourceRef | null | undefined,
+  options: MigrateDatasourceNameOptions
+): DataSourceRef | null {
+  if (options.returnDefaultAsNull && (nameOrRef == null || nameOrRef === 'default')) {
     return null;
   }
 
@@ -1053,7 +896,7 @@ export function migrateDatasourceNameToRef(nameOrRef?: string | DataSourceRef | 
 
   const ds = getDataSourceSrv().getInstanceSettings(nameOrRef);
   if (!ds) {
-    return { uid: nameOrRef as string }; // not found
+    return { uid: nameOrRef ? nameOrRef : undefined }; // not found
   }
 
   return getDataSourceRef(ds);
@@ -1110,7 +953,9 @@ function isCloudWatchQuery(target: DataQuery): target is CloudWatchMetricsQuery 
   );
 }
 
-function isLegacyCloudWatchAnnotationQuery(target: AnnotationQuery<DataQuery>): target is CloudWatchAnnotationQuery {
+function isLegacyCloudWatchAnnotationQuery(
+  target: AnnotationQuery<DataQuery>
+): target is AnnotationQuery<LegacyAnnotationQuery> {
   return (
     target.hasOwnProperty('dimensions') &&
     target.hasOwnProperty('namespace') &&
@@ -1193,7 +1038,7 @@ function upgradeValueMappings(oldMappings: any, thresholds?: ThresholdsConfig): 
 }
 
 function migrateTooltipOptions(panel: PanelModel) {
-  if (panel.type === 'timeseries' || panel.type === 'xychart') {
+  if (panel.type === 'timeseries' || panel.type === 'xychart' || panel.type === 'xychart2') {
     if (panel.options.tooltipOptions) {
       panel.options = {
         ...panel.options,
@@ -1201,6 +1046,58 @@ function migrateTooltipOptions(panel: PanelModel) {
       };
       delete panel.options.tooltipOptions;
     }
+  }
+
+  return panel;
+}
+
+// This migration is performed when there is a time series panel with all axes configured to be hidden
+// To avoid breaking dashboards we add override that persists x-axis visibility
+function ensureXAxisVisibility(panel: PanelModel) {
+  if (panel.type === 'timeseries') {
+    if (
+      (panel.fieldConfig as FieldConfigSource<GraphFieldConfig>)?.defaults.custom?.axisPlacement ===
+      AxisPlacement.Hidden
+    ) {
+      panel.fieldConfig = {
+        ...panel.fieldConfig,
+        overrides: [
+          ...panel.fieldConfig.overrides,
+          {
+            matcher: {
+              id: FieldMatcherID.byType,
+              options: FieldType.time,
+            },
+            properties: [
+              {
+                id: 'custom.axisPlacement',
+                value: AxisPlacement.Auto,
+              },
+            ],
+          },
+        ],
+      };
+    }
+  }
+
+  return panel;
+}
+
+function migrateHideFromFunctionality(panel: PanelModel) {
+  // migrate overrides with hideFrom.viz = true to also set tooltip = true
+  // this includes the __systemRef override
+  if (panel.fieldConfig && panel.fieldConfig.overrides) {
+    panel.fieldConfig.overrides = panel.fieldConfig.overrides.map((override) => {
+      if (override.properties) {
+        override.properties = override.properties.map((property) => {
+          if (property.id === 'custom.hideFrom' && property.value?.viz === true) {
+            property.value.tooltip = true;
+          }
+          return property;
+        });
+      }
+      return override;
+    });
   }
 
   return panel;

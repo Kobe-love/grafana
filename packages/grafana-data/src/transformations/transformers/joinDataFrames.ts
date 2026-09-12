@@ -1,10 +1,12 @@
-import { DataFrame, Field, FieldMatcher, FieldType, Vector } from '../../types';
-import { ArrayVector } from '../../vector';
+import { getTimeField, sortDataFrame } from '../../dataframe/processDataFrame';
+import { type DataFrame, type Field, FieldType, TIME_SERIES_VALUE_FIELD_NAME } from '../../types/dataFrame';
+import { type FieldMatcher } from '../../types/transformations';
 import { fieldMatchers } from '../matchers';
 import { FieldMatcherID } from '../matchers/ids';
-import { getTimeField, sortDataFrame } from '../../dataframe';
 
-export function pickBestJoinField(data: DataFrame[]): FieldMatcher {
+import { JoinMode } from './joinShared';
+
+function pickBestJoinField(data: DataFrame[]): FieldMatcher {
   const { timeField } = getTimeField(data[0]);
   if (timeField) {
     return fieldMatchers.get(FieldMatcherID.firstTimeField).get({});
@@ -30,7 +32,7 @@ export function pickBestJoinField(data: DataFrame[]): FieldMatcher {
 }
 
 /**
- * @alpha
+ * @internal
  */
 export interface JoinOptions {
   /**
@@ -39,7 +41,8 @@ export interface JoinOptions {
   frames: DataFrame[];
 
   /**
-   * The field to join -- frames that do not have this field will be droppped
+   * The field to join -- frames that do not have this field will be dropped, except for
+   * JoinMode.inner, where they instead make the result empty
    */
   joinBy?: FieldMatcher;
 
@@ -49,16 +52,24 @@ export interface JoinOptions {
   keep?: FieldMatcher;
 
   /**
-   * When the result is a single frame, this will to a quick check to see if the values are sorted,
-   * and sort if necessary.  If the first/last values are in order the whole vector is assumed to be
-   * sorted
-   */
-  enforceSort?: boolean;
-
-  /**
    * @internal -- used when we need to keep a reference to the original frame/field index
    */
   keepOriginIndices?: boolean;
+
+  /**
+   * @internal -- keep any pre-cached state.displayName
+   */
+  keepDisplayNames?: boolean;
+
+  /**
+   * @internal -- Optionally specify how to treat null values
+   */
+  nullMode?: (field: Field) => JoinNullMode;
+
+  /**
+   * @internal -- Optionally specify a join mode (outer or inner)
+   */
+  mode?: JoinMode;
 }
 
 function getJoinMatcher(options: JoinOptions): FieldMatcher {
@@ -66,13 +77,35 @@ function getJoinMatcher(options: JoinOptions): FieldMatcher {
 }
 
 /**
+ * @internal
+ */
+export function maybeSortFrame(frame: DataFrame, fieldIdx: number) {
+  if (fieldIdx >= 0) {
+    let sortByField = frame.fields[fieldIdx];
+
+    if (sortByField.type !== FieldType.string && !isLikelyAscendingVector(sortByField.values)) {
+      frame = sortDataFrame(frame, fieldIdx);
+    }
+  }
+
+  return frame;
+}
+
+/**
  * This will return a single frame joined by the first matching field.  When a join field is not specified,
  * the default will use the first time field
  */
-export function outerJoinDataFrames(options: JoinOptions): DataFrame | undefined {
+export function joinDataFrames(options: JoinOptions): DataFrame | undefined {
   if (!options.frames?.length) {
     return;
   }
+
+  const nullMode =
+    options.nullMode ??
+    ((field: Field) => {
+      let spanNulls = field.config.custom?.spanNulls;
+      return spanNulls === true ? NULL_REMOVE : spanNulls === -1 ? NULL_RETAIN : NULL_EXPAND;
+    });
 
   if (options.frames.length === 1) {
     let frame = options.frames[0];
@@ -80,6 +113,16 @@ export function outerJoinDataFrames(options: JoinOptions): DataFrame | undefined
 
     const joinFieldMatcher = getJoinMatcher(options);
     let joinIndex = frameCopy.fields.findIndex((f) => joinFieldMatcher(f, frameCopy, options.frames));
+
+    if (joinIndex < 0 && options.mode === JoinMode.inner) {
+      // nothing to join on, so there are no matching rows -- same result as the multi-frame path
+      // gives when no frame has the join field. Outer joins instead return the frame untouched, so
+      // that a panel with a single series still renders when it has no field to join by.
+      return {
+        length: 0,
+        fields: [],
+      };
+    }
 
     if (options.keepOriginIndices) {
       frameCopy = {
@@ -109,12 +152,8 @@ export function outerJoinDataFrames(options: JoinOptions): DataFrame | undefined
       }
     }
 
-    if (options.enforceSort) {
-      if (joinIndex >= 0) {
-        if (!isLikelyAscendingVector(frameCopy.fields[joinIndex].values)) {
-          frameCopy = sortDataFrame(frameCopy, joinIndex);
-        }
-      }
+    if (joinIndex >= 0) {
+      frameCopy = maybeSortFrame(frameCopy, joinIndex);
     }
 
     if (options.keep) {
@@ -141,10 +180,17 @@ export function outerJoinDataFrames(options: JoinOptions): DataFrame | undefined
   const originalFields: Field[] = [];
   const joinFieldMatcher = getJoinMatcher(options);
 
+  // Frames that cannot be joined are dropped (see JoinOptions.joinBy), which for an outer join keeps
+  // one unrelated series from blanking out a whole visualization. An inner join only yields rows
+  // present in every input, so there dropping a frame would widen the result instead: nothing can
+  // match a frame that contributes no join values, making the correct output zero rows.
+  let droppedFrame = false;
+
   for (let frameIndex = 0; frameIndex < options.frames.length; frameIndex++) {
     const frame = options.frames[frameIndex];
 
     if (!frame || !frame.fields?.length) {
+      droppedFrame = true;
       continue; // skip the frame
     }
 
@@ -164,17 +210,23 @@ export function outerJoinDataFrames(options: JoinOptions): DataFrame | undefined
         }
 
         // Support the standard graph span nulls field config
-        let spanNulls = field.config.custom?.spanNulls;
-        nullModesFrame.push(spanNulls === true ? NULL_REMOVE : spanNulls === -1 ? NULL_RETAIN : NULL_EXPAND);
+        nullModesFrame.push(nullMode(field));
 
         let labels = field.labels ?? {};
+        let name = field.name;
         if (frame.name) {
-          labels = { ...labels, name: frame.name };
+          if (field.name === TIME_SERIES_VALUE_FIELD_NAME) {
+            name = frame.name;
+          } else if (labels.name == null) {
+            // add the name label from frame
+            labels = { ...labels, name: frame.name };
+          }
         }
 
         fields.push({
           ...field,
-          labels, // add the name label from frame
+          name,
+          labels,
         });
       }
 
@@ -187,6 +239,7 @@ export function outerJoinDataFrames(options: JoinOptions): DataFrame | undefined
     }
 
     if (!join) {
+      droppedFrame = true;
       continue; // skip the frame
     }
 
@@ -195,28 +248,223 @@ export function outerJoinDataFrames(options: JoinOptions): DataFrame | undefined
     }
 
     nullModes.push(nullModesFrame);
-    const a: AlignedData = [join.values.toArray()]; //
+    const a: AlignedData = [join.values]; //
 
     for (const field of fields) {
-      a.push(field.values.toArray());
+      a.push(field.values);
       originalFields.push(field);
-      // clear field displayName state
-      delete field.state?.displayName;
+      if (!options.keepDisplayNames) {
+        // clear field displayName state
+        delete field.state?.displayName;
+      }
     }
-
     allData.push(a);
   }
 
-  const joined = join(allData, nullModes);
+  let joined: Array<Array<number | string | null | undefined>> = [];
+
+  if (allData.length === 0) {
+    return {
+      length: 0,
+      fields: originalFields,
+    };
+  }
+
+  if (droppedFrame && options.mode === JoinMode.inner) {
+    // keep the joinable frames' fields so consumers still see the expected columns, just no rows
+    return {
+      length: 0,
+      fields: originalFields.map((f) => ({ ...f, values: [] })),
+    };
+  }
+
+  if (options.mode === JoinMode.outerTabular) {
+    joined = joinTabular(allData, true);
+  } else if (options.mode === JoinMode.inner) {
+    joined = joinTabular(allData);
+  } else {
+    joined = join(allData, nullModes, options.mode);
+  }
 
   return {
     // ...options.data[0], // keep name, meta?
-    length: joined[0].length,
+    length: joined[0] ? joined[0].length : 0,
     fields: originalFields.map((f, index) => ({
       ...f,
-      values: new ArrayVector(joined[index]),
+      values: joined[index],
     })),
   };
+}
+
+/**
+ * SQL-style join of tables, using the first column in each
+ */
+function joinTabular(tables: AlignedData[], outer = false) {
+  // console.time('joinTabular');
+
+  let ltable = tables[0];
+  let lfield = ltable[0];
+
+  // iterate tables, merging right table with left, with the result becoming the new left
+  // rinse and repeat for each tables in the array
+  for (let ti = 1; ti < tables.length; ti++) {
+    let rtable = tables[ti];
+    let rfield = rtable[0];
+
+    /**
+     * Build an inverted index of the right table's join column like { "foo": [1,2,3], "bar": [7,12], ... }
+     * where the keys are unique values and the arrays are indices where these values were found
+     */
+    // console.time('index right');
+    let index: Record<string | number, number[]> = {};
+
+    for (let i = 0; i < rfield.length; i++) {
+      let val = rfield[i];
+
+      let idxs = index[val];
+
+      if (idxs == null) {
+        idxs = index[val] = [];
+      }
+
+      idxs.push(i);
+    }
+    // console.timeEnd('index right');
+
+    /**
+     * Loop over the left table's join column and match each non-null value to the right index,
+     * copying the matched ridxs array into new matched list, like [33, [45,79,233]], where first
+     * value is left idx and second value is right idxs
+     *
+     * Also keep track of unmatched or null left values for outer join, since we'll need to include these
+     */
+    let matchedKeys = new Set();
+    let unmatchedLeft = [];
+    let unmatchedRight = [];
+
+    // console.time('match left');
+    let matched: Array<[lidx: number, ridxs: number[]]> = [];
+
+    // count of total number of output rows, so we can
+    // pre-allocate the final array size during materialization
+    let count = 0;
+
+    for (let i = 0; i < lfield.length; i++) {
+      let v = lfield[i];
+
+      if (v != null) {
+        let idxs = index[v];
+
+        if (idxs != null) {
+          matched.push([i, idxs]);
+          count += idxs.length;
+          outer && matchedKeys.add(v);
+        } else if (outer) {
+          unmatchedLeft.push(i);
+        }
+      } else if (outer) {
+        unmatchedLeft.push(i);
+      }
+    }
+    count += unmatchedLeft.length;
+    // console.timeEnd('match left');
+
+    /**
+     * For outer joins, also loop over the right index to record unmatched values
+     */
+    // console.time('unmatched right');
+    if (outer) {
+      for (let k in index) {
+        if (!matchedKeys.has(k)) {
+          unmatchedRight.push(...index[k]);
+        }
+      }
+      count += unmatchedRight.length;
+    }
+    // console.timeEnd('unmatched right');
+
+    /**
+     * Now we can use matched, unmatchedLeft, unmatchedRight, ltable, and rtable to assemble the final table.
+     *
+     * To keep the hot path free of an inner per-column loop (without resorting to runtime codegen, which
+     * requires the 'unsafe-eval' CSP directive) we materialize column-major:
+     *
+     *   1. First flatten the matched/unmatched bookkeeping into a per-output-row source plan. For each output
+     *      row we record the source row index in the left and right tables (-1 means "no source", i.e. null-fill).
+     *   2. Then fill each output column independently with a single tight, monomorphic loop over the plan. This
+     *      keeps reads/writes sequential within one array at a time, which both avoids the per-cell column
+     *      dispatch and is friendlier to the cache than scattering writes across every column on each row.
+     */
+    // console.time('materialize');
+    let leftSrc = new Int32Array(count);
+    let rightSrc = new Int32Array(count);
+
+    let rowIdx = 0;
+
+    for (let i = 0; i < matched.length; i++) {
+      let [lidx, ridxs] = matched[i];
+
+      for (let j = 0; j < ridxs.length; j++, rowIdx++) {
+        leftSrc[rowIdx] = lidx;
+        rightSrc[rowIdx] = ridxs[j];
+      }
+    }
+
+    for (let i = 0; i < unmatchedLeft.length; i++, rowIdx++) {
+      leftSrc[rowIdx] = unmatchedLeft[i];
+      rightSrc[rowIdx] = -1;
+    }
+
+    for (let i = 0; i < unmatchedRight.length; i++, rowIdx++) {
+      leftSrc[rowIdx] = -1;
+      rightSrc[rowIdx] = unmatchedRight[i];
+    }
+
+    let joined: Array<Array<number | string | null | undefined>> = [];
+
+    // join column (output col 0): sourced from the left row when present, otherwise from the matched
+    // right row. Every output row has exactly one side, so this always resolves to a real value.
+    let ljoin = ltable[0];
+    let rjoin = rtable[0];
+    let joinCol = Array(count);
+    for (let r = 0; r < count; r++) {
+      let li = leftSrc[r];
+      joinCol[r] = li !== -1 ? ljoin[li] : rjoin[rightSrc[r]];
+    }
+    joined.push(joinCol);
+
+    // remaining left columns: null-filled for unmatched-right rows
+    for (let c = 1; c < ltable.length; c++) {
+      let src = ltable[c];
+      let col = Array(count);
+      for (let r = 0; r < count; r++) {
+        let li = leftSrc[r];
+        col[r] = li !== -1 ? src[li] : null;
+      }
+      joined.push(col);
+    }
+
+    // right columns (skip the join field): null-filled for unmatched-left rows
+    for (let c = 1; c < rtable.length; c++) {
+      let src = rtable[c];
+      let col = Array(count);
+      for (let r = 0; r < count; r++) {
+        let ri = rightSrc[r];
+        col[r] = ri !== -1 ? src[ri] : null;
+      }
+      joined.push(col);
+    }
+    // console.timeEnd('materialize');
+
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+    ltable = joined as AlignedData;
+    lfield = ltable[0];
+  }
+
+  // console.timeEnd('joinTabular');
+
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+  return ltable as Array<Array<string | number | null | undefined>>;
 }
 
 //--------------------------------------------------------------------------------
@@ -226,12 +474,25 @@ export function outerJoinDataFrames(options: JoinOptions): DataFrame | undefined
 //--------------------------------------------------------------------------------
 
 // Copied from uplot
-export type AlignedData = [number[], ...Array<Array<number | null | undefined>>];
+type TypedArray =
+  | Int8Array
+  | Uint8Array
+  | Int16Array
+  | Uint16Array
+  | Int32Array
+  | Uint32Array
+  | Uint8ClampedArray
+  | Float32Array
+  | Float64Array;
+
+export type AlignedData =
+  | TypedArray[]
+  | [xValues: number[] | TypedArray, ...yValues: Array<Array<number | null | undefined> | TypedArray>];
 
 // nullModes
-const NULL_REMOVE = 0; // nulls are converted to undefined (e.g. for spanGaps: true)
-const NULL_RETAIN = 1; // nulls are retained, with alignment artifacts set to undefined (default)
-const NULL_EXPAND = 2; // nulls are expanded to include any adjacent alignment artifacts
+export const NULL_REMOVE = 0; // nulls are converted to undefined (e.g. for spanGaps: true)
+export const NULL_RETAIN = 1; // nulls are retained, with alignment artifacts set to undefined (default)
+export const NULL_EXPAND = 2; // nulls are expanded to include any adjacent alignment artifacts
 
 type JoinNullMode = number; // NULL_IGNORE | NULL_RETAIN | NULL_EXPAND;
 
@@ -254,9 +515,55 @@ function nullExpand(yVals: Array<number | null>, nullIdxs: number[], alignedLen:
   }
 }
 
+// test if we can do cheap join (all join fields same)
+function allHeadersSame(tables: AlignedData[]) {
+  let vals0 = tables[0][0];
+  let len0 = vals0.length;
+
+  for (let i = 1; i < tables.length; i++) {
+    let vals1 = tables[i][0];
+
+    if (vals1.length !== len0) {
+      return false;
+    }
+
+    if (vals1 !== vals0) {
+      for (let j = 0; j < len0; j++) {
+        if (vals1[j] !== vals0[j]) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
 // nullModes is a tables-matched array indicating how to treat nulls in each series
-export function join(tables: AlignedData[], nullModes?: number[][]) {
-  const xVals = new Set<number>();
+export function join(tables: AlignedData[], nullModes?: number[][], mode: JoinMode = JoinMode.outer) {
+  // cheap join
+  if (allHeadersSame(tables)) {
+    let table = tables[0].slice();
+
+    for (let i = 1; i < tables.length; i++) {
+      table.push(...tables[i].slice(1));
+    }
+
+    let tmpFrame: DataFrame = {
+      length: table[0].length,
+      fields: table.map((values) => ({
+        name: '',
+        type: FieldType.number,
+        config: {},
+        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+        values: values as number[],
+      })),
+    };
+
+    return maybeSortFrame(tmpFrame, 0).fields.map((field) => field.values);
+  }
+
+  let xVals: Set<number> = new Set();
 
   for (let ti = 0; ti < tables.length; ti++) {
     let t = tables[ti];
@@ -317,34 +624,46 @@ export function join(tables: AlignedData[], nullModes?: number[][]) {
   return data;
 }
 
-// Quick test if the first and last points look to be ascending
+// Test a few samples to see if the values are ascending
 // Only exported for tests
-export function isLikelyAscendingVector(data: Vector): boolean {
-  let first: any = undefined;
+export function isLikelyAscendingVector(data: unknown[], samples = 50) {
+  const len = data.length;
 
-  for (let idx = 0; idx < data.length; idx++) {
-    const v = data.get(idx);
-    if (v != null) {
-      if (first != null) {
-        if (first > v) {
-          return false; // descending
-        }
-        break;
-      }
-      first = v;
-    }
+  // empty or single value
+  if (len <= 1) {
+    return true;
   }
 
-  let idx = data.length - 1;
-  while (idx >= 0) {
-    const v = data.get(idx--);
-    if (v != null) {
-      if (first > v) {
+  // skip leading & trailing nullish
+  let firstIdx = 0;
+  let lastIdx = len - 1;
+
+  while (firstIdx <= lastIdx && data[firstIdx] == null) {
+    firstIdx++;
+  }
+
+  while (lastIdx >= firstIdx && data[lastIdx] == null) {
+    lastIdx--;
+  }
+
+  // all nullish or one value surrounded by nullish
+  if (lastIdx <= firstIdx) {
+    return true;
+  }
+
+  const stride = Math.max(1, Math.floor((lastIdx - firstIdx + 1) / samples));
+
+  for (let prevVal = data[firstIdx], i = firstIdx + stride; i <= lastIdx; i += stride) {
+    const v = data[i];
+
+    if (v != null && prevVal != null) {
+      if (v <= prevVal) {
         return false;
       }
-      return true;
+
+      prevVal = v;
     }
   }
 
-  return true; // only one non-null point
+  return true;
 }

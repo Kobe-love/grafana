@@ -1,12 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { css } from '@emotion/css';
+import { css, cx } from '@emotion/css';
+import * as React from 'react';
+import type { JSX } from 'react';
+
+import { useStyles2 } from '../../themes/ThemeContext';
+import { type ButtonVariant } from '../Button/Button';
 import { Modal } from '../Modal/Modal';
-import { IconName } from '../../types/icon';
-import { Button } from '../Button';
-import { useStyles2 } from '../../themes';
-import { GrafanaTheme2 } from '@grafana/data';
-import { HorizontalGroup, Input } from '..';
-import { selectors } from '@grafana/e2e-selectors';
+
+import { ConfirmContent } from './ConfirmContent';
 
 export interface ConfirmModalProps {
   /** Toggle modal's open/closed state */
@@ -19,98 +19,81 @@ export interface ConfirmModalProps {
   description?: React.ReactNode;
   /** Text for confirm button */
   confirmText: string;
+  /** Variant for confirm button */
+  confirmVariant?: ButtonVariant;
   /** Text for dismiss button */
   dismissText?: string;
-  /** Icon for the modal header */
-  icon?: IconName;
+  /** Variant for dismiss button */
+  dismissVariant?: ButtonVariant;
+  /** Additional styling for modal container */
+  modalClass?: string;
   /** Text user needs to fill in before confirming */
   confirmationText?: string;
   /** Text for alternative button */
   alternativeText?: string;
-  /** Confirm action callback */
-  onConfirm(): void;
+  /** Confirm button variant
+   * @deprecated Use `confirmVariant` instead. This prop will be removed in a future release.
+   */
+  confirmButtonVariant?: ButtonVariant;
+  /** Confirm action callback
+   * Return a promise to disable the confirm button until the promise is resolved
+   */
+  onConfirm(): void | Promise<void>;
   /** Dismiss action callback */
   onDismiss(): void;
   /** Alternative action callback */
   onAlternative?(): void;
+  /** Disable the confirm button and the confirm text input if needed */
+  disabled?: boolean;
 }
 
+/**
+ * Used to request user for action confirmation, e.g. deleting items. Triggers provided `onConfirm` callback.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/overlays-confirmmodal--docs
+ */
 export const ConfirmModal = ({
   isOpen,
   title,
   body,
   description,
   confirmText,
+  confirmVariant = 'destructive',
   confirmationText,
   dismissText = 'Cancel',
+  dismissVariant = 'secondary',
   alternativeText,
-  icon = 'exclamation-triangle',
+  modalClass,
   onConfirm,
   onDismiss,
   onAlternative,
+  confirmButtonVariant,
+  disabled,
 }: ConfirmModalProps): JSX.Element => {
-  const [disabled, setDisabled] = useState(Boolean(confirmationText));
   const styles = useStyles2(getStyles);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const onConfirmationTextChange = (event: React.FormEvent<HTMLInputElement>) => {
-    setDisabled(confirmationText?.localeCompare(event.currentTarget.value) !== 0);
-  };
-
-  useEffect(() => {
-    // for some reason autoFocus property did no work on this button, but this does
-    if (isOpen) {
-      buttonRef.current?.focus();
-    }
-  }, [isOpen]);
 
   return (
-    <Modal className={styles.modal} title={title} icon={icon} isOpen={isOpen} onDismiss={onDismiss}>
-      <div className={styles.modalText}>
-        {body}
-        {description ? <div className={styles.modalDescription}>{description}</div> : null}
-        {confirmationText ? (
-          <div className={styles.modalConfirmationInput}>
-            <HorizontalGroup>
-              <Input placeholder={`Type ${confirmationText} to confirm`} onChange={onConfirmationTextChange} />
-            </HorizontalGroup>
-          </div>
-        ) : null}
-      </div>
-      <Modal.ButtonRow>
-        <Button variant="secondary" onClick={onDismiss} fill="outline">
-          {dismissText}
-        </Button>
-        <Button
-          variant="destructive"
-          onClick={onConfirm}
-          disabled={disabled}
-          ref={buttonRef}
-          aria-label={selectors.pages.ConfirmModal.delete}
-        >
-          {confirmText}
-        </Button>
-        {onAlternative ? (
-          <Button variant="primary" onClick={onAlternative}>
-            {alternativeText}
-          </Button>
-        ) : null}
-      </Modal.ButtonRow>
+    <Modal className={cx(styles.modal, modalClass)} title={title} isOpen={isOpen} onDismiss={onDismiss}>
+      <ConfirmContent
+        body={body}
+        description={description}
+        confirmButtonLabel={confirmText}
+        dismissButtonLabel={dismissText}
+        dismissButtonVariant={dismissVariant}
+        confirmPromptText={confirmationText}
+        alternativeButtonLabel={alternativeText}
+        confirmButtonVariant={confirmButtonVariant ?? confirmVariant}
+        onConfirm={onConfirm}
+        onDismiss={onDismiss}
+        onAlternative={onAlternative}
+        disabled={disabled}
+      />
     </Modal>
   );
 };
 
-const getStyles = (theme: GrafanaTheme2) => ({
-  modal: css`
-    width: 500px;
-  `,
-  modalText: css({
-    fontSize: theme.typography.h5.fontSize,
-    color: theme.colors.text.primary,
-  }),
-  modalDescription: css({
-    fontSize: theme.typography.body.fontSize,
-  }),
-  modalConfirmationInput: css({
-    paddingTop: theme.spacing(1),
+const getStyles = () => ({
+  modal: css({
+    width: '500px',
   }),
 });

@@ -1,6 +1,10 @@
-import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import { ConstantVariableModel, initialVariableModelState, VariableHide, VariableOption } from '../types';
-import { getInstanceState, VariablePayload, initialVariablesState, VariablesState } from '../state/types';
+import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
+
+import { type ConstantVariableModel, VariableHide, type VariableOption } from '@grafana/data';
+
+import { getInstanceState } from '../state/getInstanceState';
+import { initialVariablesState, type VariablePayload, type VariablesState } from '../state/types';
+import { initialVariableModelState } from '../types';
 
 export const initialConstantVariableModelState: ConstantVariableModel = {
   ...initialVariableModelState,
@@ -11,12 +15,16 @@ export const initialConstantVariableModelState: ConstantVariableModel = {
   options: [],
 };
 
-export const constantVariableSlice = createSlice({
+const constantVariableSlice = createSlice({
   name: 'templating/constant',
   initialState: initialVariablesState,
   reducers: {
     createConstantOptionsFromQuery: (state: VariablesState, action: PayloadAction<VariablePayload>) => {
-      const instanceState = getInstanceState<ConstantVariableModel>(state, action.payload.id);
+      const instanceState = getInstanceState(state, action.payload.id);
+      if (instanceState.type !== 'constant') {
+        return;
+      }
+
       instanceState.options = [
         { text: instanceState.query.trim(), value: instanceState.query.trim(), selected: false },
       ];

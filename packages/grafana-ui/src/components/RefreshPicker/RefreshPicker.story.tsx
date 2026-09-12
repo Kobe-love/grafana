@@ -1,68 +1,46 @@
-import React from 'react';
-import { action } from '@storybook/addon-actions';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
-import { UseState } from '../../utils/storybook/UseState';
-import { RefreshPicker } from '@grafana/ui';
-import { StoryExample } from '../../utils/storybook/StoryExample';
-import { DashboardStoryCanvas } from '../../utils/storybook/DashboardStoryCanvas';
-import { HorizontalGroup } from '../Layout/Layout';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+import { action } from 'storybook/actions';
+import { useArgs } from 'storybook/preview-api';
 
-export default {
-  title: 'Pickers and Editors/RefreshPicker',
+import { RefreshPicker } from './RefreshPicker';
+import mdx from './RefreshPicker.mdx';
+
+const meta: Meta<typeof RefreshPicker> = {
+  title: 'Pickers/RefreshPicker',
   component: RefreshPicker,
-  decorators: [withCenteredStory],
+  parameters: {
+    docs: {
+      page: mdx,
+    },
+    controls: {
+      sort: 'alpha',
+    },
+  },
+  args: {
+    isLoading: false,
+    isLive: false,
+    width: 'auto',
+    text: 'Refresh time picker',
+    tooltip: 'My tooltip text goes here',
+    value: '1h',
+    primary: false,
+    noIntervalPicker: false,
+    intervals: ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '2h', '1d'],
+  },
 };
 
-export const Examples = () => {
-  const intervals = ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '2h', '1d'];
+export const Examples: StoryFn<typeof RefreshPicker> = (args) => {
+  const [, updateArgs] = useArgs();
   const onIntervalChanged = (interval: string) => {
     action('onIntervalChanged fired')(interval);
+    updateArgs({ value: interval });
   };
 
   const onRefresh = () => {
     action('onRefresh fired')();
   };
 
-  return (
-    <DashboardStoryCanvas>
-      <UseState initialState={'1h'}>
-        {(value, updateValue) => {
-          return (
-            <HorizontalGroup>
-              <StoryExample name="Simple">
-                <RefreshPicker
-                  tooltip="Hello world"
-                  value={value}
-                  intervals={intervals}
-                  onIntervalChanged={onIntervalChanged}
-                  onRefresh={onRefresh}
-                />
-              </StoryExample>
-              <StoryExample name="With text">
-                <RefreshPicker
-                  tooltip="Hello world"
-                  value={value}
-                  text="Run query"
-                  intervals={intervals}
-                  onIntervalChanged={onIntervalChanged}
-                  onRefresh={onRefresh}
-                />
-              </StoryExample>
-              <StoryExample name="With text and loading">
-                <RefreshPicker
-                  tooltip="Hello world"
-                  value={value}
-                  text="Run query"
-                  isLoading={true}
-                  intervals={intervals}
-                  onIntervalChanged={onIntervalChanged}
-                  onRefresh={onRefresh}
-                />
-              </StoryExample>
-            </HorizontalGroup>
-          );
-        }}
-      </UseState>
-    </DashboardStoryCanvas>
-  );
+  return <RefreshPicker {...args} onIntervalChanged={onIntervalChanged} onRefresh={onRefresh} />;
 };
+
+export default meta;

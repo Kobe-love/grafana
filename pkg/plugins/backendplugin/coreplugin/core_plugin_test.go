@@ -1,20 +1,21 @@
-package coreplugin_test
+package coreplugin
 
 import (
 	"context"
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/plugins/backendplugin"
-	"github.com/grafana/grafana/pkg/plugins/backendplugin/coreplugin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/grafana/grafana/pkg/plugins"
+	"github.com/grafana/grafana/pkg/plugins/log"
+	"github.com/grafana/grafana/pkg/plugins/manager/pluginfakes"
 )
 
 func TestCorePlugin(t *testing.T) {
 	t.Run("New core plugin with empty opts should return expected values", func(t *testing.T) {
-		factory := coreplugin.New(backend.ServeOpts{})
-		p, err := factory("plugin", log.New("test"), nil)
+		factory := New(backend.ServeOpts{})
+		p, err := factory("plugin", log.New("test"), pluginfakes.InitializeNoopTracerForTest(), nil)
 		require.NoError(t, err)
 		require.NotNil(t, p)
 		require.NoError(t, p.Start(context.Background()))
@@ -22,20 +23,20 @@ func TestCorePlugin(t *testing.T) {
 		require.True(t, p.IsManaged())
 		require.False(t, p.Exited())
 
-		_, err = p.CollectMetrics(context.Background())
-		require.Equal(t, backendplugin.ErrMethodNotImplemented, err)
+		_, err = p.CollectMetrics(context.Background(), &backend.CollectMetricsRequest{})
+		require.Equal(t, plugins.ErrMethodNotImplemented, err)
 
 		_, err = p.CheckHealth(context.Background(), nil)
-		require.Equal(t, backendplugin.ErrMethodNotImplemented, err)
+		require.Equal(t, plugins.ErrMethodNotImplemented, err)
 
 		err = p.CallResource(context.Background(), nil, nil)
-		require.Equal(t, backendplugin.ErrMethodNotImplemented, err)
+		require.Equal(t, plugins.ErrMethodNotImplemented, err)
 	})
 
 	t.Run("New core plugin with handlers set in opts should return expected values", func(t *testing.T) {
 		checkHealthCalled := false
 		callResourceCalled := false
-		factory := coreplugin.New(backend.ServeOpts{
+		factory := New(backend.ServeOpts{
 			CheckHealthHandler: backend.CheckHealthHandlerFunc(func(ctx context.Context,
 				req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 				checkHealthCalled = true
@@ -47,7 +48,7 @@ func TestCorePlugin(t *testing.T) {
 				return nil
 			}),
 		})
-		p, err := factory("plugin", log.New("test"), nil)
+		p, err := factory("plugin", log.New("test"), pluginfakes.InitializeNoopTracerForTest(), nil)
 		require.NoError(t, err)
 		require.NotNil(t, p)
 		require.NoError(t, p.Start(context.Background()))
@@ -55,8 +56,8 @@ func TestCorePlugin(t *testing.T) {
 		require.True(t, p.IsManaged())
 		require.False(t, p.Exited())
 
-		_, err = p.CollectMetrics(context.Background())
-		require.Equal(t, backendplugin.ErrMethodNotImplemented, err)
+		_, err = p.CollectMetrics(context.Background(), &backend.CollectMetricsRequest{})
+		require.Equal(t, plugins.ErrMethodNotImplemented, err)
 
 		_, err = p.CheckHealth(context.Background(), &backend.CheckHealthRequest{})
 		require.NoError(t, err)

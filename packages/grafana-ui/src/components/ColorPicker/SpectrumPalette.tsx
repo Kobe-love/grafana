@@ -1,20 +1,26 @@
-import React, { useMemo, useState } from 'react';
-
+import { css } from '@emotion/css';
+import { useId, useMemo, useState } from 'react';
 import { RgbaStringColorPicker } from 'react-colorful';
-import tinycolor from 'tinycolor2';
-import ColorInput from './ColorInput';
-import { GrafanaTheme2, colorManipulator } from '@grafana/data';
-import { css, cx } from '@emotion/css';
-import { useStyles2, useTheme2 } from '../../themes';
 import { useThrottleFn } from 'react-use';
+import tinycolor from 'tinycolor2';
 
-export interface SpectrumPaletteProps {
+import { type GrafanaTheme2, colorManipulator } from '@grafana/data';
+import { t } from '@grafana/i18n';
+
+import { useStyles2, useTheme2 } from '../../themes/ThemeContext';
+import { Field } from '../Forms/Field';
+import { Stack } from '../Layout/Stack/Stack';
+
+import ColorInput from './ColorInput';
+
+interface SpectrumPaletteProps {
   color: string;
   onChange: (color: string) => void;
 }
 
-const SpectrumPalette: React.FunctionComponent<SpectrumPaletteProps> = ({ color, onChange }) => {
+const SpectrumPalette = ({ color, onChange }: SpectrumPaletteProps) => {
   const [currentColor, setColor] = useState(color);
+  const colorInputId = useId();
 
   useThrottleFn(
     (c) => {
@@ -34,43 +40,38 @@ const SpectrumPalette: React.FunctionComponent<SpectrumPaletteProps> = ({ color,
   }, [currentColor, theme, color]);
 
   return (
-    <div className={styles.wrapper}>
-      <RgbaStringColorPicker className={cx(styles.root)} color={rgbaString} onChange={setColor} />
-      <ColorInput theme={theme} color={rgbaString} onChange={setColor} className={styles.colorInput} />
-    </div>
+    <Stack direction="column" grow={1} gap={2}>
+      <RgbaStringColorPicker className={styles.root} color={rgbaString} onChange={setColor} />
+      <Field noMargin label={t('grafana-ui.color-picker.input-label', 'RGBA value')}>
+        <ColorInput id={colorInputId} color={rgbaString} onChange={setColor} />
+      </Field>
+    </Stack>
   );
 };
 
-const getStyles = (theme: GrafanaTheme2) => ({
-  wrapper: css`
-    flex-grow: 1;
-  `,
-  root: css`
-    &.react-colorful {
-      width: auto;
-    }
+export const getStyles = (theme: GrafanaTheme2) => ({
+  root: css({
+    '&.react-colorful': {
+      width: 'auto',
+    },
 
-    .react-colorful {
-      &__saturation {
-        border-radius: ${theme.v1.border.radius.sm} ${theme.v1.border.radius.sm} 0 0;
-      }
-      &__alpha {
-        border-radius: 0 0 ${theme.v1.border.radius.sm} ${theme.v1.border.radius.sm};
-      }
-      &__alpha,
-      &__hue {
-        height: ${theme.spacing(2)};
-        position: relative;
-      }
-      &__pointer {
-        height: ${theme.spacing(2)};
-        width: ${theme.spacing(2)};
-      }
-    }
-  `,
-  colorInput: css`
-    margin-top: ${theme.spacing(2)};
-  `,
+    '.react-colorful': {
+      '&__saturation': {
+        borderRadius: `${theme.shape.radius.default} ${theme.shape.radius.default} 0 0`,
+      },
+      '&__alpha': {
+        borderRadius: `0 0 ${theme.shape.radius.default} ${theme.shape.radius.default}`,
+      },
+      '&__alpha, &__hue': {
+        height: theme.spacing(2),
+        position: 'relative',
+      },
+      '&__pointer': {
+        height: theme.spacing(2),
+        width: theme.spacing(2),
+      },
+    },
+  }),
 });
 
 export default SpectrumPalette;

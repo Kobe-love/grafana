@@ -1,29 +1,55 @@
-import { Observable, SubscriptionLike, Unsubscribable } from 'rxjs';
-import {
-  AbsoluteTimeRange,
-  DataFrame,
-  DataQuery,
-  DataQueryRequest,
-  DataQueryResponse,
-  DataSourceApi,
-  EventBusExtended,
-  HistoryItem,
-  LogsModel,
-  PanelData,
-  QueryHint,
-  RawTimeRange,
-  TimeRange,
-} from '@grafana/data';
+import { type Observable, type SubscriptionLike, type Unsubscribable } from 'rxjs';
 
-export enum ExploreId {
-  left = 'left',
-  right = 'right',
+import {
+  type AbsoluteTimeRange,
+  type DataFrame,
+  type DataQuery,
+  type DataQueryRequest,
+  type DataSourceApi,
+  type HistoryItem,
+  type LogsModel,
+  type PanelData,
+  type RawTimeRange,
+  type TimeRange,
+  type EventBusExtended,
+  type DataQueryResponse,
+  type ExplorePanelsState,
+  type SupplementaryQueryType,
+  type UrlQueryMap,
+  type ExploreCorrelationHelperData,
+  type DataLinkTransformationConfig,
+} from '@grafana/data';
+import { type CorrelationData } from '@grafana/runtime';
+import { type RichHistorySearchFilters, type RichHistorySettings } from 'app/core/utils/richHistoryTypes';
+
+export type ExploreQueryParams = UrlQueryMap;
+
+export enum CORRELATION_EDITOR_POST_CONFIRM_ACTION {
+  CLOSE_PANE,
+  CHANGE_DATASOURCE,
+  CLOSE_EDITOR,
 }
 
-export type ExploreQueryParams = {
-  left: string;
-  right: string;
-};
+interface CorrelationEditorDetails {
+  editorMode: boolean;
+  correlationDirty: boolean;
+  queryEditorDirty: boolean;
+  isExiting: boolean;
+  postConfirmAction?: {
+    // perform an action after a confirmation modal instead of exiting editor mode
+    exploreId: string;
+    action: CORRELATION_EDITOR_POST_CONFIRM_ACTION;
+    changeDatasourceUid?: string;
+    isActionLeft: boolean;
+  };
+  canSave?: boolean;
+  label?: string;
+  description?: string;
+  transformations?: DataLinkTransformationConfig[];
+}
+
+// updates can have any properties
+export interface CorrelationEditorDetailsUpdate extends Partial<CorrelationEditorDetails> {}
 
 /**
  * Global Explore state
@@ -33,33 +59,55 @@ export interface ExploreState {
    * True if time interval for panels are synced. Only possible with split mode.
    */
   syncedTimes: boolean;
-  /**
-   * Explore state of the left split (left is default in non-split view).
-   */
-  left: ExploreItemState;
-  /**
-   * Explore state of the right area in split view.
-   */
-  right?: ExploreItemState;
+
+  panes: Record<string, ExploreItemState | undefined>;
+
   /**
    * History of all queries
    */
   richHistory: RichHistoryQuery[];
+  richHistorySearchFilters?: RichHistorySearchFilters;
+  richHistoryTotal?: number;
 
   /**
-   * True if local storage quota was exceeded when a new item was added. This is to prevent showing
+   * Settings for rich history (note: filters are stored per each pane separately)
+   */
+  richHistorySettings?: RichHistorySettings;
+
+  /**
+   * True if local storage quota was exceeded when a rich history item was added. This is to prevent showing
    * multiple errors when local storage is full.
    */
-  localStorageFull: boolean;
+  richHistoryStorageFull: boolean;
 
   /**
    * True if a warning message of hitting the exceeded number of items has been shown already.
    */
   richHistoryLimitExceededWarningShown: boolean;
+
+  /**
+   * Details on a correlation being created from explore
+   */
+  correlationEditorDetails?: CorrelationEditorDetails;
+
+  /**
+   * On a split manual resize, we calculate which pane is larger, or if they are roughly the same size. If undefined, it is not split or they are roughly the same size
+   */
+  largerExploreId?: keyof ExploreState['panes'];
+
+  /**
+   * If a maximize pane button is pressed, this indicates which side was maximized. Will be undefined if not split or if it is manually resized
+   */
+  maxedExploreId?: keyof ExploreState['panes'];
+
+  /**
+   * If a minimize pane button is pressed, it will do an even split of panes. Will be undefined if split or on a manual resize
+   */
+  evenSplitPanes?: boolean;
 }
 
 export const EXPLORE_GRAPH_STYLES = ['lines', 'bars', 'points', 'stacked_lines', 'stacked_bars'] as const;
-export type ExploreGraphStyle = typeof EXPLORE_GRAPH_STYLES[number];
+export type ExploreGraphStyle = (typeof EXPLORE_GRAPH_STYLES)[number];
 
 export interface ExploreItemState {
   /**
@@ -70,10 +118,6 @@ export interface ExploreItemState {
    * Datasource instance that has been selected. Datasource-specific logic can be run on this object.
    */
   datasourceInstance?: DataSourceApi | null;
-  /**
-   * True if there is no datasource to be selected.
-   */
-  datasourceMissing: boolean;
   /**
    * Emitter to send events to the rest of Grafana.
    */
@@ -91,11 +135,34 @@ export interface ExploreItemState {
    * converted to a query row.
    */
   queries: DataQuery[];
+
+  /**
+   * Index increased when queries change.
+   * Required to derive queriesChangedIndexAtRun correctly.
+   */
+  queriesChangedIndex: number;
+
+  /**
+   * Index updated after running the query. Changes if new query was run.
+   * Used to reset legend in the main graph to match Dashboard's behavior (#113975)
+   */
+  queriesChangedIndexAtRun: number;
+
   /**
    * True if this Explore area has been initialized.
    * Used to distinguish URL state injection versus split view state injection.
    */
   initialized: boolean;
+  /**
+   * UID of the saved query being edited in this pane (from "Edit in Explore").
+   * Seeded from the `?editSavedQueryRef=` URL param; not persisted in panes JSON.
+   */
+  editSavedQueryRef?: string;
+  /**
+   * True when this pane was opened to compose and save a brand-new saved query (no existing
+   * query to reference). Drives the "Adding a new saved query" banner above the query editor.
+   */
+  addingSavedQuery?: boolean;
   /**
    * Log query result to be displayed in the logs result viewer.
    */
@@ -116,11 +183,15 @@ export interface ExploreItemState {
    */
   scanRange?: RawTimeRange;
 
-  loading: boolean;
   /**
    * Table model that combines all query table results into a single table.
    */
-  tableResult: DataFrame | null;
+  tableResult: DataFrame[] | null;
+
+  /**
+   * Simple UI that emulates native prometheus UI
+   */
+  rawPrometheusResult: DataFrame | null;
 
   /**
    * React keys for rendering of QueryRows
@@ -142,44 +213,50 @@ export interface ExploreItemState {
    */
   isPaused: boolean;
 
+  /**
+   * Index of the last item in the list of logs
+   * when the live tailing views gets cleared.
+   */
+  clearedAtIndex: number | null;
+
   querySubscription?: Unsubscribable;
 
-  queryResponse: PanelData;
-
-  /**
-   * Panel Id that is set if we come to explore from a penel. Used so we can get back to it and optionally modify the
-   * query of that panel.
-   */
-  originPanelId?: number | null;
+  queryResponse: ExplorePanelData;
 
   showLogs?: boolean;
   showMetrics?: boolean;
   showTable?: boolean;
+  /**
+   * If true, the default "raw" prometheus instant query UI will be displayed in addition to table view
+   */
+  showRawPrometheus?: boolean;
   showTrace?: boolean;
   showNodeGraph?: boolean;
+  showFlameGraph?: boolean;
+  showCustom?: boolean;
 
   /**
    * We are using caching to store query responses of queries run from logs navigation.
    * In logs navigation, we do pagination and we don't want our users to unnecessarily run the same queries that they've run just moments before.
    * We are currently caching last 5 query responses.
    */
-  cache: Array<{ key: string; value: PanelData }>;
+  cache: Array<{ key: string; value: ExplorePanelData }>;
 
-  // properties below should be more generic if we add more providers
-  // see also: DataSourceWithLogsVolumeSupport
-  logsVolumeDataProvider?: Observable<DataQueryResponse>;
-  logsVolumeDataSubscription?: SubscriptionLike;
-  logsVolumeData?: DataQueryResponse;
+  /**
+   * Supplementary queries are additional queries used in Explore, e.g. for logs volume
+   */
+  supplementaryQueries: SupplementaryQueries;
 
-  /* explore graph style */
-  graphStyle: ExploreGraphStyle;
-}
+  panelsState: ExplorePanelsState;
 
-export interface ExploreUpdateState {
-  datasource: boolean;
-  queries: boolean;
-  range: boolean;
-  mode: boolean;
+  correlationEditorHelperData?: ExploreCorrelationHelperData;
+
+  correlations?: CorrelationData[];
+
+  /**
+   * If set to true, all query rows will be collapsed initially and the content outline will be hidden
+   */
+  compact: boolean;
 }
 
 export interface QueryOptions {
@@ -191,23 +268,19 @@ export interface QueryOptions {
 export interface QueryTransaction {
   id: string;
   done: boolean;
-  error?: string | JSX.Element;
-  hints?: QueryHint[];
   request: DataQueryRequest;
   queries: DataQuery[];
-  result?: any; // Table model / Timeseries[] / Logs
   scanning?: boolean;
 }
 
-export type RichHistoryQuery = {
-  ts: number;
+export type RichHistoryQuery<T extends DataQuery = DataQuery> = {
+  id: string;
+  createdAt: number;
+  datasourceUid: string;
   datasourceName: string;
-  datasourceId: string;
   starred: boolean;
   comment: string;
-  queries: DataQuery[];
-  sessionName: string;
-  timeRange?: string;
+  queries: T[];
 };
 
 export interface ExplorePanelData extends PanelData {
@@ -215,8 +288,30 @@ export interface ExplorePanelData extends PanelData {
   tableFrames: DataFrame[];
   logsFrames: DataFrame[];
   traceFrames: DataFrame[];
+  customFrames: DataFrame[];
   nodeGraphFrames: DataFrame[];
+  rawPrometheusFrames: DataFrame[];
+  flameGraphFrames: DataFrame[];
   graphResult: DataFrame[] | null;
-  tableResult: DataFrame | null;
+  tableResult: DataFrame[] | null;
   logsResult: LogsModel | null;
+  rawPrometheusResult: DataFrame | null;
 }
+
+export enum TABLE_RESULTS_STYLE {
+  table = 'table',
+  raw = 'raw',
+}
+export const TABLE_RESULTS_STYLES = [TABLE_RESULTS_STYLE.table, TABLE_RESULTS_STYLE.raw];
+export type TableResultsStyle = (typeof TABLE_RESULTS_STYLES)[number];
+
+interface SupplementaryQuery {
+  enabled: boolean;
+  dataProvider?: Observable<DataQueryResponse>;
+  dataSubscription?: SubscriptionLike;
+  data?: DataQueryResponse;
+}
+
+export type SupplementaryQueries = {
+  [key in SupplementaryQueryType]: SupplementaryQuery;
+};

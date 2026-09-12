@@ -1,7 +1,8 @@
 import { getBackendSrv } from '@grafana/runtime';
+import { type Team } from 'app/types/teams';
+import { type UserDTO, type UserOrg, type UserSession } from 'app/types/user';
 
-import { ChangePasswordFields, ProfileUpdateFields } from './types';
-import { Team, UserDTO, UserOrg, UserSession } from '../../types';
+import { type ChangePasswordFields, type ProfileUpdateFields } from './types';
 
 async function changePassword(payload: ChangePasswordFields): Promise<void> {
   try {

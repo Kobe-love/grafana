@@ -1,30 +1,83 @@
+import { defaultsDeep, set } from 'lodash';
+import { type ComponentClass, type ComponentType } from 'react';
+
+import { FieldConfigOptionsRegistry } from '../field/FieldConfigOptionsRegistry';
+import { type StandardEditorContext } from '../field/standardFieldConfigEditorRegistry';
+import { type PanelModel } from '../types/dashboard';
+import { type FieldConfig } from '../types/dataFrame';
 import {
-  FieldConfigSource,
-  GrafanaPlugin,
-  PanelEditorProps,
-  PanelMigrationHandler,
-  PanelPluginMeta,
-  PanelProps,
-  PanelTypeChangedHandler,
-  FieldConfigProperty,
-  PanelPluginDataSupport,
-  VisualizationSuggestionsSupplier,
-} from '../types';
-import { FieldConfigEditorBuilder, PanelOptionsEditorBuilder } from '../utils/OptionsUIBuilders';
-import { ComponentClass, ComponentType } from 'react';
-import { set } from 'lodash';
-import { deprecationWarning } from '../utils';
-import { FieldConfigOptionsRegistry, StandardEditorContext } from '../field';
+  type FieldConfigProperty,
+  type FieldConfigPropertyItem,
+  type FieldConfigSource,
+} from '../types/fieldOverrides';
+import {
+  type PanelPluginMeta,
+  type PanelProps,
+  type PanelEditorProps,
+  type PanelMigrationHandler,
+  type PanelTypeChangedHandler,
+  type PanelPluginDataSupport,
+} from '../types/panel';
+import { GrafanaPlugin } from '../types/plugin';
+import {
+  getSuggestionHash,
+  type PanelPluginVisualizationSuggestion,
+  type VisualizationSuggestion,
+  type VisualizationSuggestionsSupplierDeprecated,
+  type VisualizationSuggestionsSupplier,
+  type VisualizationPresetsContext,
+  type VisualizationPresetsSupplier,
+  type VisualizationSuggestionsBuilder,
+} from '../types/suggestions';
+import { type FieldConfigEditorBuilder, PanelOptionsEditorBuilder } from '../utils/OptionsUIBuilders';
+import { deprecationWarning } from '../utils/deprecationWarning';
+
 import { createFieldConfigRegistry } from './registryFactories';
+import { type PanelDataSummary } from './suggestions/getPanelDataSummary';
 
 /** @beta */
-export type StandardOptionConfig = {
+export type StandardOptionConfig<TContextOptions = unknown> = {
   defaultValue?: any;
   settings?: any;
+  hideFromDefaults?: boolean;
+  /**
+   * Conditionally hide this standard property in the options pane. Replaces any showIf the property
+   * declares itself, so a panel can force a property visible as well as hide it.
+   *
+   * Only affects the defaults pane - the property is still offered for override rules. Use
+   * {@link SetFieldConfigOptionsArgs.disableStandardOptions} to remove it everywhere.
+   */
+  showIf?: FieldConfigPropertyItem<FieldConfig, unknown, {}, TContextOptions>['showIf'];
 };
 
+/**
+ * Context passed to a panel plugin's screenshot handler. The plugin uses these
+ * fields to render its own image - typically when the default capture path
+ * cannot represent the panel correctly (e.g. canvas / WebGL contexts).
+ *
+ * @alpha
+ */
+export interface PanelScreenshotContext {
+  /** The panel's wrapping DOM element. */
+  element: HTMLElement;
+  /** Output image format. */
+  format: 'png' | 'jpeg' | 'webp';
+}
+
+/**
+ * Screenshot handler that a panel plugin can register via
+ * {@link PanelPlugin.setScreenshotImage}.
+ *
+ * - Return a `Blob` to use as the captured image.
+ * - Return `null` to fall through to the default capture path.
+ * - Throw to fail the capture.
+ *
+ * @alpha
+ */
+export type PanelScreenshotHandler = (ctx: PanelScreenshotContext) => Promise<Blob | null>;
+
 /** @beta */
-export interface SetFieldConfigOptionsArgs<TFieldConfigOptions = any> {
+export interface SetFieldConfigOptionsArgs<TFieldConfigOptions = any, TContextOptions = unknown> {
   /**
    * Configuration object of the standard field config properites
    *
@@ -39,7 +92,7 @@ export interface SetFieldConfigOptionsArgs<TFieldConfigOptions = any> {
    * }
    * ```
    */
-  standardOptions?: Partial<Record<FieldConfigProperty, StandardOptionConfig>>;
+  standardOptions?: Partial<Record<FieldConfigProperty, StandardOptionConfig<TContextOptions>>>;
 
   /**
    * Array of standard field config properties that should not be available in the panel
@@ -81,17 +134,44 @@ export interface SetFieldConfigOptionsArgs<TFieldConfigOptions = any> {
    * }
    * ```
    */
-  useCustomConfig?: (builder: FieldConfigEditorBuilder<TFieldConfigOptions>) => void;
+  useCustomConfig?: (builder: FieldConfigEditorBuilder<TFieldConfigOptions, TContextOptions>) => void;
 }
 
+/**
+ * Callback used to declare a panel's option editors via {@link PanelPlugin.setPanelOptions}.
+ * Receives a builder and an editor context, and should call builder methods to register editors.
+ *
+ * @typeParam TOptions - The panel options type.
+ */
 export type PanelOptionsSupplier<TOptions> = (
   builder: PanelOptionsEditorBuilder<TOptions>,
   context: StandardEditorContext<TOptions>
 ) => void;
 
+/**
+ * Controls the view panel side pane controls
+ */
+export interface PanelPluginViewOptions {
+  /**
+   * Enable fanout option. Enables splitting a single panel into multiple panels by series or label
+   */
+  fanout?: {
+    enabled: boolean;
+  };
+  /**
+   *  Make some option properties available as quick toggles in the view panel side pane
+   */
+  quickToggles?: PluginViewOptionsQuickToggles;
+}
+
+export interface PluginViewOptionsQuickToggles {
+  optionProperties: string[];
+  fieldConfigProperties: string[];
+}
+
 export class PanelPlugin<
   TOptions = any,
-  TFieldConfigOptions extends object = any
+  TFieldConfigOptions extends object = {},
 > extends GrafanaPlugin<PanelPluginMeta> {
   private _defaults?: TOptions;
   private _fieldConfigDefaults: FieldConfigSource<TFieldConfigOptions> = {
@@ -99,28 +179,35 @@ export class PanelPlugin<
     overrides: [],
   };
 
+  private _viewPanelOptions?: PanelPluginViewOptions;
   private _fieldConfigRegistry?: FieldConfigOptionsRegistry;
   private _initConfigRegistry = () => {
     return new FieldConfigOptionsRegistry();
   };
 
   private optionsSupplier?: PanelOptionsSupplier<TOptions>;
-  private suggestionsSupplier?: VisualizationSuggestionsSupplier;
+  private suggestionsSupplier?: VisualizationSuggestionsSupplier<TOptions, TFieldConfigOptions>;
+  private presetsSupplier?: VisualizationPresetsSupplier<TOptions, TFieldConfigOptions>;
 
   panel: ComponentType<PanelProps<TOptions>> | null;
   editor?: ComponentClass<PanelEditorProps<TOptions>>;
   onPanelMigration?: PanelMigrationHandler<TOptions>;
+  shouldMigrate?: (panel: PanelModel) => boolean;
   onPanelTypeChanged?: PanelTypeChangedHandler<TOptions>;
+  /**
+   * Whether this plugin can render in a content-fit layout (no fixed height,
+   * sizes to content within the layout's min/max). Declared statically via
+   * {@link setFitContentSupport}; content-aware layouts read it to decide
+   * whether to offer "fit content" for this panel.
+   */
+  supportsFitContent?: boolean;
   noPadding?: boolean;
+  /** @internal - set via {@link setScreenshotImage}, read by the panel screenshot service. */
+  onScreenshot?: PanelScreenshotHandler;
   dataSupport: PanelPluginDataSupport = {
     annotations: false,
     alertStates: false,
   };
-
-  /**
-   * Legacy angular ctrl.  If this exists it will be used instead of the panel
-   */
-  angularPanelCtrl?: any;
 
   constructor(panel: ComponentType<PanelProps<TOptions>> | null) {
     super();
@@ -163,6 +250,10 @@ export class PanelPlugin<
     };
   }
 
+  get viewPanelOptions() {
+    return this._viewPanelOptions;
+  }
+
   /**
    * @deprecated setDefaults is deprecated in favor of setPanelOptions
    */
@@ -198,10 +289,15 @@ export class PanelPlugin<
    * This function is called before the panel first loads if
    * the current version is different than the version that was saved.
    *
+   * If shouldMigrate is provided, it will be called regardless of whether
+   * the version has changed, and can explicitly opt into running the
+   * migration handler
+   *
    * This is a good place to support any changes to the options model
    */
-  setMigrationHandler(handler: PanelMigrationHandler<TOptions>) {
+  setMigrationHandler(handler: PanelMigrationHandler<TOptions>, shouldMigrate?: (panel: PanelModel) => boolean) {
     this.onPanelMigration = handler;
+    this.shouldMigrate = shouldMigrate;
     return this;
   }
 
@@ -215,6 +311,20 @@ export class PanelPlugin<
    */
   setPanelChangeHandler(handler: PanelTypeChangedHandler) {
     this.onPanelTypeChanged = handler;
+    return this;
+  }
+
+  /**
+   * Declares that this panel can render in a content-fit layout: with no fixed
+   * height, sizing to its content while the layout enforces min/max via CSS.
+   * The panel receives {@link PanelProps.fitContent} and is responsible for
+   * rendering in flow (or self-sizing) when it is set.
+   *
+   * Plugins that don't call this stay fixed-height and are not offered the
+   * "fit content" layout option.
+   */
+  setFitContentSupport(supports = true) {
+    this.supportsFitContent = supports;
     return this;
   }
 
@@ -260,7 +370,7 @@ export class PanelPlugin<
    * @internal
    */
   getPanelOptionsSupplier(): PanelOptionsSupplier<TOptions> {
-    return this.optionsSupplier ?? ((() => {}) as PanelOptionsSupplier<TOptions>);
+    return this.optionsSupplier ?? (() => {});
   }
 
   /**
@@ -350,7 +460,7 @@ export class PanelPlugin<
    *
    * @public
    */
-  useFieldConfig(config: SetFieldConfigOptionsArgs<TFieldConfigOptions> = {}) {
+  useFieldConfig(config: SetFieldConfigOptionsArgs<TFieldConfigOptions, TOptions> = {}) {
     // builder is applied lazily when custom field configs are accessed
     this._initConfigRegistry = () => createFieldConfigRegistry(config, this.meta.name);
 
@@ -358,19 +468,164 @@ export class PanelPlugin<
   }
 
   /**
-   * Sets function that can return visualization examples and suggestions.
-   * @alpha
+   * @deprecated use VisualizationSuggestionsSupplier
    */
-  setSuggestionsSupplier(supplier: VisualizationSuggestionsSupplier) {
+  setSuggestionsSupplier(supplier: VisualizationSuggestionsSupplierDeprecated): this;
+  /**
+   * sets function that can return visualization examples and suggestions.
+   */
+  setSuggestionsSupplier(supplier: VisualizationSuggestionsSupplier<TOptions, TFieldConfigOptions>): this;
+  setSuggestionsSupplier(
+    supplier:
+      | VisualizationSuggestionsSupplier<TOptions, TFieldConfigOptions>
+      | VisualizationSuggestionsSupplierDeprecated
+  ): this {
+    if (typeof supplier !== 'function') {
+      deprecationWarning(
+        'PanelPlugin',
+        'plugin.setSuggestionsSupplier(new Supplier())',
+        'plugin.setSuggestionsSupplier(dataSummary => [...])'
+      );
+      return this;
+    }
     this.suggestionsSupplier = supplier;
     return this;
   }
 
   /**
-   * Returns the suggestions supplier
+   * @alpha
+   * get suggestions based on the PanelDataSummary
+   */
+  getSuggestions(
+    panelDataSummary: PanelDataSummary
+  ): Array<PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions>> | void {
+    const withDefaults = (
+      suggestion: VisualizationSuggestion<TOptions, TFieldConfigOptions>
+    ): Omit<PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions>, 'hash'> =>
+      defaultsDeep(suggestion, {
+        pluginId: this.meta.id,
+        name: this.meta.name,
+        options: {},
+        fieldConfig: {
+          defaults: {},
+          overrides: [],
+        },
+      } satisfies Omit<PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions>, 'hash'>);
+    return this.suggestionsSupplier?.(panelDataSummary)?.map(
+      (s): PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions> => {
+        const suggestionWithDefaults = withDefaults(s);
+        return Object.assign(suggestionWithDefaults, { hash: getSuggestionHash(suggestionWithDefaults) });
+      }
+    );
+  }
+
+  /**
+   * @alpha
+   * Register a supplier of presets for a panel plugin
+   */
+  setPresetsSupplier(supplier: VisualizationPresetsSupplier<TOptions, TFieldConfigOptions>): this {
+    this.presetsSupplier = supplier;
+    return this;
+  }
+
+  /**
+   * @alpha
+   * Return style presets for a panel plugin
+   */
+  getPresets(
+    context: VisualizationPresetsContext = {}
+  ): Array<PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions>> | void {
+    const withDefaults = (
+      suggestion: VisualizationSuggestion<TOptions, TFieldConfigOptions>
+    ): Omit<PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions>, 'hash'> =>
+      defaultsDeep(suggestion, {
+        pluginId: this.meta.id,
+        name: this.meta.name,
+        options: {},
+        fieldConfig: {
+          defaults: {},
+          overrides: [],
+        },
+      } satisfies Omit<PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions>, 'hash'>);
+
+    return this.presetsSupplier?.(context)?.map((s) => {
+      const withDefaultsApplied = withDefaults(s);
+      return Object.assign(withDefaultsApplied, { hash: getSuggestionHash(withDefaultsApplied) });
+    });
+  }
+
+  /**
+   * @deprecated use getSuggestions
+   * we have to keep this method intact to support cloud-onboarding plugin.
+   */
+  getSuggestionsSupplier() {
+    const withDefaults = (
+      suggestion: VisualizationSuggestion<TOptions, TFieldConfigOptions>
+    ): Omit<PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions>, 'hash'> =>
+      defaultsDeep(suggestion, {
+        pluginId: this.meta.id,
+        name: this.meta.name,
+        options: {},
+        fieldConfig: {
+          defaults: {},
+          overrides: [],
+        },
+      } satisfies Omit<PanelPluginVisualizationSuggestion<TOptions, TFieldConfigOptions>, 'hash'>);
+
+    return {
+      getSuggestionsForData: (builder: VisualizationSuggestionsBuilder) => {
+        deprecationWarning('PanelPlugin', 'getSuggestionsSupplier()', 'getSuggestions(panelDataSummary)');
+        this.suggestionsSupplier?.(builder.dataSummary)?.forEach((s) => {
+          builder.getListAppender(withDefaults(s)).append(s);
+        });
+      },
+    };
+  }
+
+  hasPluginId(pluginId: string) {
+    return this.meta.id === pluginId;
+  }
+
+  /**
+   * Register a screenshot handler for this panel.
+   *
+   * Used by canvas / WebGL panels (geomap, flamegraph, heatmap, canvas, etc.)
+   * that the default capture path cannot render correctly. The handler
+   * receives the panel's wrapping DOM element plus the requested image format
+   * and returns a `Blob`, `null` (fall through to the default path), or throws
+   * (fail the capture).
+   *
+   * Consumed by `getPanelScreenshotService().capture()` from `@grafana/runtime`.
+   *
+   * @example
+   * ```ts
+   * new PanelPlugin(MyCanvasPanel).setScreenshotImage(async ({ element, format }) => {
+   *   const canvas = element.querySelector<HTMLCanvasElement>('canvas');
+   *   if (!canvas) {
+   *     return null; // fall through to default capture path
+   *   }
+   *   // Re-render synchronously before reading - required for WebGL contexts
+   *   // that don't preserve their drawing buffer.
+   *   myRenderer.renderSync();
+   *   const mimeType = format === 'jpeg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
+   *   return await new Promise<Blob | null>((resolve) =>
+   *     canvas.toBlob(resolve, mimeType, format === 'png' ? undefined : 0.92)
+   *   );
+   * });
+   * ```
+   *
    * @alpha
    */
-  getSuggestionsSupplier(): VisualizationSuggestionsSupplier | undefined {
-    return this.suggestionsSupplier;
+  setScreenshotImage(handler: PanelScreenshotHandler) {
+    this.onScreenshot = handler;
+    return this;
+  }
+
+  /**
+   * Set options for the view panel side pane, which can include enabling fanout and adding quick toggles for options and field config defaults.
+   */
+  setViewPanelOptions(options: PanelPluginViewOptions) {
+    this._viewPanelOptions = options;
+    return this;
   }
 }

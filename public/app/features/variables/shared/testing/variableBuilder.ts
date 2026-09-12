@@ -1,7 +1,8 @@
 import { cloneDeep } from 'lodash';
-import { VariableModel } from 'app/features/variables/types';
 
-export class VariableBuilder<T extends VariableModel> {
+import { type BaseVariableModel } from '@grafana/data';
+
+export class VariableBuilder<T extends BaseVariableModel> {
   protected variable: T;
 
   constructor(initialState: T) {
@@ -16,6 +17,11 @@ export class VariableBuilder<T extends VariableModel> {
 
   withId(id: string) {
     this.variable.id = id;
+    return this;
+  }
+
+  withRootStateKey(key: string) {
+    this.variable.rootStateKey = key;
     return this;
   }
 

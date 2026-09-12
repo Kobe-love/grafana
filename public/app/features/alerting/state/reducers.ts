@@ -1,15 +1,18 @@
-import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { type PayloadAction, createSlice } from '@reduxjs/toolkit';
+
 import { dateTime } from '@grafana/data';
-import alertDef from './alertDef';
 import {
-  AlertRule,
-  AlertRuleDTO,
-  AlertRulesState,
-  NotificationChannelOption,
-  NotificationChannelState,
-  NotifierDTO,
-} from 'app/types';
+  type AlertRule,
+  type AlertRuleDTO,
+  type AlertRulesState,
+  type NotificationChannelOption,
+  type NotificationChannelState,
+  type NotifierDTO,
+} from 'app/features/alerting/unified/types/alerting';
+
 import unifiedAlertingReducer from '../unified/state/reducers';
+
+import alertDef from './alertDef';
 
 export const initialState: AlertRulesState = {
   items: [],
@@ -82,7 +85,7 @@ const notificationChannelSlice = createSlice({
     notificationChannelLoaded: (state, action: PayloadAction<any>): NotificationChannelState => {
       const notificationChannel = action.payload;
       const selectedType: NotifierDTO = state.notifiers.find((t) => t.type === notificationChannel.type)!;
-      const secureChannelOptions = selectedType.options.filter((o: NotificationChannelOption) => o.secure);
+      const secureChannelOptions = (selectedType.options ?? []).filter((o: NotificationChannelOption) => o.secure);
       /*
         If any secure field is in plain text we need to migrate it to use secure field instead.
        */
@@ -111,11 +114,7 @@ const notificationChannelSlice = createSlice({
 
 export const { loadAlertRules, loadedAlertRules, setSearchQuery } = alertRulesSlice.actions;
 
-export const {
-  setNotificationChannels,
-  notificationChannelLoaded,
-  resetSecureField,
-} = notificationChannelSlice.actions;
+export const { notificationChannelLoaded } = notificationChannelSlice.actions;
 
 export const alertRulesReducer = alertRulesSlice.reducer;
 export const notificationChannelReducer = notificationChannelSlice.reducer;
@@ -157,6 +156,7 @@ function transformNotifiers(notifiers: NotifierDTO[]) {
         label: option.name,
         ...option,
         typeName: option.type,
+        options: option.options ?? [],
       };
     })
     .sort((o1, o2) => {

@@ -1,8 +1,9 @@
-import React from 'react';
+import { css } from '@emotion/css';
+
+import { type GrafanaTheme2 } from '@grafana/data';
 import { Tooltip, useStyles2 } from '@grafana/ui';
-import { GrafanaTheme2 } from '@grafana/data';
-import { css, CSSObject } from '@emotion/css';
-import { OptionPaneItemOverrideInfo } from './types';
+
+import { type OptionPaneItemOverrideInfo } from './types';
 
 export interface Props {
   overrides: OptionPaneItemOverrideInfo[];
@@ -15,7 +16,10 @@ export function OptionsPaneItemOverrides({ overrides }: Props) {
     <div className={styles.wrapper}>
       {overrides.map((override, index) => (
         <Tooltip content={override.tooltip} key={index.toString()} placement="top">
-          <div aria-label={override.description} className={styles[override.type]} />
+          <div>
+            <div aria-hidden="true" className={styles[override.type]} />
+            <span className="sr-only">{override.description}</span>
+          </div>
         </Tooltip>
       ))}
     </div>
@@ -23,12 +27,11 @@ export function OptionsPaneItemOverrides({ overrides }: Props) {
 }
 
 const getStyles = (theme: GrafanaTheme2) => {
-  const common: CSSObject = {
+  const common = {
     width: 8,
     height: 8,
-    borderRadius: '50%',
+    borderRadius: theme.shape.radius.circle,
     marginLeft: theme.spacing(1),
-    position: 'relative',
     top: '-1px',
   };
 
@@ -38,10 +41,12 @@ const getStyles = (theme: GrafanaTheme2) => {
     }),
     rule: css({
       ...common,
-      backgroundColor: theme.colors.primary.main,
+      position: 'relative',
+      backgroundColor: theme.colors.info.main,
     }),
     data: css({
       ...common,
+      position: 'relative',
       backgroundColor: theme.colors.warning.main,
     }),
   };

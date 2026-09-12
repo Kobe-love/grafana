@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/stretchr/testify/require"
 )
@@ -62,10 +62,10 @@ func Test_instantQueryMarshaling(t *testing.T) {
 						T: 12000, // loses some precision during marshaling
 						V: 10.5,
 					},
-					Metric: []labels.Label{{
+					Metric: labels.New([]labels.Label{{
 						Name:  "__name__",
 						Value: "apiserver_request:burnrate1d",
-					}},
+					}}...),
 				},
 			},
 		},

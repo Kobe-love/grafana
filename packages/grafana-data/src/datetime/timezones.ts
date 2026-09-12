@@ -1,7 +1,12 @@
-import moment from 'moment-timezone';
 import { memoize } from 'lodash';
-import { TimeZone } from '../types';
+
+import { type TimeZone } from '@grafana/schema';
+
 import { getTimeZone } from './common';
+import { findTimeZoneAt, getTimeZonesAt } from './easytz_lookup';
+import { type MomentTimeZoneInfo } from './luxon_moment_compat/moment';
+import moment from './moment_implementation';
+import { zonesByCountry } from './timezone_countries';
 
 export enum InternalTimeZones {
   default = '',
@@ -9,6 +14,9 @@ export enum InternalTimeZones {
   utc = 'utc',
 }
 
+/**
+ * @deprecated
+ */
 export const timeZoneFormatUserFriendly = (timeZone: TimeZone | undefined) => {
   switch (getTimeZone({ timeZone })) {
     case 'browser':
@@ -18,6 +26,10 @@ export const timeZoneFormatUserFriendly = (timeZone: TimeZone | undefined) => {
     default:
       return timeZone;
   }
+};
+
+export const getZone = (timeZone: string): MomentTimeZoneInfo | null => {
+  return moment.tz.zone(timeZone);
 };
 
 export interface TimeZoneCountry {
@@ -57,16 +69,22 @@ export const getTimeZones = memoize((includeInternal: boolean | InternalTimeZone
     initial.push(...includeInternal);
   }
 
-  return moment.tz.names().reduce((zones: TimeZone[], zone: string) => {
-    const countriesForZone = countriesByTimeZone[zone];
+  const now = Date.now();
+  const availableZones = new Set(getTimeZonesAt(now).map((zone) => zone.name));
 
-    if (!Array.isArray(countriesForZone) || countriesForZone.length === 0) {
+  return Object.keys(countriesByTimeZone)
+    .sort()
+    .reduce((zones: TimeZone[], zone: string) => {
+      // the vendored country data can reference zones newer than the runtime's tz
+      // database (e.g. America/Coyhaique on older ICU); skip zones the runtime
+      // cannot resolve, since they cannot be used for formatting.
+      if (!availableZones.has(zone)) {
+        return zones;
+      }
+
+      zones.push(zone);
       return zones;
-    }
-
-    zones.push(zone);
-    return zones;
-  }, initial);
+    }, initial);
 });
 
 export const getTimeZoneGroups = memoize(
@@ -84,7 +102,7 @@ export const getTimeZoneGroups = memoize(
         return groups;
       }
 
-      const group = zone.substr(0, delimiter);
+      const group = zone.slice(0, delimiter);
       groups[group] = groups[group] ?? [];
       groups[group].push(zone);
 
@@ -114,14 +132,14 @@ const mapInternal = (zone: string, timestamp: number): TimeZoneInfo | undefined 
     case InternalTimeZones.default: {
       const tz = getTimeZone();
       const isInternal = tz === 'browser' || tz === 'utc';
-      const info = (isInternal ? mapInternal(tz, timestamp) : mapToInfo(tz, timestamp)) ?? {};
+      const info = isInternal ? mapInternal(tz, timestamp) : mapToInfo(tz, timestamp);
 
       return {
         countries: countriesByTimeZone[tz] ?? [],
         abbreviation: '',
         offsetInMins: 0,
         ...info,
-        ianaName: (info as TimeZoneInfo).ianaName,
+        ianaName: info?.ianaName ?? '',
         name: 'Default',
         zone,
       };
@@ -129,7 +147,7 @@ const mapInternal = (zone: string, timestamp: number): TimeZoneInfo | undefined 
 
     case InternalTimeZones.localBrowserTime: {
       const tz = moment.tz.guess(true);
-      const info = mapToInfo(tz, timestamp) ?? {};
+      const info = mapToInfo(tz, timestamp);
 
       return {
         countries: countriesByTimeZone[tz] ?? [],
@@ -137,7 +155,7 @@ const mapInternal = (zone: string, timestamp: number): TimeZoneInfo | undefined 
         offsetInMins: new Date().getTimezoneOffset(),
         ...info,
         name: 'Browser Time',
-        ianaName: (info as TimeZoneInfo).ianaName,
+        ianaName: info?.ianaName ?? '',
         zone,
       };
     }
@@ -155,18 +173,33 @@ const abbrevationWithoutOffset = (abbrevation: string): string => {
 };
 
 const mapToInfo = (timeZone: TimeZone, timestamp: number): TimeZoneInfo | undefined => {
-  const momentTz = moment.tz.zone(timeZone);
-  if (!momentTz) {
+  // easy-tz curates DST-correct abbreviations (CEST, EDT, ...) and resolves legacy
+  // spellings (e.g. Asia/Calcutta) to their canonical entry; zones it does not list
+  // fall back to the ICU-backed values from the compat shim.
+  const tz = findTimeZoneAt(timeZone, timestamp);
+  if (tz) {
+    return {
+      name: timeZone,
+      ianaName: tz.name,
+      zone: timeZone,
+      countries: countriesByTimeZone[tz.name] ?? [],
+      abbreviation: abbrevationWithoutOffset(tz.abbr),
+      offsetInMins: -tz.offset,
+    };
+  }
+
+  const zone = moment.tz.zone(timeZone);
+  if (!zone) {
     return undefined;
   }
 
   return {
     name: timeZone,
-    ianaName: momentTz.name,
+    ianaName: zone.name,
     zone: timeZone,
-    countries: countriesByTimeZone[timeZone] ?? [],
-    abbreviation: abbrevationWithoutOffset(momentTz.abbr(timestamp)),
-    offsetInMins: momentTz.utcOffset(timestamp),
+    countries: countriesByTimeZone[zone.name] ?? [],
+    abbreviation: abbrevationWithoutOffset(zone.abbr(timestamp)),
+    offsetInMins: zone.utcOffset(timestamp),
   };
 };
 
@@ -339,7 +372,7 @@ const countryByCode: Record<string, string> = {
   OM: 'Oman',
   PK: 'Pakistan',
   PW: 'Palau',
-  PS: 'Palestinian Territory (Occupied)',
+  PS: 'Palestine, State of',
   PA: 'Panama',
   PG: 'Papua New Guinea',
   PY: 'Paraguay',
@@ -420,21 +453,19 @@ const countryByCode: Record<string, string> = {
 };
 
 const countriesByTimeZone = ((): Record<string, TimeZoneCountry[]> => {
-  return moment.tz.countries().reduce((all: Record<string, TimeZoneCountry[]>, code) => {
-    const timeZones = moment.tz.zonesForCountry(code);
-    return timeZones.reduce((all: Record<string, TimeZoneCountry[]>, timeZone) => {
-      if (!all[timeZone]) {
-        all[timeZone] = [];
-      }
+  const all: Record<string, TimeZoneCountry[]> = {};
 
-      const name = countryByCode[code];
+  for (const [code, timeZones] of Object.entries(zonesByCountry)) {
+    const name = countryByCode[code];
 
-      if (!name) {
-        return all;
-      }
+    if (!name) {
+      continue;
+    }
 
-      all[timeZone].push({ code, name });
-      return all;
-    }, all);
-  }, {});
+    for (const timeZone of timeZones) {
+      (all[timeZone] ??= []).push({ code, name });
+    }
+  }
+
+  return all;
 })();

@@ -1,13 +1,23 @@
 package grpcplugin
 
 import (
+	"maps"
+	"os"
 	"os/exec"
+	"runtime"
 
-	"github.com/grafana/grafana-plugin-sdk-go/backend/grpcplugin"
-	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/plugins/backendplugin"
-	"github.com/grafana/grafana/pkg/plugins/backendplugin/pluginextensionv2"
+	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
+	"github.com/hashicorp/go-plugin/runner"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/embedded"
+	"google.golang.org/grpc"
+
+	appgrpcplugin "github.com/grafana/grafana-app-sdk/plugin/grpcplugin"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/grpcplugin"
+	"github.com/grafana/grafana/pkg/plugins/backendplugin"
+	"github.com/grafana/grafana/pkg/plugins/log"
 )
 
 // Handshake is the HandshakeConfig used to configure clients and servers.
@@ -22,66 +32,104 @@ var handshake = goplugin.HandshakeConfig{
 	MagicCookieValue: grpcplugin.MagicCookieValue,
 }
 
-func newClientConfig(executablePath string, env []string, logger log.Logger,
-	versionedPlugins map[int]goplugin.PluginSet) *goplugin.ClientConfig {
-	// We can ignore gosec G201 here, since the dynamic part of executablePath comes from the plugin definition
-	// nolint:gosec
-	cmd := exec.Command(executablePath)
-	cmd.Env = env
-
-	return &goplugin.ClientConfig{
-		Cmd:              cmd,
-		HandshakeConfig:  handshake,
-		VersionedPlugins: versionedPlugins,
-		Logger:           logWrapper{Logger: logger},
-		AllowedProtocols: []goplugin.Protocol{goplugin.ProtocolGRPC},
+// pluginSet is the set of services Grafana can dispense from a backend plugin:
+// the plugin-sdk (v2) services plus the app-sdk (v3) ones. Any given plugin
+// implements only a subset.
+var pluginSet = func() map[int]goplugin.PluginSet {
+	services := goplugin.PluginSet{
+		"diagnostics": &grpcplugin.DiagnosticsGRPCPlugin{},
+		"resource":    &grpcplugin.ResourceGRPCPlugin{},
+		"data":        &grpcplugin.DataGRPCPlugin{},
+		"stream":      &grpcplugin.StreamGRPCPlugin{},
+		"admission":   &grpcplugin.AdmissionGRPCPlugin{},
+		"conversion":  &grpcplugin.ConversionGRPCPlugin{},
 	}
+	maps.Copy(services, appgrpcplugin.ClientPluginSet())
+	return map[int]goplugin.PluginSet{grpcplugin.ProtocolVersion: services}
+}()
+
+type clientTracerProvider struct {
+	tracer trace.Tracer
+	embedded.TracerProvider
 }
 
-// StartRendererFunc callback function called when a renderer plugin is started.
-type StartRendererFunc func(pluginID string, renderer pluginextensionv2.RendererPlugin, logger log.Logger) error
+func (ctp *clientTracerProvider) Tracer(_ string, _ ...trace.TracerOption) trace.Tracer {
+	return ctp.tracer
+}
+
+func newClientTracerProvider(tracer trace.Tracer) trace.TracerProvider {
+	return &clientTracerProvider{tracer: tracer}
+}
+
+func newClientConfig(descriptor PluginDescriptor, env []string, logger log.Logger, tracer trace.Tracer) (*goplugin.ClientConfig, error) {
+	executablePath := descriptor.executablePath
+	skipHostEnvVars := descriptor.skipHostEnvVars
+	versionedPlugins := descriptor.versionedPlugins
+	cfg := &goplugin.ClientConfig{
+		HandshakeConfig:  handshake,
+		VersionedPlugins: versionedPlugins,
+		SkipHostEnv:      skipHostEnvVars,
+		Logger:           logWrapper{Logger: logger},
+		AllowedProtocols: []goplugin.Protocol{goplugin.ProtocolGRPC},
+		GRPCDialOptions: []grpc.DialOption{
+			// https://github.com/grafana/app-platform-wg/issues/140
+			// external plugins are loaded before k8s API server
+			// configures the tracing service thus failing to
+			// record trace span in the middleware.
+			// With code below we are passing the same tracer that k8s API server
+			// uses so that middleware is configured with tracer.
+			grpc.WithStatsHandler(otelgrpc.NewClientHandler(otelgrpc.WithTracerProvider(newClientTracerProvider(tracer)))),
+		},
+	}
+
+	if descriptor.runnerFunc != nil {
+		cfg.RunnerFunc = descriptor.runnerFunc
+		td, err := os.MkdirTemp("", "plugin")
+		if err != nil {
+			return nil, err
+		}
+		cfg.UnixSocketConfig = &goplugin.UnixSocketConfig{TempDir: td}
+		logger.Debug("Using runner mode", "os", runtime.GOOS, "executablePath", executablePath)
+	} else {
+		logger.Debug("Using process mode", "os", runtime.GOOS, "executablePath", executablePath)
+		// We can ignore gosec G201 here, since the dynamic part of executablePath comes from the plugin definition
+		// nolint:gosec
+		cfg.Cmd = exec.Command(executablePath, descriptor.executableArgs...)
+		cfg.Cmd.Env = env
+	}
+
+	return cfg, nil
+}
 
 // PluginDescriptor is a descriptor used for registering backend plugins.
 type PluginDescriptor struct {
 	pluginID         string
 	executablePath   string
+	executableArgs   []string
+	skipHostEnvVars  bool
 	managed          bool
+	runnerFunc       func(l hclog.Logger, cmd *exec.Cmd, tmpDir string) (runner.Runner, error)
 	versionedPlugins map[int]goplugin.PluginSet
-	startRendererFn  StartRendererFunc
-}
-
-// getV2PluginSet returns list of plugins supported on v2.
-func getV2PluginSet() goplugin.PluginSet {
-	return goplugin.PluginSet{
-		"diagnostics": &grpcplugin.DiagnosticsGRPCPlugin{},
-		"resource":    &grpcplugin.ResourceGRPCPlugin{},
-		"data":        &grpcplugin.DataGRPCPlugin{},
-		"stream":      &grpcplugin.StreamGRPCPlugin{},
-		"renderer":    &pluginextensionv2.RendererGRPCPlugin{},
-	}
 }
 
 // NewBackendPlugin creates a new backend plugin factory used for registering a backend plugin.
-func NewBackendPlugin(pluginID, executablePath string) backendplugin.PluginFactoryFunc {
-	return newPlugin(PluginDescriptor{
-		pluginID:       pluginID,
-		executablePath: executablePath,
-		managed:        true,
-		versionedPlugins: map[int]goplugin.PluginSet{
-			grpcplugin.ProtocolVersion: getV2PluginSet(),
-		},
-	})
+func NewBackendPlugin(pluginID, executablePath string, skipHostEnvVars bool, executableArgs ...string) backendplugin.PluginFactoryFunc {
+	return newBackendPlugin(pluginID, executablePath, true, skipHostEnvVars, executableArgs...)
 }
 
-// NewRendererPlugin creates a new renderer plugin factory used for registering a backend renderer plugin.
-func NewRendererPlugin(pluginID, executablePath string, startFn StartRendererFunc) backendplugin.PluginFactoryFunc {
+// NewUnmanagedBackendPlugin creates a new backend plugin factory used for registering an unmanaged backend plugin.
+func NewUnmanagedBackendPlugin(pluginID, executablePath string, skipHostEnvVars bool, executableArgs ...string) backendplugin.PluginFactoryFunc {
+	return newBackendPlugin(pluginID, executablePath, false, skipHostEnvVars, executableArgs...)
+}
+
+// NewBackendPlugin creates a new backend plugin factory used for registering a backend plugin.
+func newBackendPlugin(pluginID, executablePath string, managed bool, skipHostEnvVars bool, executableArgs ...string) backendplugin.PluginFactoryFunc {
 	return newPlugin(PluginDescriptor{
-		pluginID:       pluginID,
-		executablePath: executablePath,
-		managed:        false,
-		versionedPlugins: map[int]goplugin.PluginSet{
-			grpcplugin.ProtocolVersion: getV2PluginSet(),
-		},
-		startRendererFn: startFn,
+		pluginID:         pluginID,
+		executablePath:   executablePath,
+		executableArgs:   executableArgs,
+		skipHostEnvVars:  skipHostEnvVars,
+		managed:          managed,
+		versionedPlugins: pluginSet,
 	})
 }

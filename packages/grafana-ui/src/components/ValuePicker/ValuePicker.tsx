@@ -1,13 +1,17 @@
-import React, { useState } from 'react';
-import { IconName } from '../../types';
-import { SelectableValue } from '@grafana/data';
-import { Button, ButtonVariant } from '../Button';
-import { Select } from '../Select/Select';
-import { ComponentSize } from '../../types/size';
+import { useState } from 'react';
+
+import { type SelectableValue } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
-import { useTheme2 } from '../../themes';
+
+import { useTheme2 } from '../../themes/ThemeContext';
+import { type IconName } from '../../types/icon';
+import { type ComponentSize } from '../../types/size';
+import { Button, type ButtonFill, type ButtonVariant } from '../Button/Button';
+import { Select } from '../Select/Select';
 
 export interface ValuePickerProps<T> {
+  /** Aria label applied to the input field */
+  ['aria-label']?: string;
   /** Label to display on the picker button */
   label: string;
   /** Icon to display on the picker button */
@@ -26,9 +30,20 @@ export interface ValuePickerProps<T> {
   isFullWidth?: boolean;
   /** Control where the menu is rendered */
   menuPlacement?: 'auto' | 'bottom' | 'top';
+  /** Which ButtonFill to use */
+  fill?: ButtonFill;
+
+  /** custom css applied to the button */
+  buttonCss?: string;
 }
 
+/**
+ * A component that looks like a button but transforms into a select when clicked.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/pickers-valuepicker--docs
+ */
 export function ValuePicker<T>({
+  'aria-label': ariaLabel,
   label,
   icon,
   options,
@@ -38,6 +53,8 @@ export function ValuePicker<T>({
   size = 'sm',
   isFullWidth = true,
   menuPlacement,
+  fill,
+  buttonCss,
 }: ValuePickerProps<T>) {
   const [isPicking, setIsPicking] = useState(false);
   const theme = useTheme2();
@@ -47,11 +64,13 @@ export function ValuePicker<T>({
       {!isPicking && (
         <Button
           size={size || 'sm'}
+          className={buttonCss}
           icon={icon || 'plus'}
           onClick={() => setIsPicking(true)}
           variant={variant}
+          fill={fill}
           fullWidth={isFullWidth}
-          aria-label={selectors.components.ValuePicker.button(label)}
+          data-testid={selectors.components.ValuePicker.button(ariaLabel ?? label)}
         >
           {label}
         </Button>
@@ -60,10 +79,10 @@ export function ValuePicker<T>({
       {isPicking && (
         <span style={{ minWidth: theme.spacing(minWidth), flexGrow: isFullWidth ? 1 : undefined }}>
           <Select
-            menuShouldPortal
             placeholder={label}
             options={options}
-            aria-label={selectors.components.ValuePicker.select(label)}
+            data-testid={selectors.components.ValuePicker.select(label)}
+            aria-label={ariaLabel}
             isOpen
             onCloseMenu={() => setIsPicking(false)}
             autoFocus={true}

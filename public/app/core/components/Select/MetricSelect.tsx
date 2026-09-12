@@ -1,10 +1,10 @@
-import React, { useMemo, useCallback, FC } from 'react';
 import { flatten } from 'lodash';
+import { useCallback, useMemo } from 'react';
 
-import { LegacyForms } from '@grafana/ui';
-import { SelectableValue } from '@grafana/data';
-import { Variable } from 'app/types/templates';
-const { Select } = LegacyForms;
+import { type SelectableValue } from '@grafana/data';
+import { t } from '@grafana/i18n';
+import { Select } from '@grafana/ui';
+import { type Variable } from 'app/types/templates';
 
 export interface Props {
   onChange: (value: string | undefined) => void;
@@ -16,15 +16,14 @@ export interface Props {
   variables?: Variable[];
 }
 
-export const MetricSelect: FC<Props> = (props) => {
+export const MetricSelect = (props: Props) => {
   const { value, placeholder, className, isSearchable, onChange } = props;
-  const options = useSelectOptions(props);
+  const options = useMatcherSelectOptions(props);
   const selected = useSelectedOption(options, value);
   const onChangeValue = useCallback((selectable: SelectableValue<string>) => onChange(selectable.value), [onChange]);
 
   return (
     <Select
-      menuShouldPortal
       className={className}
       isMulti={false}
       isClearable={false}
@@ -34,13 +33,13 @@ export const MetricSelect: FC<Props> = (props) => {
       isSearchable={isSearchable}
       maxMenuHeight={500}
       placeholder={placeholder}
-      noOptionsMessage={() => 'No options found'}
+      noOptionsMessage={t('metric-select.noOptionsMessage-no-options-found', 'No options found')}
       value={selected}
     />
   );
 };
 
-const useSelectOptions = ({ variables = [], options }: Props): Array<SelectableValue<string>> => {
+const useMatcherSelectOptions = ({ variables = [], options }: Props): Array<SelectableValue<string>> => {
   return useMemo(() => {
     if (!Array.isArray(variables) || variables.length === 0) {
       return options;

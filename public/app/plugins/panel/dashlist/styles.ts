@@ -1,65 +1,65 @@
 import { css } from '@emotion/css';
 
-import { GrafanaTheme2 } from '@grafana/data';
-import { styleMixins } from '@grafana/ui';
+import { type GrafanaTheme2, colorManipulator } from '@grafana/data';
 
-export const getStyles = (theme: GrafanaTheme2) => ({
-  dashlistSectionHeader: css`
-    margin-bottom: ${theme.spacing(2)};
-    color: ${theme.colors.secondary.text};
-  `,
+export const getStyles = (theme: GrafanaTheme2) => {
+  const gradient = `linear-gradient(
+    90deg,
+    ${colorManipulator.alpha(theme.colors.primary.text, 0.1)} 0%,
+    ${colorManipulator.alpha(theme.colors.secondary.main, 0.1)} 100%
+  )`;
 
-  dashlistSection: css`
-    margin-bottom: ${theme.spacing(2)};
-    padding-top: 3px;
-  `,
+  return {
+    dashlistCardContainer: css({
+      display: 'block',
+      height: '100%',
+      paddingLeft: theme.spacing(2),
 
-  dashlistLink: css`
-    ${styleMixins.listItem(theme)}
-    display: flex;
-    cursor: pointer;
-    margin: 3px;
-    padding: 7px;
-  `,
+      '&:has(a:hover)': {
+        backgroundImage: gradient,
+        color: theme.colors.text.primary,
+      },
+    }),
+    dashlistCard: css({
+      display: 'flex',
+      flexDirection: 'column',
+      justifyContent: 'space-between',
+      gap: theme.spacing(0.75),
+      height: '100%',
+      width: '100%',
 
-  dashlistStar: css`
-    align-self: center;
-    margin-right: 0px;
-    color: ${theme.colors.secondary.text};
-    z-index: 1;
-  `,
-
-  dashlistFolder: css`
-    color: ${theme.colors.secondary.text};
-    font-size: ${theme.typography.bodySmall.fontSize};
-    line-height: ${theme.typography.body.lineHeight};
-  `,
-
-  dashlistTitle: css`
-    &::after {
-      position: absolute;
-      content: '';
-      left: 0;
-      top: 0;
-      bottom: 0;
-      right: 0;
-    }
-  `,
-
-  dashlistLinkBody: css`
-    flex-grow: 1;
-  `,
-
-  dashlistItem: css`
-    position: relative;
-    list-style: none;
-  `,
-
-  gridContainer: css`
-    display: grid;
-    gap: ${theme.spacing(1)};
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    list-style: none;
-    margin-bottom: ${theme.spacing(1)};
-  `,
-});
+      '&:hover': {
+        '> div': {
+          '&:first-child': {
+            color: theme.colors.text.link,
+            textDecoration: 'underline',
+          },
+        },
+      },
+    }),
+    dashlistCardIcon: css({
+      marginRight: theme.spacing(0.25),
+      marginTop: theme.spacing(0.25),
+    }),
+    dashlistCardLink: css({
+      paddingTop: theme.spacing(0.5),
+      whiteSpace: 'normal',
+      overflowWrap: 'break-word',
+      wordBreak: 'break-word',
+      display: '-webkit-box',
+      WebkitBoxOrient: 'vertical',
+      WebkitLineClamp: 2,
+      overflow: 'hidden',
+      [theme.breakpoints.down('lg')]: {
+        WebkitLineClamp: 1,
+      },
+    }),
+    dashlistCardFolder: css({
+      display: '-webkit-box',
+      WebkitBoxOrient: 'vertical',
+      WebkitLineClamp: 1,
+      overflow: 'hidden',
+      whiteSpace: 'normal',
+    }),
+  };
+};

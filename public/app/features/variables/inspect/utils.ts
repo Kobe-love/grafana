@@ -1,22 +1,25 @@
-import { variableAdapters } from '../adapters';
-import { DashboardModel, PanelModel } from '../../dashboard/state';
-import { isAdHoc } from '../guard';
+import { type BaseVariableModel, DataLinkBuiltInVars } from '@grafana/data';
+import { t } from '@grafana/i18n';
+import { type Graph } from 'app/core/utils/dag';
+import { mapSet } from 'app/core/utils/set';
+import { stringifyPanelModel } from 'app/features/dashboard/state/PanelModel';
+
 import { safeStringifyValue } from '../../../core/utils/explore';
-import { VariableModel } from '../types';
+import { type DashboardModel } from '../../dashboard/state/DashboardModel';
+import { PanelModel } from '../../dashboard/state/PanelModel';
+import { variableAdapters } from '../adapters';
+import { isAdHoc } from '../guard';
 import { containsVariable, variableRegex, variableRegexExec } from '../utils';
-import { DataLinkBuiltInVars } from '@grafana/data';
 
-export interface GraphNode {
-  id: string;
-  label: string;
-}
+import {
+  type GraphEdge,
+  type GraphNode,
+  type UsagesToNetwork,
+  type VariableUsages,
+  type VariableUsageTree,
+} from './types';
 
-export interface GraphEdge {
-  from: string;
-  to: string;
-}
-
-export const createDependencyNodes = (variables: VariableModel[]): GraphNode[] => {
+export const createDependencyNodes = (variables: BaseVariableModel[]): GraphNode[] => {
   const nodes: GraphNode[] = [];
 
   for (const variable of variables) {
@@ -30,7 +33,7 @@ export const filterNodesWithDependencies = (nodes: GraphNode[], edges: GraphEdge
   return nodes.filter((node) => edges.some((edge) => edge.from === node.id || edge.to === node.id));
 };
 
-export const createDependencyEdges = (variables: VariableModel[]): GraphEdge[] => {
+export const createDependencyEdges = (variables: BaseVariableModel[]): GraphEdge[] => {
   const edges: GraphEdge[] = [];
 
   for (const variable of variables) {
@@ -50,16 +53,22 @@ export const createDependencyEdges = (variables: VariableModel[]): GraphEdge[] =
   return edges;
 };
 
-function getVariableName(expression: string) {
+export function getVariableName(expression: string) {
   const match = variableRegexExec(expression);
   if (!match) {
-    return null;
+    return undefined;
   }
   const variableName = match.slice(1).find((match) => match !== undefined);
+
+  // ignore variables that match inherited object prop names
+  if (variableName! in {}) {
+    return undefined;
+  }
+
   return variableName;
 }
 
-export const getUnknownVariableStrings = (variables: VariableModel[], model: any) => {
+export const getUnknownVariableStrings = (variables: BaseVariableModel[], model: DashboardModel) => {
   variableRegex.lastIndex = 0;
   const unknownVariableNames: string[] = [];
   const modelAsString = safeStringifyValue(model, 2);
@@ -114,7 +123,7 @@ const validVariableNames: Record<string, RegExp[]> = {
 };
 
 export const getPropsWithVariable = (variableId: string, parent: { key: string; value: any }, result: any) => {
-  const stringValues = Object.keys(parent.value).reduce((all, key) => {
+  const stringValues = Object.keys(parent.value).reduce<Record<string, string>>((all, key) => {
     const value = parent.value[key];
     if (!value || typeof value !== 'string') {
       return all;
@@ -138,9 +147,9 @@ export const getPropsWithVariable = (variableId: string, parent: { key: string; 
     }
 
     return all;
-  }, {} as Record<string, any>);
+  }, {});
 
-  const objectValues = Object.keys(parent.value).reduce((all, key) => {
+  const objectValues = Object.keys(parent.value).reduce<Record<string, object>>((all, key) => {
     const value = parent.value[key];
     if (value && typeof value === 'object' && Object.keys(value).length) {
       let id = value.title || value.name || value.id || key;
@@ -159,7 +168,7 @@ export const getPropsWithVariable = (variableId: string, parent: { key: string; 
     }
 
     return all;
-  }, {} as Record<string, any>);
+  }, {});
 
   if (Object.keys(stringValues).length || Object.keys(objectValues).length) {
     result = {
@@ -172,24 +181,17 @@ export const getPropsWithVariable = (variableId: string, parent: { key: string; 
   return result;
 };
 
-export interface VariableUsageTree {
-  variable: VariableModel;
-  tree: any;
-}
-
-export interface VariableUsages {
-  unUsed: VariableModel[];
-  usages: VariableUsageTree[];
-}
-
-export const createUsagesNetwork = (variables: VariableModel[], dashboard: DashboardModel | null): VariableUsages => {
+export const createUsagesNetwork = (
+  variables: BaseVariableModel[],
+  dashboard: DashboardModel | null
+): VariableUsages => {
   if (!dashboard) {
     return { unUsed: [], usages: [] };
   }
 
-  const unUsed: VariableModel[] = [];
+  const unUsed: BaseVariableModel[] = [];
   let usages: VariableUsageTree[] = [];
-  const model = dashboard.getSaveModelClone();
+  const model = dashboard.getSaveModelCloneOld();
 
   for (const variable of variables) {
     const variableId = variable.id;
@@ -207,7 +209,7 @@ export const createUsagesNetwork = (variables: VariableModel[], dashboard: Dashb
 };
 
 export async function getUnknownsNetwork(
-  variables: VariableModel[],
+  variables: BaseVariableModel[],
   dashboard: DashboardModel | null
 ): Promise<UsagesToNetwork[]> {
   return new Promise((resolve, reject) => {
@@ -223,19 +225,19 @@ export async function getUnknownsNetwork(
   });
 }
 
-function createUnknownsNetwork(variables: VariableModel[], dashboard: DashboardModel | null): VariableUsageTree[] {
+function createUnknownsNetwork(variables: BaseVariableModel[], dashboard: DashboardModel | null): VariableUsageTree[] {
   if (!dashboard) {
     return [];
   }
 
   let unknown: VariableUsageTree[] = [];
-  const model = dashboard.getSaveModelClone();
+  const model = dashboard.getSaveModelCloneOld();
 
   const unknownVariables = getUnknownVariableStrings(variables, model);
   for (const unknownVariable of unknownVariables) {
     const props = getPropsWithVariable(unknownVariable, { key: 'model', value: model }, {});
     if (Object.keys(props).length) {
-      const variable = ({ id: unknownVariable, name: unknownVariable } as unknown) as VariableModel;
+      const variable = { id: unknownVariable, name: unknownVariable } as unknown as BaseVariableModel;
       unknown.push({ variable, tree: props });
     }
   }
@@ -252,93 +254,32 @@ function createUnknownsNetwork(variables: VariableModel[], dashboard: DashboardM
 
   This doesn't take circular dependencies in consideration.
  */
+
 export function getAllAffectedPanelIdsForVariableChange(
-  variableId: string,
-  variables: VariableModel[],
-  panels: PanelModel[]
-): number[] {
-  const flattenedPanels = flattenPanels(panels);
-  let affectedPanelIds: number[] = getAffectedPanelIdsForVariable(variableId, flattenedPanels);
-  const affectedPanelIdsForAllVariables = getAffectedPanelIdsForVariable(
-    DataLinkBuiltInVars.includeVars,
-    flattenedPanels
-  );
-  affectedPanelIds = [...new Set([...affectedPanelIdsForAllVariables, ...affectedPanelIds])];
-
-  const dependencies = getDependenciesForVariable(variableId, variables, new Set());
-  for (const dependency of dependencies) {
-    const affectedPanelIdsForDependency = getAffectedPanelIdsForVariable(dependency, flattenedPanels);
-    affectedPanelIds = [...new Set([...affectedPanelIdsForDependency, ...affectedPanelIds])];
+  variableIds: string[],
+  variableGraph: Graph,
+  panelsByVar: Record<string, Set<number>>
+): Set<number> {
+  const allDependencies = mapSet(variableGraph.descendants(variableIds), (n) => n.name);
+  allDependencies.add(DataLinkBuiltInVars.includeVars);
+  for (const id of variableIds) {
+    allDependencies.add(id);
   }
 
+  const affectedPanelIds = getDependentPanels([...allDependencies], panelsByVar);
   return affectedPanelIds;
 }
 
-export function getDependenciesForVariable(
-  variableId: string,
-  variables: VariableModel[],
-  deps: Set<string>
-): Set<string> {
-  if (!variables.length) {
-    return deps;
-  }
-
-  for (const variable of variables) {
-    if (variable.name === variableId) {
-      continue;
-    }
-
-    const depends = variableAdapters.get(variable.type).dependsOn(variable, { name: variableId });
-    if (!depends) {
-      continue;
-    }
-
-    deps.add(variable.name);
-    deps = getDependenciesForVariable(variable.name, variables, deps);
-  }
-
-  return deps;
-}
-
-export function getAffectedPanelIdsForVariable(variableId: string, panels: PanelModel[]): number[] {
-  if (!panels.length) {
-    return [];
-  }
-
-  const affectedPanelIds: number[] = [];
-  const repeatRegex = new RegExp(`"repeat":"${variableId}"`);
-  for (const panel of panels) {
-    const panelAsJson = safeStringifyValue(panel.getSaveModel());
-
-    // check for repeats that don't use variableRegex
-    const repeatMatches = panelAsJson.match(repeatRegex);
-    if (repeatMatches?.length) {
-      affectedPanelIds.push(panel.id);
-      continue;
-    }
-
-    const matches = panelAsJson.match(variableRegex);
-    if (!matches) {
-      continue;
-    }
-
-    for (const match of matches) {
-      const variableName = getVariableName(match);
-      if (variableName === variableId) {
-        affectedPanelIds.push(panel.id);
-        break;
-      }
+// Return an array of panel IDs depending on variables
+export function getDependentPanels(variables: string[], panelsByVarUsage: Record<string, Set<number>>) {
+  const thePanels: number[] = [];
+  for (const varId of variables) {
+    if (panelsByVarUsage[varId]) {
+      thePanels.push(...panelsByVarUsage[varId]);
     }
   }
 
-  return affectedPanelIds;
-}
-
-export interface UsagesToNetwork {
-  variable: VariableModel;
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  showGraph: boolean;
+  return new Set(thePanels);
 }
 
 export const traverseTree = (usage: UsagesToNetwork, parent: { id: string; value: any }): UsagesToNetwork => {
@@ -375,7 +316,9 @@ export const transformUsagesToNetwork = (usages: VariableUsageTree[]): UsagesToN
     const { variable, tree } = usage;
     const result: UsagesToNetwork = {
       variable,
-      nodes: [{ id: 'dashboard', label: 'dashboard' }],
+      nodes: [
+        { id: 'dashboard', label: t('variables.transform-usages-to-network.result.label.dashboard', 'dashboard') },
+      ],
       edges: [],
       showGraph: false,
     };
@@ -385,8 +328,8 @@ export const transformUsagesToNetwork = (usages: VariableUsageTree[]): UsagesToN
   return results;
 };
 
-const countLeaves = (object: any): number => {
-  const total = Object.values(object).reduce((count: number, value: any) => {
+const countLeaves = (object: object): number => {
+  const total = Object.values(object).reduce<number>((count, value) => {
     if (typeof value === 'object') {
       return count + countLeaves(value);
     }
@@ -394,7 +337,7 @@ const countLeaves = (object: any): number => {
     return count + 1;
   }, 0);
 
-  return (total as unknown) as number;
+  return total;
 };
 
 export const getVariableUsages = (variableId: string, usages: VariableUsageTree[]): number => {
@@ -417,4 +360,25 @@ export function flattenPanels(panels: PanelModel[]): PanelModel[] {
   }
 
   return result;
+}
+
+// Accepts an array of panel models, and returns an array of panel IDs paired with
+// the names of any template variables found
+export function getPanelVars(panels: PanelModel[]) {
+  const panelsByVar: Record<string, Set<number>> = {};
+  for (const p of panels) {
+    const jsonString = stringifyPanelModel(p);
+    const repeats = [...jsonString.matchAll(/"repeat":"([^"]+)"/g)].map((m) => m[1]);
+    const varRegexMatches = jsonString.match(variableRegex)?.map((m) => getVariableName(m)) ?? [];
+    const varNames = [...repeats, ...varRegexMatches];
+    for (const varName of varNames) {
+      if (varName! in panelsByVar) {
+        panelsByVar[varName!].add(p.id);
+      } else {
+        panelsByVar[varName!] = new Set([p.id]);
+      }
+    }
+  }
+
+  return panelsByVar;
 }

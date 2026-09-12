@@ -1,4 +1,4 @@
-import { TimeRange } from 'app/plugins/datasource/alertmanager/types';
+import { type TimeRange } from 'app/plugins/datasource/alertmanager/types';
 
 export type MuteTimingFields = {
   name: string;
@@ -6,9 +6,11 @@ export type MuteTimingFields = {
 };
 
 export type MuteTimingIntervalFields = {
-  times: TimeRange[];
-  weekdays: string;
-  days_of_month: string;
-  months: string;
-  years: string;
+  times?: TimeRange[];
+  weekdays?: string;
+  days_of_month?: string;
+  months?: string;
+  years?: string;
+  location?: string;
+  disable: boolean;
 };

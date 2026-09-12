@@ -1,59 +1,46 @@
-import React, { PropsWithChildren } from 'react';
 import { css, cx } from '@emotion/css';
-import { GrafanaTheme, TimeZone, dateTimeFormat } from '@grafana/data';
-import { useTheme, stylesFactory } from '../../../themes';
-import { isString } from 'lodash';
+
+import { type GrafanaTheme2, type TimeZone } from '@grafana/data';
+
+import { useStyles2 } from '../../../themes/ThemeContext';
+
+import { getTimeZoneDisplayInfo } from './timeZoneUtils';
 
 interface Props {
-  timestamp: number;
-  timeZone: TimeZone | undefined;
+  /** preformatted display string, e.g. 'UTC+05:30' (see formatUtcOffset) */
+  offset: string | undefined;
   className?: string;
 }
 
-export const TimeZoneOffset: React.FC<PropsWithChildren<Props>> = (props) => {
-  const theme = useTheme();
-  const { timestamp, timeZone, className } = props;
-  const styles = getStyles(theme);
+export const TimeZoneOffset = ({ offset, className }: Props) => {
+  const styles = useStyles2(getStyles);
 
-  if (!isString(timeZone)) {
+  if (!offset) {
     return null;
   }
 
-  return (
-    <>
-      <span className={cx(styles.offset, className)}>{formatUtcOffset(timestamp, timeZone)}</span>
-    </>
-  );
+  return <span className={cx(styles.offset, className)}>{offset}</span>;
 };
 
 export const formatUtcOffset = (timestamp: number, timeZone: TimeZone): string => {
-  const offset = dateTimeFormat(timestamp, {
-    timeZone,
-    format: 'Z',
-  });
-
-  if (offset === '+00:00') {
-    return 'UTC';
-  }
-  return `UTC${offset}`;
+  return `UTC${getTimeZoneDisplayInfo(timeZone, timestamp)?.offset ?? '+00:00'}`;
 };
 
-const getStyles = stylesFactory((theme: GrafanaTheme) => {
-  const textBase = css`
-    font-weight: normal;
-    font-size: ${theme.typography.size.sm};
-    color: ${theme.colors.textWeak};
-    white-space: normal;
-  `;
+const getStyles = (theme: GrafanaTheme2) => {
+  const textBase = css({
+    fontWeight: 'normal',
+    fontSize: theme.typography.size.sm,
+    color: theme.colors.text.secondary,
+    whiteSpace: 'normal',
+  });
 
   return {
-    offset: css`
-      ${textBase};
-      color: ${theme.colors.text};
-      background: ${theme.colors.bg2};
-      padding: 2px 5px;
-      border-radius: 2px;
-      margin-left: 4px;
-    `,
+    offset: css(textBase, {
+      color: theme.colors.text.primary,
+      background: theme.colors.background.secondary,
+      padding: '2px 5px',
+      borderRadius: theme.shape.radius.default,
+      marginLeft: '4px',
+    }),
   };
-});
+};

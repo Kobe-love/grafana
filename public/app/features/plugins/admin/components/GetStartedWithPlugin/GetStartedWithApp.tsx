@@ -1,9 +1,14 @@
-import { PluginMeta } from '@grafana/data';
+import * as React from 'react';
+
+import { type PluginMeta } from '@grafana/data';
+import { Trans } from '@grafana/i18n';
+import { updateAppPluginSettings } from '@grafana/runtime/unstable';
 import { Button } from '@grafana/ui';
+import { contextSrv } from 'app/core/services/context_srv';
+import { AccessControlAction } from 'app/types/accessControl';
+
 import { usePluginConfig } from '../../hooks/usePluginConfig';
-import { updatePluginSettings } from '../../api';
-import React from 'react';
-import { CatalogPlugin } from '../../types';
+import { type CatalogPlugin } from '../../types';
 
 type Props = {
   plugin: CatalogPlugin;
@@ -15,15 +20,20 @@ export function GetStartedWithApp({ plugin }: Props): React.ReactElement | null 
   if (!pluginConfig) {
     return null;
   }
+  // Enforce RBAC
+  if (!contextSrv.hasPermission(AccessControlAction.PluginsWrite)) {
+    return null;
+  }
 
-  const { enabled, jsonData } = pluginConfig?.meta;
+  const { enabled, autoEnabled, jsonData } = pluginConfig?.meta;
 
-  const enable = () =>
+  const enable = () => {
     updatePluginSettingsAndReload(plugin.id, {
       enabled: true,
       pinned: true,
       jsonData,
     });
+  };
 
   const disable = () => {
     updatePluginSettingsAndReload(plugin.id, {
@@ -37,13 +47,13 @@ export function GetStartedWithApp({ plugin }: Props): React.ReactElement | null 
     <>
       {!enabled && (
         <Button variant="primary" onClick={enable}>
-          Enable
+          <Trans i18nKey="plugins.get-started-with-app.enable">Enable</Trans>
         </Button>
       )}
 
-      {enabled && (
+      {enabled && !autoEnabled && (
         <Button variant="destructive" onClick={disable}>
-          Disable
+          <Trans i18nKey="plugins.get-started-with-app.disable">Disable</Trans>
         </Button>
       )}
     </>
@@ -52,7 +62,7 @@ export function GetStartedWithApp({ plugin }: Props): React.ReactElement | null 
 
 const updatePluginSettingsAndReload = async (id: string, data: Partial<PluginMeta>) => {
   try {
-    await updatePluginSettings(id, data);
+    await updateAppPluginSettings(id, data);
 
     // Reloading the page as the plugin meta changes made here wouldn't be propagated throughout the app.
     window.location.reload();

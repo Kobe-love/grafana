@@ -1,7 +1,8 @@
 import { fromPairs, uniq } from 'lodash';
 import { useMemo } from 'react';
-import { EdgeDatumLayout, NodeDatum, NodesMarker } from './types';
-import { Config } from './layout';
+
+import { type Config } from './layout';
+import { type EdgeDatumLayout, type NodeDatum, type NodesMarker } from './types';
 
 type NodesMap = Record<string, NodeDatum>;
 type EdgesMap = Record<string, EdgeDatumLayout[]>;
@@ -50,7 +51,7 @@ export function useNodeLimit(
   }, [edges, edgesMap, limit, nodes, nodesMap, rootId, config.gridLayout]);
 }
 
-export function limitGraphLayout(
+function limitGraphLayout(
   nodes: NodeDatum[],
   edges: EdgeDatumLayout[],
   nodesMap: NodesMap,
@@ -94,7 +95,7 @@ export function limitGraphLayout(
   };
 }
 
-export function limitGridLayout(nodes: NodeDatum[], limit: number, rootId?: string) {
+function limitGridLayout(nodes: NodeDatum[], limit: number, rootId?: string) {
   let start = 0;
   let stop = limit;
   let markers: NodesMarker[] = [];

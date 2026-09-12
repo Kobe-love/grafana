@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/grafana/grafana/pkg/models"
-	"github.com/grafana/grafana/pkg/services/live/livecontext"
-
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+
+	"github.com/grafana/grafana/pkg/apimachinery/identity"
+	"github.com/grafana/grafana/pkg/services/live/model"
 )
 
 type BuiltinDataOutput struct {
@@ -25,15 +25,15 @@ func (s *BuiltinDataOutput) Type() string {
 }
 
 func (s *BuiltinDataOutput) OutputData(ctx context.Context, vars Vars, data []byte) ([]*ChannelData, error) {
-	u, ok := livecontext.GetContextSignedUser(ctx)
-	if !ok {
+	u, err := identity.GetRequester(ctx)
+	if err != nil {
 		return nil, errors.New("user not found in context")
 	}
 	handler, _, err := s.channelHandlerGetter.GetChannelHandler(ctx, u, vars.Channel)
 	if err != nil {
 		return nil, err
 	}
-	_, status, err := handler.OnPublish(ctx, u, models.PublishEvent{
+	_, status, err := handler.OnPublish(ctx, u, model.PublishEvent{
 		Channel: vars.Channel,
 		Data:    data,
 	})

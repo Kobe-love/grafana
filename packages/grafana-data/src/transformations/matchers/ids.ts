@@ -2,6 +2,7 @@
 
 // Builtin Predicates
 // not using 'any' and 'never' since they are reserved keywords
+/** @deprecated will be removed in a future release */
 export enum MatcherID {
   anyMatch = 'anyMatch', // checks children
   allMatch = 'allMatch', // checks children
@@ -15,15 +16,17 @@ export enum FieldMatcherID {
   numeric = 'numeric',
   time = 'time', // Can be multiple times
   first = 'first',
-  firstTimeField = 'firstTimeField', // Only the first fime field
+  firstTimeField = 'firstTimeField', // Only the first time field
 
   // With arguments
   byType = 'byType',
+  byTypes = 'byTypes',
   byName = 'byName',
   byNames = 'byNames',
   byRegexp = 'byRegexp',
   byRegexpOrNames = 'byRegexpOrNames',
   byFrameRefID = 'byFrameRefID',
+  byValue = 'byValue',
   // byIndex = 'byIndex',
   // byLabel = 'byLabel',
 }
@@ -35,7 +38,6 @@ export enum FrameMatcherID {
   byName = 'byName',
   byRefId = 'byRefId',
   byIndex = 'byIndex',
-  byLabel = 'byLabel',
 }
 
 /**
@@ -51,5 +53,7 @@ export enum ValueMatcherID {
   lowerOrEqual = 'lowerOrEqual',
   equal = 'equal',
   notEqual = 'notEqual',
+  substring = 'substring',
+  notSubstring = 'notSubstring',
   between = 'between',
 }

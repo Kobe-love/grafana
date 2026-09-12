@@ -1,56 +1,145 @@
-import React, { FC } from 'react';
 import { css, cx } from '@emotion/css';
-import { useTheme2, styleMixins } from '@grafana/ui';
-import { colorManipulator } from '@grafana/data';
+import { type FC, type JSX } from 'react';
+
+import { colorManipulator, type GrafanaTheme2, type NavModelItem } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { reportInteraction } from '@grafana/runtime';
+import { Text, Tooltip, useStyles2, useTheme2 } from '@grafana/ui';
+import g8LoginDarkSvg from 'img/g8_login_dark.svg';
+import g8LoginLightSvg from 'img/g8_login_light.svg';
+import grafanaIconSvg from 'img/grafana_icon.svg';
 
 export interface BrandComponentProps {
   className?: string;
   children?: JSX.Element | JSX.Element[];
 }
 
-const LoginLogo: FC<BrandComponentProps> = ({ className }) => {
-  return <img className={className} src="public/img/grafana_icon.svg" alt="Grafana" />;
+const LoginLogo: FC<BrandComponentProps & { logo?: string }> = ({ className, logo }) => {
+  return <img className={className} src={`${logo ? logo : grafanaIconSvg}`} alt="Grafana" />;
 };
 
 const LoginBackground: FC<BrandComponentProps> = ({ className, children }) => {
   const theme = useTheme2();
 
-  const background = css`
-    &:before {
-      content: '';
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      top: 0;
-      background: url(public/img/g8_login_${theme.isDark ? 'dark' : 'light'}.svg);
-      background-position: top center;
-      background-size: auto;
-      background-repeat: no-repeat;
+  const background = css({
+    '&:before': {
+      content: '""',
+      position: 'fixed',
+      left: 0,
+      right: 0,
+      bottom: 0,
+      top: 0,
+      background: `url(${theme.isDark ? g8LoginDarkSvg : g8LoginLightSvg})`,
+      backgroundPosition: 'top center',
+      backgroundSize: 'auto',
+      backgroundRepeat: 'no-repeat',
 
-      opacity: 0;
-      transition: opacity 3s ease-in-out;
+      opacity: 0,
 
-      @media ${styleMixins.mediaUp(theme.v1.breakpoints.md)} {
-        background-position: center;
-        background-size: cover;
-      }
-    }
-  `;
+      [theme.transitions.handleMotion('no-preference', 'reduce')]: {
+        transition: 'opacity 3s ease-in-out',
+      },
+
+      [theme.breakpoints.up('md')]: {
+        backgroundPosition: 'center',
+        backgroundSize: 'cover',
+      },
+    },
+  });
 
   return <div className={cx(background, className)}>{children}</div>;
 };
 
 const MenuLogo: FC<BrandComponentProps> = ({ className }) => {
-  return <img className={className} src="public/img/grafana_icon.svg" alt="Grafana" />;
+  return <img className={className} src={grafanaIconSvg} alt="Grafana" />;
 };
+
+export function HomeLogo({ homeNav, onClick }: { homeNav?: NavModelItem; onClick?: () => void }) {
+  const styles = useStyles2(homeLogoStyles);
+
+  const onHomeClicked = () => {
+    reportInteraction('grafana_home_clicked');
+    onClick?.();
+  };
+
+  return (
+    <Tooltip placement="bottom" content={homeNav?.text || 'Home'}>
+      <a
+        onClick={onHomeClicked}
+        data-testid={selectors.components.Breadcrumbs.breadcrumb('Home')}
+        className={styles.homeLogo}
+        title={homeNav?.text || 'Home'}
+        href={homeNav?.url}
+      >
+        <Branding.MenuLogo />
+      </a>
+    </Tooltip>
+  );
+}
+
+function homeLogoStyles(theme: GrafanaTheme2) {
+  return {
+    homeLogo: css({
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: theme.spacing(3),
+      width: theme.spacing(3),
+      margin: theme.spacing(0, 0.5),
+      flexShrink: 0,
+      img: {
+        maxHeight: '100%',
+        maxWidth: '100%',
+      },
+    }),
+  };
+}
+
+export function HomeTitle({ homeNav, onClick }: { homeNav?: NavModelItem; onClick?: () => void }) {
+  const styles = useStyles2(homeTitleStyles);
+
+  const onHomeClicked = () => {
+    reportInteraction('grafana_home_clicked');
+    onClick?.();
+  };
+
+  return (
+    <a onClick={onHomeClicked} className={styles.homeTitle} title={homeNav?.text || 'Home'} href={homeNav?.url}>
+      <Text variant="body" truncate>
+        {Branding.AppTitle}
+      </Text>
+    </a>
+  );
+}
+
+function homeTitleStyles(theme: GrafanaTheme2) {
+  return {
+    homeTitle: css({
+      borderRadius: theme.shape.radius.default,
+      color: theme.colors.text.primary,
+      padding: theme.spacing(0.25, 0.75),
+      margin: theme.spacing(0, -0.75),
+      textDecoration: 'none',
+
+      '&:hover, &:focus': {
+        backgroundColor: theme.colors.secondary.transparent,
+      },
+
+      [theme.transitions.handleMotion('no-preference', 'reduce')]: {
+        transition: theme.transitions.create(['background-color'], {
+          duration: theme.transitions.duration.short,
+        }),
+      },
+    }),
+  };
+}
 
 const LoginBoxBackground = () => {
   const theme = useTheme2();
-  return css`
-    background: ${colorManipulator.alpha(theme.colors.background.primary, 0.7)};
-    background-size: cover;
-  `;
+  return css({
+    background: colorManipulator.alpha(theme.colors.background.primary, 0.7),
+    backgroundSize: 'cover',
+  });
 };
 
 export class Branding {
@@ -60,6 +149,7 @@ export class Branding {
   static LoginBoxBackground = LoginBoxBackground;
   static AppTitle = 'Grafana';
   static LoginTitle = 'Welcome to Grafana';
+  static HideEdition = false;
   static GetLoginSubTitle = (): null | string => {
     return null;
   };

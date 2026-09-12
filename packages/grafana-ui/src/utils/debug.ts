@@ -1,10 +1,10 @@
-import { Logger } from './logger';
+import { type Logger } from './logger';
 
 /**
  * Allows debug helpers attachement to the window object
  * @internal
  */
-export function attachDebugger(key: string, thebugger?: any, logger?: Logger) {
+export function attachDebugger(key: string, thebugger?: object, logger?: Logger) {
   if (process.env.NODE_ENV === 'production') {
     return;
   }
@@ -15,8 +15,10 @@ export function attachDebugger(key: string, thebugger?: any, logger?: Logger) {
   }
 
   // @ts-ignore
-  let debugGlobal = window['_debug'] ?? {};
+  let debugGlobal = (typeof window !== 'undefined' && window['_debug']) ?? {};
   debugGlobal[key] = completeDebugger;
-  // @ts-ignore
-  window['_debug'] = debugGlobal;
+  if (typeof window !== 'undefined') {
+    // @ts-ignore
+    window['_debug'] = debugGlobal;
+  }
 }

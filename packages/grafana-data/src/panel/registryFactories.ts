@@ -1,8 +1,9 @@
 import { FieldConfigOptionsRegistry } from '../field/FieldConfigOptionsRegistry';
 import { standardFieldConfigEditorRegistry } from '../field/standardFieldConfigEditorRegistry';
-import { FieldConfigProperty, FieldConfigPropertyItem } from '../types/fieldOverrides';
+import { type FieldConfigProperty, type FieldConfigPropertyItem } from '../types/fieldOverrides';
 import { FieldConfigEditorBuilder } from '../utils/OptionsUIBuilders';
-import { SetFieldConfigOptionsArgs } from './PanelPlugin';
+
+import { type SetFieldConfigOptionsArgs } from './PanelPlugin';
 
 /**
  * Helper functionality to create a field config registry.
@@ -11,8 +12,8 @@ import { SetFieldConfigOptionsArgs } from './PanelPlugin';
  * @param pluginName - name of the plugin that will use the registry.
  * @internal
  */
-export function createFieldConfigRegistry<TFieldConfigOptions>(
-  config: SetFieldConfigOptionsArgs<TFieldConfigOptions> = {},
+export function createFieldConfigRegistry<TFieldConfigOptions, TContextOptions = unknown>(
+  config: SetFieldConfigOptionsArgs<TFieldConfigOptions, TContextOptions> = {},
   pluginName: string
 ): FieldConfigOptionsRegistry {
   const registry = new FieldConfigOptionsRegistry();
@@ -21,7 +22,7 @@ export function createFieldConfigRegistry<TFieldConfigOptions>(
 
   // Add custom options
   if (config.useCustomConfig) {
-    const builder = new FieldConfigEditorBuilder<TFieldConfigOptions>();
+    const builder = new FieldConfigEditorBuilder<TFieldConfigOptions, TContextOptions>();
     config.useCustomConfig(builder);
 
     for (const customProp of builder.getRegistry().list()) {
@@ -42,15 +43,33 @@ export function createFieldConfigRegistry<TFieldConfigOptions>(
   }
 
   for (let fieldConfigProp of standardConfigs) {
+    const id = fieldConfigProp.id as FieldConfigProperty;
     if (config.disableStandardOptions) {
-      const isDisabled = config.disableStandardOptions.indexOf(fieldConfigProp.id as FieldConfigProperty) > -1;
+      const isDisabled = config.disableStandardOptions.indexOf(id) > -1;
       if (isDisabled) {
         continue;
       }
     }
     if (config.standardOptions) {
-      const customDefault: any = config.standardOptions[fieldConfigProp.id as FieldConfigProperty]?.defaultValue;
-      const customSettings: any = config.standardOptions[fieldConfigProp.id as FieldConfigProperty]?.settings;
+      const customHideFromDefaults = config.standardOptions[id]?.hideFromDefaults;
+      const customDefault = config.standardOptions[id]?.defaultValue;
+      const customSettings = config.standardOptions[id]?.settings;
+      const customShowIf = config.standardOptions[id]?.showIf;
+
+      if (customShowIf) {
+        fieldConfigProp = {
+          ...fieldConfigProp,
+          showIf: customShowIf,
+        };
+      }
+
+      if (customHideFromDefaults !== undefined) {
+        fieldConfigProp = {
+          ...fieldConfigProp,
+          hideFromDefaults: customHideFromDefaults,
+        };
+      }
+
       if (customDefault) {
         fieldConfigProp = {
           ...fieldConfigProp,

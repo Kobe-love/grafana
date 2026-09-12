@@ -1,123 +1,198 @@
-import React, { HTMLAttributes, useState } from 'react';
-import { usePopper } from 'react-popper';
-import { css, cx } from '@emotion/css';
-import { PlotSelection, useStyles2, useTheme2, Portal, DEFAULT_ANNOTATION_COLOR } from '@grafana/ui';
-import { colorManipulator, DataFrame, getDisplayProcessor, GrafanaTheme2, TimeZone } from '@grafana/data';
-import { getCommonAnnotationStyles } from '../styles';
-import { AnnotationEditorForm } from './AnnotationEditorForm';
+import { css } from '@emotion/css';
+import { useRef, useEffect } from 'react';
+import { Controller } from 'react-hook-form';
+import { useAsyncFn, useClickAway } from 'react-use';
 
-interface AnnotationEditorProps extends HTMLAttributes<HTMLDivElement> {
-  data: DataFrame;
-  timeZone: TimeZone;
-  selection: PlotSelection;
-  onSave: () => void;
-  onDismiss: () => void;
-  annotation?: AnnotationsDataFrameViewDTO;
+import { type AnnotationEventUIModel, type GrafanaTheme2, dateTimeFormat, systemDateFormats } from '@grafana/data';
+import { Trans, t } from '@grafana/i18n';
+import { Button, Field, Stack, TextArea, usePanelContext, useStyles2 } from '@grafana/ui';
+import { Form } from 'app/core/components/Form/Form';
+import { TagFilter } from 'app/core/components/TagFilter/TagFilter';
+import { annotationServer } from 'app/features/annotations/api';
+
+import { AnnotationTooltipHeaderCloseIcon } from './AnnotationTooltipHeaderCloseIcon';
+import { type AnnotationVals } from './types';
+
+interface Props {
+  annoVals: AnnotationVals;
+  annoIdx: number;
+  timeZone: string;
+  dismiss: () => void;
 }
 
-export const AnnotationEditor: React.FC<AnnotationEditorProps> = ({
-  onDismiss,
-  onSave,
-  timeZone,
-  data,
-  selection,
-  annotation,
-  style,
-}) => {
-  const theme = useTheme2();
-  const styles = useStyles2(getStyles);
-  const commonStyles = useStyles2(getCommonAnnotationStyles);
-  const [popperTrigger, setPopperTrigger] = useState<HTMLDivElement | null>(null);
-  const [editorPopover, setEditorPopover] = useState<HTMLDivElement | null>(null);
+interface AnnotationEditFormDTO {
+  description: string;
+  tags: string[];
+}
 
-  const popper = usePopper(popperTrigger, editorPopover, {
-    modifiers: [
-      { name: 'arrow', enabled: false },
-      {
-        name: 'preventOverflow',
-        enabled: true,
-        options: {
-          rootBoundary: 'viewport',
-        },
-      },
-    ],
+export const AnnotationEditor = ({ annoVals, annoIdx, dismiss, timeZone, ...otherProps }: Props) => {
+  const styles = useStyles2(getStyles);
+  const { onAnnotationCreate, onAnnotationUpdate } = usePanelContext();
+  const focusRef = useRef<HTMLButtonElement | null>(null);
+  const clickAwayRef = useRef(null);
+
+  useClickAway(clickAwayRef, dismiss);
+
+  // focus text area on render
+  useEffect(() => {
+    focusRef.current?.focus();
+  }, []);
+
+  const [createAnnotationState, createAnnotation] = useAsyncFn(async (event: AnnotationEventUIModel) => {
+    const result = await onAnnotationCreate!(event);
+    dismiss();
+    return result;
   });
 
-  let xField = data.fields[0];
-  if (!xField) {
-    return null;
-  }
-  const xFieldFmt = xField.display || getDisplayProcessor({ field: xField, timeZone, theme });
-  const isRegionAnnotation = selection.min !== selection.max;
+  const [updateAnnotationState, updateAnnotation] = useAsyncFn(async (event: AnnotationEventUIModel) => {
+    const result = await onAnnotationUpdate!(event);
+    dismiss();
+    return result;
+  });
 
+  const timeFormatter = (value: number) =>
+    dateTimeFormat(value, {
+      format: systemDateFormats.fullDate,
+      timeZone,
+    });
+
+  const isUpdatingAnnotation = annoVals.id?.[annoIdx] != null;
+  const isRegionAnnotation = annoVals.isRegion?.[annoIdx];
+  const operation = isUpdatingAnnotation ? updateAnnotation : createAnnotation;
+  const stateIndicator = isUpdatingAnnotation ? updateAnnotationState : createAnnotationState;
+  const timeEnd = annoVals.timeEnd?.[annoIdx];
+  const timeVal = annoVals.time[annoIdx];
+  const time =
+    isRegionAnnotation && timeEnd != null
+      ? `${timeFormatter(timeVal)} - ${timeFormatter(timeEnd)}`
+      : timeFormatter(timeVal);
+
+  const onSubmit = ({ tags, description }: AnnotationEditFormDTO) => {
+    operation({
+      // @ts-expect-error @todo https://github.com/grafana/grafana/issues/120097 - id is typed incorrectly as string but breaks annotation API
+      id: annoVals.id?.[annoIdx] ?? undefined,
+      tags,
+      description,
+      from: Math.round(annoVals.time[annoIdx]!),
+      to: Math.round(annoVals.timeEnd?.[annoIdx] ?? annoVals.time[annoIdx]!),
+    });
+  };
+
+  // Annotation editor
   return (
-    <Portal>
-      <>
-        <div // div overlay matching uPlot canvas bbox
-          style={style}
-        >
-          <div // Annotation marker
-            className={cx(
-              css`
-                position: absolute;
-                top: ${selection.bbox.top}px;
-                left: ${selection.bbox.left}px;
-                width: ${selection.bbox.width}px;
-                height: ${selection.bbox.height}px;
-              `,
-              isRegionAnnotation ? styles.overlayRange(annotation) : styles.overlay(annotation)
-            )}
-          >
-            <div
-              ref={setPopperTrigger}
-              className={
-                isRegionAnnotation
-                  ? cx(commonStyles(annotation).markerBar, styles.markerBar)
-                  : cx(commonStyles(annotation).markerTriangle, styles.markerTriangle)
-              }
-            />
-          </div>
-        </div>
-
-        <AnnotationEditorForm
-          annotation={annotation || ({ time: selection.min, timeEnd: selection.max } as AnnotationsDataFrameViewDTO)}
-          timeFormatter={(v) => xFieldFmt(v).text}
-          onSave={onSave}
-          onDismiss={onDismiss}
-          ref={setEditorPopover}
-          style={popper.styles.popper}
-          {...popper.attributes.popper}
-        />
-      </>
-    </Portal>
+    <div ref={clickAwayRef} className={styles.editor} {...otherProps}>
+      <div className={styles.header}>
+        <Stack justifyContent={'space-between'} alignItems={'center'}>
+          <Stack gap={0} width="100%" justifyContent={'space-between'} alignItems={'center'}>
+            <div>
+              {isUpdatingAnnotation
+                ? t('timeseries.annotation-editor2.edit-annotation', 'Edit annotation')
+                : t('timeseries.annotation-editor2.add-annotation', 'Add annotation')}
+            </div>
+            <div>{time}</div>
+          </Stack>
+          <AnnotationTooltipHeaderCloseIcon
+            forwardRef={focusRef}
+            onClick={(e) => {
+              // Don't trigger onClick
+              e.stopPropagation();
+              dismiss();
+            }}
+          />
+        </Stack>
+      </div>
+      <Form<AnnotationEditFormDTO>
+        onSubmit={onSubmit}
+        defaultValues={{ description: annoVals.text?.[annoIdx] ?? '', tags: annoVals.tags?.[annoIdx] || [] }}
+      >
+        {({ register, errors, control }) => {
+          return (
+            <>
+              <div className={styles.content}>
+                {/* eslint-disable-next-line @grafana/require-no-margin */}
+                <Field
+                  htmlFor={'annotation-description-textarea'}
+                  autoFocus={true}
+                  label={t('timeseries.annotation-editor2.label-description', 'Description')}
+                  invalid={!!errors.description}
+                  error={errors?.description?.message}
+                >
+                  <TextArea
+                    id={'annotation-description-textarea'}
+                    data-testid={'annotation-editor-description'}
+                    className={styles.textarea}
+                    {...register('description', {
+                      required: 'Annotation description is required',
+                    })}
+                  />
+                </Field>
+                {/* eslint-disable-next-line @grafana/require-no-margin */}
+                <Field htmlFor={'annotation-tags-input'} label={t('timeseries.annotation-editor2.label-tags', 'Tags')}>
+                  <Controller
+                    control={control}
+                    name="tags"
+                    render={({ field: { ref, onChange, ...field } }) => {
+                      return (
+                        <TagFilter
+                          inputId={'annotation-tags-input'}
+                          allowCustomValue
+                          placeholder={t('timeseries.annotation-editor2.placeholder-add-tags', 'Add tags')}
+                          onChange={onChange}
+                          tagOptions={annotationServer().tags}
+                          tags={field.value}
+                        />
+                      );
+                    }}
+                  />
+                </Field>
+              </div>
+              <div className={styles.footer}>
+                <Stack justifyContent={'flex-end'}>
+                  <Button size={'sm'} variant="secondary" onClick={dismiss} fill="outline">
+                    <Trans i18nKey="timeseries.annotation-editor2.cancel">Cancel</Trans>
+                  </Button>
+                  <Button size={'sm'} type={'submit'} disabled={stateIndicator?.loading}>
+                    {stateIndicator?.loading
+                      ? t('timeseries.annotation-editor2.saving', 'Saving')
+                      : t('timeseries.annotation-editor2.save', 'Save')}
+                  </Button>
+                </Stack>
+              </div>
+            </>
+          );
+        }}
+      </Form>
+    </div>
   );
 };
 
 const getStyles = (theme: GrafanaTheme2) => {
   return {
-    overlay: (annotation?: AnnotationsDataFrameViewDTO) => {
-      const color = theme.visualization.getColorByName(annotation?.color || DEFAULT_ANNOTATION_COLOR);
-      return css`
-        border-left: 1px dashed ${color};
-      `;
-    },
-    overlayRange: (annotation?: AnnotationsDataFrameViewDTO) => {
-      const color = theme.visualization.getColorByName(annotation?.color || DEFAULT_ANNOTATION_COLOR);
-      return css`
-        background: ${colorManipulator.alpha(color, 0.1)};
-        border-left: 1px dashed ${color};
-        border-right: 1px dashed ${color};
-      `;
-    },
-    markerTriangle: css`
-      top: calc(100% + 2px);
-      left: -4px;
-      position: absolute;
-    `,
-    markerBar: css`
-      top: 100%;
-      left: 0;
-      position: absolute;
-    `,
+    editor: css({
+      background: theme.colors.background.elevated,
+      border: `1px solid ${theme.colors.border.weak}`,
+      borderRadius: theme.shape.radius.default,
+      boxShadow: theme.flags.visualDesignRefresh ? theme.shadows.z2 : theme.shadows.z3,
+      userSelect: 'text',
+      width: '460px',
+    }),
+    content: css({
+      padding: theme.spacing(1),
+    }),
+    header: css({
+      borderBottom: `1px solid ${theme.colors.border.weak}`,
+      padding: theme.spacing(0.5, 1),
+      fontWeight: theme.typography.fontWeightBold,
+      fontSize: theme.typography.fontSize,
+      color: theme.colors.text.primary,
+    }),
+    footer: css({
+      borderTop: `1px solid ${theme.colors.border.weak}`,
+      padding: theme.spacing(1, 1),
+    }),
+    textarea: css({
+      color: theme.colors.text.secondary,
+      fontSize: theme.typography.bodySmall.fontSize,
+    }),
   };
 };

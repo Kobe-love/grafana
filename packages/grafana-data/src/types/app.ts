@@ -1,7 +1,16 @@
-import { ComponentClass } from 'react';
-import { KeyValue } from './data';
-import { NavModel } from './navModel';
-import { PluginMeta, GrafanaPlugin, PluginIncludeType } from './plugin';
+import { type ComponentType } from 'react';
+
+import { throwIfAngular } from '../utils/throwIfAngular';
+
+import { type KeyValue } from './data';
+import { type NavModel } from './navModel';
+import { type PluginMeta, GrafanaPlugin, PluginIncludeType } from './plugin';
+import {
+  type PluginExtensionExposedComponentConfig,
+  type PluginExtensionAddedComponentConfig,
+  type PluginExtensionAddedLinkConfig,
+  type PluginExtensionAddedFunctionConfig,
+} from './pluginExtensions';
 
 /**
  * @public
@@ -11,13 +20,15 @@ export enum CoreApp {
   CloudAlerting = 'cloud-alerting',
   UnifiedAlerting = 'unified-alerting',
   Dashboard = 'dashboard',
+  Notebook = 'notebook',
   Explore = 'explore',
+  Correlations = 'correlations',
   Unknown = 'unknown',
   PanelEditor = 'panel-editor',
   PanelViewer = 'panel-viewer',
 }
 
-export interface AppRootProps<T = KeyValue> {
+export interface AppRootProps<T extends KeyValue = KeyValue> {
   meta: AppPluginMeta<T>;
   /**
    * base URL segment for an app, /app/pluginId
@@ -26,6 +37,7 @@ export interface AppRootProps<T = KeyValue> {
 
   /**
    * Pass the nav model to the container... is there a better way?
+   * @deprecated Use PluginPage component exported from @grafana/runtime instead
    */
   onNavChanged: (nav: NavModel) => void;
 
@@ -42,40 +54,39 @@ export interface AppRootProps<T = KeyValue> {
   path: string;
 }
 
-export interface AppPluginMeta<T = KeyValue> extends PluginMeta<T> {
+export interface AppPluginMeta<T extends KeyValue = KeyValue> extends PluginMeta<T> {
   // TODO anything specific to apps?
 }
 
-export class AppPlugin<T = KeyValue> extends GrafanaPlugin<AppPluginMeta<T>> {
+export class AppPlugin<T extends KeyValue = KeyValue> extends GrafanaPlugin<AppPluginMeta<T>> {
+  private _exposedComponentConfigs: PluginExtensionExposedComponentConfig[] = [];
+  private _addedComponentConfigs: PluginExtensionAddedComponentConfig[] = [];
+  private _addedLinkConfigs: PluginExtensionAddedLinkConfig[] = [];
+  private _addedFunctionConfigs: PluginExtensionAddedFunctionConfig[] = [];
+
   // Content under: /a/${plugin-id}/*
-  root?: ComponentClass<AppRootProps<T>>;
-  rootNav?: NavModel; // Initial navigation model
+  root?: ComponentType<AppRootProps<T>>;
 
   /**
    * Called after the module has loaded, and before the app is used.
    * This function may be called multiple times on the same instance.
    * The first time, `this.meta` will be undefined
    */
-  init(meta: AppPluginMeta) {}
+  init(meta: AppPluginMeta<T>) {}
 
   /**
    * Set the component displayed under:
    *   /a/${plugin-id}/*
    *
    * If the NavModel is configured, the page will have a managed frame, otheriwse it has full control.
-   *
-   * NOTE: this structure will change in 7.2+ so that it is managed with a normal react router
    */
-  setRootPage(root: ComponentClass<AppRootProps<T>>, rootNav?: NavModel) {
+  setRootPage(root: ComponentType<AppRootProps<T>>) {
     this.root = root;
-    this.rootNav = rootNav;
     return this;
   }
 
-  setComponentsFromLegacyExports(pluginExports: any) {
-    if (pluginExports.ConfigCtrl) {
-      this.angularConfigCtrl = pluginExports.ConfigCtrl;
-    }
+  setComponentsFromLegacyExports(pluginExports: System.Module) {
+    throwIfAngular(pluginExports);
 
     if (this.meta && this.meta.includes) {
       for (const include of this.meta.includes) {
@@ -90,6 +101,57 @@ export class AppPlugin<T = KeyValue> extends GrafanaPlugin<AppPluginMeta<T>> {
       }
     }
   }
+
+  get exposedComponentConfigs() {
+    return this._exposedComponentConfigs;
+  }
+
+  get addedComponentConfigs() {
+    return this._addedComponentConfigs;
+  }
+
+  get addedLinkConfigs() {
+    return this._addedLinkConfigs;
+  }
+
+  get addedFunctionConfigs() {
+    return this._addedFunctionConfigs;
+  }
+
+  /**
+   * Adds a link to an extension point. The actual registration is done during the plugin import inside grafana.
+   * This means that if the link isn't added at the time the import, later calls to addLink won't register the link.
+   * @param linkConfig
+   */
+  addLink<Context extends object>(linkConfig: PluginExtensionAddedLinkConfig<Context>) {
+    this._addedLinkConfigs.push(linkConfig as PluginExtensionAddedLinkConfig);
+
+    return this;
+  }
+
+  /**
+   * Adds a component to an extension point. The actual registration is done during the plugin import inside grafana.
+   * This means that if the component isn't added at the time the import, later calls to addComponent won't
+   * register the component.
+   * @param linkConfig
+   */
+  addComponent<Props = {}>(addedComponentConfig: PluginExtensionAddedComponentConfig<Props>) {
+    this._addedComponentConfigs.push(addedComponentConfig as PluginExtensionAddedComponentConfig);
+
+    return this;
+  }
+
+  addFunction<Signature>(addedFunctionConfig: PluginExtensionAddedFunctionConfig<Signature>) {
+    this._addedFunctionConfigs.push(addedFunctionConfig);
+
+    return this;
+  }
+
+  exposeComponent<Props = {}>(componentConfig: PluginExtensionExposedComponentConfig<Props>) {
+    this._exposedComponentConfigs.push(componentConfig as PluginExtensionExposedComponentConfig);
+
+    return this;
+  }
 }
 
 /**
@@ -97,6 +159,16 @@ export class AppPlugin<T = KeyValue> extends GrafanaPlugin<AppPluginMeta<T>> {
  * @internal
  */
 export enum FeatureState {
+  /** @deprecated in favor of experimental */
   alpha = 'alpha',
+  /** @deprecated in favor of preview */
   beta = 'beta',
+  /** used to mark experimental features with high/unknown risk */
+  experimental = 'experimental',
+  /** used to mark features that are in public preview with medium/hight risk */
+  privatePreview = 'private preview',
+  /** used to mark features that are in public preview with low/medium risk, or as a shared badge for public and private previews */
+  preview = 'preview',
+  /** used to mark new GA features */
+  new = 'new',
 }

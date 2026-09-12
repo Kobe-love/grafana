@@ -4,11 +4,18 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
-	opentracing "github.com/opentracing/opentracing-go"
-	"github.com/opentracing/opentracing-go/ext"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/web"
 )
 
@@ -21,55 +28,122 @@ var routeOperationNameKey = contextKey{}
 // Implements routing.RegisterNamedMiddleware.
 func ProvideRouteOperationName(name string) web.Handler {
 	return func(res http.ResponseWriter, req *http.Request, c *web.Context) {
-		ctx := context.WithValue(c.Req.Context(), routeOperationNameKey, name)
-		c.Req = c.Req.WithContext(ctx)
+		c.Req = addRouteNameToContext(c.Req, name)
 	}
 }
 
-// RouteOperationNameFromContext receives the route operation name from context, if set.
-func RouteOperationNameFromContext(ctx context.Context) (string, bool) {
-	if val := ctx.Value(routeOperationNameKey); val != nil {
+func addRouteNameToContext(req *http.Request, operationName string) *http.Request {
+	// don't set route name if it's set
+	if _, exists := RouteOperationName(req); exists {
+		return req
+	}
+
+	ctx := context.WithValue(req.Context(), routeOperationNameKey, operationName)
+	return req.WithContext(ctx)
+}
+
+var unnamedHandlers = []struct {
+	pathPattern *regexp.Regexp
+	handler     string
+}{
+	{handler: "plugin-assets", pathPattern: regexp.MustCompile("^/public/plugins/")},
+	{handler: "public-build-assets", pathPattern: regexp.MustCompile("^/public/build/")}, // All Grafana core assets should come from this path
+	{handler: "public-assets", pathPattern: regexp.MustCompile("^/favicon.ico")},
+	{handler: "public-assets", pathPattern: regexp.MustCompile("^/public/")}, // Fallback for other assets, this should go down to 0
+	{handler: "/metrics", pathPattern: regexp.MustCompile("^/metrics")},
+	{handler: "/healthz", pathPattern: regexp.MustCompile("^/healthz")},
+	{handler: "/api/health", pathPattern: regexp.MustCompile("^/api/health")},
+	{handler: "/robots.txt", pathPattern: regexp.MustCompile("^/robots.txt$")},
+	{handler: "/", pathPattern: regexp.MustCompile("^/$")},
+	// bundle all pprof endpoints under the same handler name
+	{handler: "/debug/pprof-handlers", pathPattern: regexp.MustCompile("^/debug/pprof")},
+}
+
+// RouteOperationName receives the route operation name from context, if set.
+func RouteOperationName(req *http.Request) (string, bool) {
+	if val := req.Context().Value(routeOperationNameKey); val != nil {
 		op, ok := val.(string)
 		return op, ok
+	}
+
+	for _, hp := range unnamedHandlers {
+		if hp.pathPattern.Match([]byte(req.URL.Path)) {
+			return hp.handler, true
+		}
 	}
 
 	return "", false
 }
 
-func RequestTracing() web.Handler {
-	return func(res http.ResponseWriter, req *http.Request, c *web.Context) {
-		if strings.HasPrefix(c.Req.URL.Path, "/public/") ||
-			c.Req.URL.Path == "robots.txt" {
-			c.Next()
-			return
-		}
+func ShouldTraceWithExceptions(req *http.Request) bool {
+	// Paths that don't need tracing spans applied to them because of the
+	// little value that would provide us
+	if strings.HasPrefix(req.URL.Path, "/public/") ||
+		req.URL.Path == "/robots.txt" ||
+		req.URL.Path == "/favicon.ico" ||
+		req.URL.Path == "/api/health" {
+		return false
+	}
 
-		rw := res.(web.ResponseWriter)
+	return true
+}
 
-		tracer := opentracing.GlobalTracer()
-		wireContext, _ := tracer.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(req.Header))
-		span := tracer.StartSpan(fmt.Sprintf("HTTP %s %s", req.Method, req.URL.Path), ext.RPCServerOption(wireContext))
+func ShouldTraceAllPaths(req *http.Request) bool {
+	return true
+}
 
-		ctx := opentracing.ContextWithSpan(req.Context(), span)
-		c.Req = req.WithContext(ctx)
-		c.Map(c.Req)
+func RequestTracing(tracer trace.Tracer, shouldTrace func(*http.Request) bool) web.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if !shouldTrace(req) {
+				next.ServeHTTP(w, req)
+				return
+			}
 
-		c.Next()
+			// Extract the parent span context from the incoming request.
+			ctx := otel.GetTextMapPropagator().Extract(req.Context(), propagation.HeaderCarrier(req.Header))
 
-		// Only call span.Finish when a route operation name have been set,
-		// meaning that not set the span would not be reported.
-		if routeOperation, exists := RouteOperationNameFromContext(c.Req.Context()); exists {
-			defer span.Finish()
-			span.SetOperationName(fmt.Sprintf("HTTP %s %s", req.Method, routeOperation))
-		}
+			// generic span name for requests where there's no route operation name
+			spanName := fmt.Sprintf("HTTP %s <unknown>", req.Method)
 
-		status := rw.Status()
+			ctx, span := tracer.Start(ctx, spanName, trace.WithAttributes(
+				semconv.HTTPURLKey.String(req.RequestURI),
+				// url.path is the routed path with any serve_from_sub_path prefix
+				// already trimmed (unlike RequestURI), so downstream consumers such
+				// as the tracing endpoint filter can match on a stable value.
+				attribute.String("url.path", req.URL.Path),
+				semconv.HTTPMethodKey.String(req.Method),
+			), trace.WithSpanKind(trace.SpanKindServer))
+			defer span.End()
 
-		ext.HTTPStatusCode.Set(span, uint16(status))
-		ext.HTTPUrl.Set(span, req.RequestURI)
-		ext.HTTPMethod.Set(span, req.Method)
-		if status >= 400 {
-			ext.Error.Set(span, true)
-		}
+			// inject local root span context into the response via server-timing header
+			// we're doing it this early so that we can capture the root span context
+			// which is not available later-on.
+			serverTimingValue := tracing.ServerTimingForSpan(span)
+			if serverTimingValue != "" {
+				w.Header().Set("server-timing", fmt.Sprintf("traceparent;desc=\"%s\"", serverTimingValue))
+			}
+
+			req = req.WithContext(ctx)
+
+			// Ensure the response writer's status can be captured.
+			rw := web.Rw(w, req)
+
+			next.ServeHTTP(rw, req)
+
+			// Reset the span name after the request has been processed, as
+			// the route operation may have been injected by middleware.
+			// TODO: do not depend on web.Context from the future
+			if routeOperation, exists := RouteOperationName(web.FromContext(req.Context()).Req); exists {
+				span.SetName(fmt.Sprintf("HTTP %s %s", req.Method, routeOperation))
+			}
+
+			status := rw.Status()
+
+			span.SetAttributes(semconv.HTTPStatusCode(status))
+			if status >= 400 {
+				span.SetStatus(codes.Error, fmt.Sprintf("error with HTTP status code %s", strconv.Itoa(status)))
+			}
+		})
 	}
 }

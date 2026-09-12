@@ -1,37 +1,31 @@
-import React from 'react';
-import { action } from '@storybook/addon-actions';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+import { action } from 'storybook/actions';
+import { useArgs } from 'storybook/preview-api';
 
-import { WeekStartPicker } from '@grafana/ui';
-import { UseState } from '../../utils/storybook/UseState';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
+import { WeekStartPicker } from './WeekStartPicker';
 
-export default {
-  title: 'Pickers and Editors/TimePickers/WeekStartPicker',
+const meta: Meta<typeof WeekStartPicker> = {
+  title: 'Date time pickers/WeekStartPicker',
   component: WeekStartPicker,
-  decorators: [withCenteredStory],
+  parameters: {
+    controls: {
+      exclude: ['onBlur', 'onChange', 'inputId'],
+    },
+  },
 };
 
-export const basic = () => {
+export const Basic: StoryFn<typeof WeekStartPicker> = (args) => {
+  const [, updateArgs] = useArgs();
   return (
-    <UseState
-      initialState={{
-        value: '',
+    <WeekStartPicker
+      {...args}
+      onChange={(newValue) => {
+        action('onChange')(newValue);
+        updateArgs({ value: newValue });
       }}
-    >
-      {(value, updateValue) => {
-        return (
-          <WeekStartPicker
-            value={value.value}
-            onChange={(newValue: string) => {
-              if (!newValue) {
-                return;
-              }
-              action('on selected')(newValue);
-              updateValue({ value: newValue });
-            }}
-          />
-        );
-      }}
-    </UseState>
+      onBlur={action('onBlur')}
+    />
   );
 };
+
+export default meta;

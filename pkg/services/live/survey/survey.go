@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+
 	"github.com/grafana/grafana/pkg/services/live/managedstream"
 )
 
@@ -32,7 +33,7 @@ func (c *Caller) SetupHandlers() error {
 }
 
 type NodeManagedChannelsRequest struct {
-	OrgID int64 `json:"orgId"`
+	NS string `json:"ns"`
 }
 
 type NodeManagedChannelsResponse struct {
@@ -41,7 +42,7 @@ type NodeManagedChannelsResponse struct {
 
 func (c *Caller) handleSurvey(e centrifuge.SurveyEvent, cb centrifuge.SurveyCallback) {
 	var (
-		resp interface{}
+		resp any
 		err  error
 	)
 	switch e.Op {
@@ -65,13 +66,13 @@ func (c *Caller) handleSurvey(e centrifuge.SurveyEvent, cb centrifuge.SurveyCall
 	})
 }
 
-func (c *Caller) handleManagedStreams(data []byte) (interface{}, error) {
+func (c *Caller) handleManagedStreams(data []byte) (any, error) {
 	var req NodeManagedChannelsRequest
 	err := json.Unmarshal(data, &req)
 	if err != nil {
 		return nil, err
 	}
-	channels, err := c.managedStreamRunner.GetManagedChannels(req.OrgID)
+	channels, err := c.managedStreamRunner.GetManagedChannels(req.NS)
 	if err != nil {
 		return nil, err
 	}
@@ -80,8 +81,8 @@ func (c *Caller) handleManagedStreams(data []byte) (interface{}, error) {
 	}, nil
 }
 
-func (c *Caller) CallManagedStreams(orgID int64) ([]*managedstream.ManagedChannel, error) {
-	req := NodeManagedChannelsRequest{OrgID: orgID}
+func (c *Caller) CallManagedStreams(ns string) ([]*managedstream.ManagedChannel, error) {
+	req := NodeManagedChannelsRequest{NS: ns}
 	jsonData, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -89,7 +90,7 @@ func (c *Caller) CallManagedStreams(orgID int64) ([]*managedstream.ManagedChanne
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	resp, err := c.node.Survey(ctx, managedStreamsCall, jsonData)
+	resp, err := c.node.Survey(ctx, managedStreamsCall, jsonData, "")
 	if err != nil {
 		return nil, err
 	}

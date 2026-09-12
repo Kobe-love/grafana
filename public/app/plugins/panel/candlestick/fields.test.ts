@@ -1,11 +1,12 @@
-import { createTheme, toDataFrame } from '@grafana/data';
+import { createTheme, FieldType, toDataFrame } from '@grafana/data';
+
 import { prepareCandlestickFields } from './fields';
-import { CandlestickOptions, VizDisplayMode } from './models.gen';
+import { type Options, VizDisplayMode } from './panelcfg.gen';
 
 const theme = createTheme();
 
 describe('Candlestick data', () => {
-  const options: CandlestickOptions = {} as CandlestickOptions;
+  const options = {} as Options;
 
   it('require a time field', () => {
     const info = prepareCandlestickFields(
@@ -17,6 +18,24 @@ describe('Candlestick data', () => {
             ['A', 2, 3],
             ['B', 4, 5],
             ['C', 6, 7],
+          ],
+        }),
+      ],
+      options,
+      theme
+    );
+    expect(info).toBeNull();
+  });
+
+  it('returns null when the time field has null values (#130379)', () => {
+    const info = prepareCandlestickFields(
+      [
+        toDataFrame({
+          refId: 'A',
+          fields: [
+            { name: 'time', type: FieldType.time, values: [1, null, 3] },
+            { name: 'open', type: FieldType.number, values: [4, 5, 6] },
+            { name: 'close', type: FieldType.number, values: [7, 8, 9] },
           ],
         }),
       ],
@@ -43,7 +62,7 @@ describe('Candlestick data', () => {
       theme
     );
     expect(info?.names).toMatchInlineSnapshot(`
-      Object {
+      {
         "close": "Next open",
         "high": "MAX",
         "low": "min",
@@ -80,14 +99,14 @@ describe('Candlestick data', () => {
     expect(info.names.close).toMatchInlineSnapshot(`"Next open"`);
 
     // Close should be offset by one and dupliate last point
-    expect({ open: info.open!.values.toArray(), close: info.close!.values.toArray() }).toMatchInlineSnapshot(`
-      Object {
-        "close": Array [
+    expect({ open: info.open!.values, close: info.close!.values }).toMatchInlineSnapshot(`
+      {
+        "close": [
           5,
           6,
           6,
         ],
-        "open": Array [
+        "open": [
           4,
           5,
           6,
@@ -116,15 +135,15 @@ describe('Candlestick data', () => {
       theme
     )!;
 
-    expect(info.open!.values.toArray()).toEqual([1, 1, 2, 3, 4]);
-    expect(info.close!.values.toArray()).toEqual([1, 2, 3, 4, 5]);
+    expect(info.open!.values).toEqual([1, 1, 2, 3, 4]);
+    expect(info.close!.values).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('will unmap high & low fields in volume-only mode', () => {
-    const options: CandlestickOptions = {
+    const options = {
       mode: VizDisplayMode.Volume,
       includeAllFields: true,
-    } as CandlestickOptions;
+    } as Options;
 
     const info = prepareCandlestickFields(
       [
@@ -183,10 +202,10 @@ describe('Candlestick data', () => {
   });
 
   it('will unmap volume field in candles-only mode', () => {
-    const options: CandlestickOptions = {
+    const options = {
       mode: VizDisplayMode.Candles,
       includeAllFields: false,
-    } as CandlestickOptions;
+    } as Options;
 
     const info = prepareCandlestickFields(
       [
@@ -245,10 +264,10 @@ describe('Candlestick data', () => {
   });
 
   it("will not remove open field from frame when it's also mapped to high in volume-only mode", () => {
-    const options: CandlestickOptions = {
+    const options = {
       mode: VizDisplayMode.Volume,
       includeAllFields: false,
-    } as CandlestickOptions;
+    } as Options;
 
     const info = prepareCandlestickFields(
       [

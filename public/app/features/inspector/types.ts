@@ -1,9 +1,10 @@
 export enum InspectTab {
   Data = 'data',
   Meta = 'meta', // When result metadata exists
+  ErrorsAndNotices = 'errors_and_notices', // Query errors and result notices
   Error = 'error',
   Stats = 'stats',
   JSON = 'json',
   Query = 'query',
-  Actions = 'actions', // ALPHA!
+  Help = 'help', // get info required for support+debugging
 }

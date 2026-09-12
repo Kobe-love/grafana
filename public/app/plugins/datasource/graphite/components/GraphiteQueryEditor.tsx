@@ -1,12 +1,19 @@
-import React from 'react';
-import { GrafanaTheme2 } from '@grafana/data';
-import { actions } from '../state/actions';
+import { css } from '@emotion/css';
+
+import { type GrafanaTheme2 } from '@grafana/data';
 import { Button, useStyles2 } from '@grafana/ui';
-import { GraphiteQueryEditorContext, GraphiteQueryEditorProps, useDispatch, useGraphiteState } from '../state/context';
+
+import { actions } from '../state/actions';
+import {
+  GraphiteQueryEditorContext,
+  type GraphiteQueryEditorProps,
+  useDispatch,
+  useGraphiteState,
+} from '../state/context';
+
+import { FunctionsSection } from './FunctionsSection';
 import { GraphiteTextEditor } from './GraphiteTextEditor';
 import { SeriesSection } from './SeriesSection';
-import { FunctionsSection } from './FunctionsSection';
-import { css } from '@emotion/css';
 
 export function GraphiteQueryEditor({
   datasource,
@@ -51,6 +58,7 @@ function GraphiteQueryEditorContent() {
         icon="pen"
         variant="secondary"
         aria-label="Toggle editor mode"
+        tooltip={state?.queryModel?.error}
         onClick={() => {
           dispatch(actions.toggleEditorMode());
         }}
@@ -61,14 +69,14 @@ function GraphiteQueryEditorContent() {
 
 function getStyles(theme: GrafanaTheme2) {
   return {
-    container: css`
-      display: flex;
-    `,
-    visualEditor: css`
-      flex-grow: 1;
-    `,
-    toggleButton: css`
-      margin-left: ${theme.spacing(0.5)};
-    `,
+    container: css({
+      display: 'flex',
+    }),
+    visualEditor: css({
+      flexGrow: 1,
+    }),
+    toggleButton: css({
+      marginLeft: theme.spacing(0.5),
+    }),
   };
 }

@@ -1,33 +1,80 @@
-import { config } from '@grafana/runtime';
-import { PluginSignatureStatus, dateTimeParse, PluginError, PluginErrorCode } from '@grafana/data';
-import { getBackendSrv } from 'app/core/services/backend_srv';
-import { Settings } from 'app/core/config';
-import { CatalogPlugin, LocalPlugin, RemotePlugin, Version } from './types';
+import uFuzzy from '@leeoniya/ufuzzy';
+import { Range } from 'semver';
 
-export function mergeLocalsAndRemotes(
-  local: LocalPlugin[] = [],
-  remote: RemotePlugin[] = [],
-  errors?: PluginError[]
-): CatalogPlugin[] {
+import { PluginSignatureStatus, dateTimeParse, type PluginError, PluginType, PluginErrorCode } from '@grafana/data';
+import { config, featureEnabled } from '@grafana/runtime';
+import { FlagKeys, getFeatureFlagClient } from '@grafana/runtime/internal';
+import { contextSrv } from 'app/core/services/context_srv';
+import { AccessControlAction } from 'app/types/accessControl';
+
+import {
+  type CatalogPlugin,
+  type InstancePlugin,
+  type LocalPlugin,
+  PluginUpdateStrategy,
+  type ProvisionedPlugin,
+  type RemotePlugin,
+  RemotePluginStatus,
+  type Version,
+} from './types';
+
+export function mergeLocalsAndRemotes({
+  local = [],
+  remote = [],
+  instance = [],
+  provisioned = [],
+  pluginErrors: errors,
+}: {
+  local: LocalPlugin[];
+  remote?: RemotePlugin[];
+  instance?: InstancePlugin[];
+  provisioned?: ProvisionedPlugin[];
+  pluginErrors?: PluginError[];
+}): CatalogPlugin[] {
   const catalogPlugins: CatalogPlugin[] = [];
   const errorByPluginId = groupErrorsByPluginId(errors);
 
-  // add locals
-  local.forEach((l) => {
-    const remotePlugin = remote.find((r) => r.slug === l.id);
-    const error = errorByPluginId[l.id];
+  const remoteSet = new Set<string>(remote?.map((plugin) => plugin.slug));
+  const localMap = new Map<string, LocalPlugin>(local.map((plugin) => [plugin.id, plugin]));
+  const instancesMap = new Map<string, InstancePlugin>(instance?.map((plugin) => [plugin.pluginSlug, plugin]));
+  const provisionedSet = new Set<string>(provisioned?.map((plugin) => plugin.slug));
 
-    if (!remotePlugin) {
-      catalogPlugins.push(mergeLocalAndRemote(l, undefined, error));
+  // add locals
+  local.forEach((localPlugin) => {
+    const error = errorByPluginId[localPlugin.id];
+
+    if (!remoteSet.has(localPlugin.id)) {
+      let catalogPlugin = mergeLocalAndRemote(localPlugin, undefined, error);
+      if (config.pluginAdminExternalManageEnabled) {
+        catalogPlugin = mergeCloudState(
+          catalogPlugin,
+          instancesMap,
+          provisionedSet.has(localPlugin.id),
+          localMap.has(localPlugin.id)
+        );
+      }
+      catalogPlugins.push(catalogPlugin);
     }
   });
 
   // add remote
-  remote.forEach((r) => {
-    const localPlugin = local.find((l) => l.id === r.slug);
-    const error = errorByPluginId[r.slug];
+  remote.forEach((remotePlugin) => {
+    const localCounterpart = localMap.get(remotePlugin.slug);
+    const error = errorByPluginId[remotePlugin.slug];
+    const shouldSkip = remotePlugin.status === RemotePluginStatus.Deprecated && !localCounterpart; // We are only listing deprecated plugins in case they are installed.
 
-    catalogPlugins.push(mergeLocalAndRemote(localPlugin, r, error));
+    if (!shouldSkip) {
+      let catalogPlugin = mergeLocalAndRemote(localCounterpart, remotePlugin, error);
+      if (config.pluginAdminExternalManageEnabled) {
+        catalogPlugin = mergeCloudState(
+          catalogPlugin,
+          instancesMap,
+          provisionedSet.has(remotePlugin.slug),
+          localMap.has(remotePlugin.slug)
+        );
+      }
+      catalogPlugins.push(catalogPlugin);
+    }
   });
 
   return catalogPlugins;
@@ -58,41 +105,65 @@ export function mapRemoteToCatalog(plugin: RemotePlugin, error?: PluginError): C
     updatedAt,
     createdAt: publishedAt,
     status,
+    angularDetected,
+    keywords,
+    signatureType,
+    versionSignatureType,
+    versionSignedByOrgName,
+    url,
+    category,
   } = plugin;
 
   const isDisabled = !!error;
+  const managedPluginsV2Enabled = getFeatureFlagClient().getBooleanValue(FlagKeys.ManagedPluginsV2, false);
+
   return {
     description,
     downloads,
     id,
     info: {
       logos: {
-        small: `https://grafana.com/api/plugins/${id}/versions/${version}/logos/small`,
-        large: `https://grafana.com/api/plugins/${id}/versions/${version}/logos/large`,
+        small: `${config.appSubUrl}/api/gnet/plugins/${id}/versions/${version}/logos/small`,
+        large: `${config.appSubUrl}/api/gnet/plugins/${id}/versions/${version}/logos/large`,
       },
+      keywords,
     },
     name,
     orgName,
     popularity,
     publishedAt,
     signature: getPluginSignature({ remote: plugin, error }),
+    signatureType: signatureType || versionSignatureType || undefined,
+    signatureOrg: versionSignedByOrgName,
     updatedAt,
     hasUpdate: false,
     isPublished: true,
     isInstalled: isDisabled,
     isDisabled: isDisabled,
+    isPreinstalled: isPreinstalledPlugin(id),
+    isDeprecated: status === RemotePluginStatus.Deprecated,
     isCore: plugin.internal,
     isDev: false,
-    isEnterprise: status === 'enterprise',
+    isEnterprise: status === RemotePluginStatus.Enterprise,
     type: typeCode,
     error: error?.errorCode,
+    angularDetected,
+    isFullyInstalled: isDisabled,
+    latestVersion: plugin.version,
+    url,
+    managed: {
+      enabled: managedPluginsV2Enabled ? Boolean(plugin.managed?.enabled) : false,
+      strategy: managedPluginsV2Enabled ? plugin.managed?.strategy : undefined,
+    },
+    category,
+    distributionType: plugin.versionDistributionType,
   };
 }
 
 export function mapLocalToCatalog(plugin: LocalPlugin, error?: PluginError): CatalogPlugin {
   const {
     name,
-    info: { description, version, logos, updated, author },
+    info: { description, version, logos, updated, author, keywords },
     id,
     dev,
     type,
@@ -100,13 +171,17 @@ export function mapLocalToCatalog(plugin: LocalPlugin, error?: PluginError): Cat
     signatureOrg,
     signatureType,
     hasUpdate,
+    accessControl,
+    angularDetected,
+    category,
   } = plugin;
 
+  const isDisabled = !!error;
   return {
     description,
     downloads: 0,
     id,
-    info: { logos },
+    info: { logos, keywords },
     name,
     orgName: author.name,
     popularity: 0,
@@ -118,13 +193,25 @@ export function mapLocalToCatalog(plugin: LocalPlugin, error?: PluginError): Cat
     installedVersion: version,
     hasUpdate,
     isInstalled: true,
-    isDisabled: !!error,
+    isDisabled: isDisabled,
     isCore: signature === 'internal',
     isPublished: false,
+    isDeprecated: false,
     isDev: Boolean(dev),
     isEnterprise: false,
+    isPreinstalled: isPreinstalledPlugin(id),
     type,
     error: error?.errorCode,
+    accessControl: accessControl,
+    angularDetected,
+    isFullyInstalled: true,
+    iam: plugin.iam,
+    latestVersion: plugin.latestVersion,
+    managed: {
+      enabled: false,
+      strategy: undefined,
+    },
+    category,
   };
 }
 
@@ -134,20 +221,23 @@ export function mapToCatalogPlugin(local?: LocalPlugin, remote?: RemotePlugin, e
   const id = remote?.slug || local?.id || '';
   const type = local?.type || remote?.typeCode;
   const isDisabled = !!error;
+  const keywords = remote?.keywords || local?.info.keywords || [];
 
   let logos = {
-    small: `/public/img/icn-${type}.svg`,
-    large: `/public/img/icn-${type}.svg`,
+    small: `${window.__grafana_build_path__}img/icn-${type}.svg`,
+    large: `${window.__grafana_build_path__}img/icn-${type}.svg`,
   };
 
   if (remote) {
     logos = {
-      small: `https://grafana.com/api/plugins/${id}/versions/${remote.version}/logos/small`,
-      large: `https://grafana.com/api/plugins/${id}/versions/${remote.version}/logos/large`,
+      small: `${config.appSubUrl}/api/gnet/plugins/${id}/versions/${remote.version}/logos/small`,
+      large: `${config.appSubUrl}/api/gnet/plugins/${id}/versions/${remote.version}/logos/large`,
     };
   } else if (local && local.info.logos) {
     logos = local.info.logos;
   }
+
+  const managedPluginsV2Enabled = getFeatureFlagClient().getBooleanValue(FlagKeys.ManagedPluginsV2, false);
 
   return {
     description: local?.info.description || remote?.description || '',
@@ -156,13 +246,16 @@ export function mapToCatalogPlugin(local?: LocalPlugin, remote?: RemotePlugin, e
     id,
     info: {
       logos,
+      keywords,
     },
     isCore: Boolean(remote?.internal || local?.signature === PluginSignatureStatus.internal),
     isDev: Boolean(local?.dev),
-    isEnterprise: remote?.status === 'enterprise',
+    isEnterprise: remote?.status === RemotePluginStatus.Enterprise,
     isInstalled: Boolean(local) || isDisabled,
     isDisabled: isDisabled,
+    isDeprecated: remote?.status === RemotePluginStatus.Deprecated,
     isPublished: true,
+    isPreinstalled: isPreinstalledPlugin(id),
     // TODO<check if we would like to keep preferring the remote version>
     name: remote?.name || local?.name || '',
     // TODO<check if we would like to keep preferring the remote version>
@@ -177,10 +270,27 @@ export function mapToCatalogPlugin(local?: LocalPlugin, remote?: RemotePlugin, e
     updatedAt: remote?.updatedAt || local?.info.updated || '',
     installedVersion,
     error: error?.errorCode,
+    // Only local plugins have access control metadata
+    accessControl: local?.accessControl,
+    angularDetected: local?.angularDetected ?? remote?.angularDetected,
+    isFullyInstalled: Boolean(local) || isDisabled,
+    iam: local?.iam,
+    latestVersion: local?.latestVersion || remote?.version || '',
+    url: remote?.url || '',
+    managed: {
+      enabled: managedPluginsV2Enabled ? Boolean(remote?.managed?.enabled) : false,
+      strategy: managedPluginsV2Enabled ? remote?.managed?.strategy : undefined,
+    },
+    category: remote?.category || local?.category || '',
+    distributionType: remote?.versionDistributionType,
   };
 }
 
 export const getExternalManageLink = (pluginId: string) => `${config.pluginCatalogURL}${pluginId}`;
+
+export function isMarketplacePlugin(plugin: CatalogPlugin): boolean {
+  return plugin.distributionType === 'marketplace';
+}
 
 export enum Sorters {
   nameAsc = 'nameAsc',
@@ -190,10 +300,12 @@ export enum Sorters {
   downloads = 'downloads',
 }
 
+const nameCollator = new Intl.Collator();
+
 export const sortPlugins = (plugins: CatalogPlugin[], sortBy: Sorters) => {
   const sorters: { [name: string]: (a: CatalogPlugin, b: CatalogPlugin) => number } = {
-    nameAsc: (a: CatalogPlugin, b: CatalogPlugin) => a.name.localeCompare(b.name),
-    nameDesc: (a: CatalogPlugin, b: CatalogPlugin) => b.name.localeCompare(a.name),
+    nameAsc: (a: CatalogPlugin, b: CatalogPlugin) => nameCollator.compare(a.name.trim(), b.name.trim()),
+    nameDesc: (a: CatalogPlugin, b: CatalogPlugin) => nameCollator.compare(b.name.trim(), a.name.trim()),
     updated: (a: CatalogPlugin, b: CatalogPlugin) =>
       dateTimeParse(b.updatedAt).valueOf() - dateTimeParse(a.updatedAt).valueOf(),
     published: (a: CatalogPlugin, b: CatalogPlugin) =>
@@ -209,10 +321,10 @@ export const sortPlugins = (plugins: CatalogPlugin[], sortBy: Sorters) => {
 };
 
 function groupErrorsByPluginId(errors: PluginError[] = []): Record<string, PluginError | undefined> {
-  return errors.reduce((byId, error) => {
+  return errors.reduce<Record<string, PluginError | undefined>>((byId, error) => {
     byId[error.pluginId] = error;
     return byId;
-  }, {} as Record<string, PluginError | undefined>);
+  }, {});
 }
 
 function getPluginSignature(options: {
@@ -237,20 +349,12 @@ function getPluginSignature(options: {
     return local.signature;
   }
 
-  if (remote?.signatureType || remote?.versionSignatureType) {
+  if (remote?.signatureType && remote?.versionSignatureType) {
     return PluginSignatureStatus.valid;
   }
 
   return PluginSignatureStatus.missing;
 }
-
-// Updates the core Grafana config to have the correct list available panels
-export const updatePanels = () =>
-  getBackendSrv()
-    .get('/api/frontend/settings')
-    .then((settings: Settings) => {
-      config.panels = settings.panels;
-    });
 
 export function getLatestCompatibleVersion(versions: Version[] | undefined): Version | undefined {
   if (!versions) {
@@ -263,16 +367,193 @@ export function getLatestCompatibleVersion(versions: Version[] | undefined): Ver
 
 export const isInstallControlsEnabled = () => config.pluginAdminEnabled;
 
-export const isLocalPluginVisible = (p: LocalPlugin) => isPluginVisible(p.id);
+export const hasInstallControlWarning = (
+  plugin: CatalogPlugin,
+  isRemotePluginsAvailable: boolean,
+  latestCompatibleVersion?: Version
+) => {
+  const isExternallyManaged = config.pluginAdminExternalManageEnabled;
+  const hasPermission = contextSrv.hasPermission(AccessControlAction.PluginsInstall);
+  const isCompatible = Boolean(latestCompatibleVersion);
+  return (
+    plugin.type === PluginType.renderer ||
+    (plugin.isEnterprise && !featureEnabled('enterprise.plugins')) ||
+    plugin.isDev ||
+    (!hasPermission && !isExternallyManaged) ||
+    !plugin.isPublished ||
+    !isCompatible ||
+    !isRemotePluginsAvailable
+  );
+};
 
-export const isRemotePluginVisible = (p: RemotePlugin) => isPluginVisible(p.slug);
+export const isLocalPluginVisibleByConfig = (p: LocalPlugin) => isNotHiddenByConfig(p.id);
 
-function isPluginVisible(id: string) {
+export const isRemotePluginVisibleByConfig = (p: RemotePlugin) => isNotHiddenByConfig(p.slug);
+
+function isNotHiddenByConfig(id: string) {
   const { pluginCatalogHiddenPlugins }: { pluginCatalogHiddenPlugins: string[] } = config;
 
   return !pluginCatalogHiddenPlugins.includes(id);
 }
 
+export function isPreinstalledPlugin(id: string): { found: boolean; withVersion: boolean } {
+  const { pluginCatalogPreinstalledPlugins } = config;
+
+  const plugin = pluginCatalogPreinstalledPlugins?.find((p) => p.id === id);
+  return { found: !!plugin?.id, withVersion: !!plugin?.version };
+}
+
 export function isLocalCorePlugin(local?: LocalPlugin): boolean {
   return Boolean(local?.signature === 'internal');
+}
+
+function getId(inputString: string): string {
+  const parts = inputString.split(' - ');
+  return parts[0];
+}
+
+function getPluginDetailsForFuzzySearch(plugins: CatalogPlugin[]): string[] {
+  return plugins.reduce((result: string[], { id, name, type, orgName, info }: CatalogPlugin) => {
+    const keywordsForSearch = info.keywords?.join(' ').toLowerCase();
+    const pluginString = `${id} - ${name} - ${type} - ${orgName} - ${keywordsForSearch}`;
+    result.push(pluginString);
+    return result;
+  }, []);
+}
+export function filterByKeyword(plugins: CatalogPlugin[], query: string) {
+  const dataArray = getPluginDetailsForFuzzySearch(plugins);
+  let uf = new uFuzzy({ intraMode: 1, intraSub: 0 });
+  let idxs = uf.filter(dataArray, query);
+  if (idxs === null) {
+    return null;
+  }
+  return idxs.map((id) => getId(dataArray[id]));
+}
+
+function isPluginModifiable(plugin: CatalogPlugin) {
+  if (
+    plugin.isProvisioned || //provisioned plugins cannot be modified
+    plugin.isCore || //core plugins cannot be modified
+    plugin.type === PluginType.renderer || // currently renderer plugins are not supported by the catalog due to complications related to installation / update / uninstall
+    plugin.isPreinstalled.withVersion // Preinstalled plugins (with specified version) cannot be modified
+  ) {
+    return false;
+  }
+
+  // Managed plugins with 'assigned' strategy cannot be modified
+  if (plugin.managed.enabled && plugin.managed.strategy === PluginUpdateStrategy.Assigned) {
+    return false;
+  }
+
+  return true;
+}
+
+export function isPluginUpdatable(plugin: CatalogPlugin) {
+  if (!isPluginModifiable(plugin)) {
+    return false;
+  }
+
+  // If there is no update available, the plugin cannot be updated
+  if (!plugin.hasUpdate) {
+    return false;
+  }
+
+  // If the plugin is currently being updated, it should not be updated
+  if (plugin.isUpdatingFromInstance) {
+    return false;
+  }
+
+  return true;
+}
+
+export function shouldDisablePluginInstall(plugin: CatalogPlugin) {
+  if (
+    !isPluginModifiable(plugin) ||
+    (plugin.isEnterprise && !featureEnabled('enterprise.plugins')) ||
+    !plugin.isPublished ||
+    plugin.isDisabled ||
+    !isInstallControlsEnabled()
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isNonAngularVersion(version?: Version) {
+  if (!version) {
+    return false;
+  }
+
+  return version.angularDetected === false;
+}
+
+export function isDisabledAngularPlugin(plugin: CatalogPlugin) {
+  return plugin.isDisabled && plugin.error === PluginErrorCode.angular;
+}
+
+/**
+ * Formats a semver range string (e.g. ">= 8.5.20 < 9 || >= 9.1.0")
+ * into a human-readable string (e.g. "8.5.20 – 9.0.0, 9.1.0 or later").
+ */
+export function formatGrafanaDependency(dependency: string | null): string {
+  if (!dependency) {
+    return 'N/A';
+  }
+
+  try {
+    const range = new Range(dependency);
+    const parts: string[] = [];
+
+    for (const comparators of range.set) {
+      const lowerBound = comparators.find((c) => c.operator === '>=');
+      const upperBound = comparators.find((c) => c.operator === '<');
+
+      if (lowerBound && upperBound) {
+        const from = formatVersion(lowerBound.semver.major, lowerBound.semver.minor, lowerBound.semver.patch);
+        const to = formatVersion(upperBound.semver.major, upperBound.semver.minor, upperBound.semver.patch);
+        parts.push(`${from} – ${to}`);
+      } else if (lowerBound) {
+        const from = formatVersion(lowerBound.semver.major, lowerBound.semver.minor, lowerBound.semver.patch);
+        parts.push(`${from} or later`);
+      } else if (upperBound) {
+        const to = formatVersion(upperBound.semver.major, upperBound.semver.minor, upperBound.semver.patch);
+        parts.push(`before ${to}`);
+      } else {
+        return dependency;
+      }
+    }
+
+    return parts.join(', ');
+  } catch {
+    return dependency;
+  }
+}
+
+function formatVersion(major: number, minor: number, patch: number): string {
+  return `${major}.${minor}.${patch}`;
+}
+
+export function mergeCloudState(
+  catalogPlugin: CatalogPlugin,
+  instanceMap: Map<string, InstancePlugin>,
+  isProvisioned: boolean,
+  hasLocal: boolean
+) {
+  const instancePlugin = instanceMap.get(catalogPlugin.id);
+
+  return {
+    ...catalogPlugin,
+    isFullyInstalled: catalogPlugin.isCore
+      ? true
+      : (instanceMap.has(catalogPlugin.id) || isProvisioned) && catalogPlugin.isInstalled,
+    isInstalled: instanceMap.has(catalogPlugin.id) || catalogPlugin.isInstalled,
+    isUpdatingFromInstance:
+      instanceMap.has(catalogPlugin.id) &&
+      catalogPlugin.hasUpdate &&
+      catalogPlugin.installedVersion !== instancePlugin?.version,
+    hasUpdate: Boolean(instancePlugin?.version && instancePlugin?.version !== catalogPlugin.latestVersion),
+    isUninstallingFromInstance: hasLocal && !instanceMap.has(catalogPlugin.id),
+    isProvisioned: isProvisioned,
+  };
 }

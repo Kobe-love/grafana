@@ -1,13 +1,19 @@
-import React, { createRef, KeyboardEvent, RefObject } from 'react';
-import { render, screen } from '@testing-library/react';
-import { fireEvent } from '@testing-library/dom';
-import { act, renderHook } from '@testing-library/react-hooks';
+import { render, renderHook, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { createRef, type KeyboardEvent, type RefObject } from 'react';
+
 import { useMenuFocus } from './hooks';
 
 describe('useMenuFocus', () => {
+  let user: ReturnType<typeof userEvent.setup>;
+
+  beforeEach(() => {
+    user = userEvent.setup();
+  });
+
   const testid = 'test';
   const getMenuElement = (
-    ref: RefObject<HTMLDivElement>,
+    ref: RefObject<HTMLDivElement | null>,
     handleKeys?: (event: KeyboardEvent) => void,
     handleFocus?: () => void,
     onClick?: () => void
@@ -17,11 +23,14 @@ describe('useMenuFocus', () => {
         Item 1
       </span>
       <span data-role="menuitem">Item 2</span>
-      <span data-role="menuitem">Item 3</span>
+      <span data-role="menuitem" data-disabled>
+        Item 3
+      </span>
+      <span data-role="menuitem">Item 4</span>
     </div>
   );
 
-  it('sets correct focused item on keydown', () => {
+  it('sets correct focused item on keydown', async () => {
     const ref = createRef<HTMLDivElement>();
     const { result } = renderHook(() => useMenuFocus({ localRef: ref }));
     const [handleKeys] = result.current;
@@ -30,10 +39,9 @@ describe('useMenuFocus', () => {
     expect(screen.getByText('Item 1').tabIndex).toBe(-1);
     expect(screen.getByText('Item 2').tabIndex).toBe(-1);
     expect(screen.getByText('Item 3').tabIndex).toBe(-1);
+    expect(screen.getByText('Item 4').tabIndex).toBe(-1);
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'ArrowDown' });
-    });
+    await user.type(screen.getByTestId(testid), '{ArrowDown}');
 
     const [handleKeys2] = result.current;
     rerender(getMenuElement(ref, handleKeys2));
@@ -41,10 +49,9 @@ describe('useMenuFocus', () => {
     expect(screen.getByText('Item 1').tabIndex).toBe(0);
     expect(screen.getByText('Item 2').tabIndex).toBe(-1);
     expect(screen.getByText('Item 3').tabIndex).toBe(-1);
+    expect(screen.getByText('Item 4').tabIndex).toBe(-1);
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'ArrowDown' });
-    });
+    await user.type(screen.getByTestId(testid), '{ArrowDown}');
 
     const [handleKeys3] = result.current;
     rerender(getMenuElement(ref, handleKeys3));
@@ -52,10 +59,9 @@ describe('useMenuFocus', () => {
     expect(screen.getByText('Item 1').tabIndex).toBe(-1);
     expect(screen.getByText('Item 2').tabIndex).toBe(0);
     expect(screen.getByText('Item 3').tabIndex).toBe(-1);
+    expect(screen.getByText('Item 4').tabIndex).toBe(-1);
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'ArrowUp' });
-    });
+    await user.type(screen.getByTestId(testid), '{ArrowUp}');
 
     const [handleKeys4] = result.current;
     rerender(getMenuElement(ref, handleKeys4));
@@ -63,29 +69,37 @@ describe('useMenuFocus', () => {
     expect(screen.getByText('Item 1').tabIndex).toBe(0);
     expect(screen.getByText('Item 2').tabIndex).toBe(-1);
     expect(screen.getByText('Item 3').tabIndex).toBe(-1);
+    expect(screen.getByText('Item 4').tabIndex).toBe(-1);
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'ArrowUp' });
-    });
+    await user.type(screen.getByTestId(testid), '{ArrowUp}');
 
     const [handleKeys5] = result.current;
     rerender(getMenuElement(ref, handleKeys5));
 
     expect(screen.getByText('Item 1').tabIndex).toBe(-1);
     expect(screen.getByText('Item 2').tabIndex).toBe(-1);
-    expect(screen.getByText('Item 3').tabIndex).toBe(0);
+    expect(screen.getByText('Item 3').tabIndex).toBe(-1);
+    expect(screen.getByText('Item 4').tabIndex).toBe(0);
+
+    await user.type(screen.getByTestId(testid), '{ArrowUp}');
+
+    const [handleKeys6] = result.current;
+    rerender(getMenuElement(ref, handleKeys6));
+
+    expect(screen.getByText('Item 1').tabIndex).toBe(-1);
+    expect(screen.getByText('Item 2').tabIndex).toBe(0);
+    expect(screen.getByText('Item 3').tabIndex).toBe(-1);
+    expect(screen.getByText('Item 4').tabIndex).toBe(-1);
   });
 
-  it('calls close on ArrowLeft and unfocuses all items', () => {
+  it('calls close on ArrowLeft and unfocuses all items', async () => {
     const ref = createRef<HTMLDivElement>();
     const close = jest.fn();
     const { result } = renderHook(() => useMenuFocus({ localRef: ref, close }));
     const [handleKeys] = result.current;
     const { rerender } = render(getMenuElement(ref, handleKeys));
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'ArrowDown' });
-    });
+    await user.type(screen.getByTestId(testid), '{ArrowDown}');
 
     const [handleKeys2] = result.current;
     rerender(getMenuElement(ref, handleKeys2));
@@ -94,9 +108,7 @@ describe('useMenuFocus', () => {
     expect(screen.getByText('Item 2').tabIndex).toBe(-1);
     expect(screen.getByText('Item 3').tabIndex).toBe(-1);
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'ArrowLeft' });
-    });
+    await user.type(screen.getByTestId(testid), '{ArrowLeft}');
 
     expect(close).toHaveBeenCalled();
     expect(screen.getByText('Item 1').tabIndex).toBe(-1);
@@ -104,7 +116,7 @@ describe('useMenuFocus', () => {
     expect(screen.getByText('Item 3').tabIndex).toBe(-1);
   });
 
-  it('forwards keydown and open events', () => {
+  it('forwards keydown and open events', async () => {
     const ref = createRef<HTMLDivElement>();
     const onOpen = jest.fn();
     const onKeyDown = jest.fn();
@@ -113,65 +125,88 @@ describe('useMenuFocus', () => {
 
     render(getMenuElement(ref, handleKeys));
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'ArrowDown' });
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'Home' });
-    });
+    await user.type(screen.getByTestId(testid), '{ArrowDown}{Home}');
 
     expect(onOpen).toHaveBeenCalled();
     expect(onKeyDown).toHaveBeenCalledTimes(2);
   });
 
-  it('focuses on first item when menu was opened with arrow', () => {
+  it('focuses on first item', () => {
     const ref = createRef<HTMLDivElement>();
 
     render(getMenuElement(ref));
 
     const isMenuOpen = true;
-    const openedWithArrow = true;
-    const setOpenedWithArrow = jest.fn();
-    renderHook(() => useMenuFocus({ localRef: ref, isMenuOpen, openedWithArrow, setOpenedWithArrow }));
-
-    expect(screen.getByText('Item 1').tabIndex).toBe(0);
-    expect(setOpenedWithArrow).toHaveBeenCalledWith(false);
-  });
-
-  it('focuses on first item when container receives focus', () => {
-    const ref = createRef<HTMLDivElement>();
-    const { result } = renderHook(() => useMenuFocus({ localRef: ref }));
-    const [_, handleFocus] = result.current;
-
-    render(getMenuElement(ref, undefined, handleFocus));
-
-    act(() => {
-      screen.getByTestId(testid).focus();
-    });
+    renderHook(() => useMenuFocus({ localRef: ref, isMenuOpen }));
 
     expect(screen.getByText('Item 1').tabIndex).toBe(0);
   });
 
-  it('clicks focused item when Enter key is pressed', () => {
+  it('clicks focused item when Enter key is pressed', async () => {
     const ref = createRef<HTMLDivElement>();
     const onClick = jest.fn();
     const { result } = renderHook(() => useMenuFocus({ localRef: ref }));
     const [handleKeys] = result.current;
     const { rerender } = render(getMenuElement(ref, handleKeys, undefined, onClick));
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'ArrowDown' });
-    });
+    await user.type(screen.getByTestId(testid), '{ArrowDown}');
 
     const [handleKeys2] = result.current;
     rerender(getMenuElement(ref, handleKeys2, undefined, onClick));
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'Enter' });
-    });
+    await user.type(screen.getByTestId(testid), '{Enter}');
 
     expect(onClick).toHaveBeenCalled();
   });
 
-  it('calls onClose on Tab or Escape', () => {
+  it('clicks focused item when Space key is pressed', async () => {
+    const ref = createRef<HTMLDivElement>();
+    const onClick = jest.fn();
+    const { result } = renderHook(() => useMenuFocus({ localRef: ref }));
+    const [handleKeys] = result.current;
+    const { rerender } = render(getMenuElement(ref, handleKeys, undefined, onClick));
+
+    await user.type(screen.getByTestId(testid), '{ArrowDown}');
+
+    const [handleKeys2] = result.current;
+    rerender(getMenuElement(ref, handleKeys2, undefined, onClick));
+
+    await user.type(screen.getByTestId(testid), '{ }');
+
+    expect(onClick).toHaveBeenCalled();
+  });
+
+  it('does not click submenu items when Enter key is pressed', async () => {
+    const ref = createRef<HTMLDivElement | null>();
+    const onClick = jest.fn();
+    const { result } = renderHook(() => useMenuFocus({ localRef: ref }));
+    const [handleKeys] = result.current;
+
+    // Create a menu element with a submenu item (has nested menuitem)
+    const getMenuElementWithSubmenu = (
+      ref: RefObject<HTMLDivElement | null>,
+      handleKeys?: (event: KeyboardEvent) => void,
+      onClick?: () => void
+    ) => (
+      <div data-testid={testid} ref={ref} tabIndex={0} onKeyDown={handleKeys}>
+        <span data-role="menuitem" onClick={onClick}>
+          Submenu Item
+          <span data-role="menuitem">Nested Item</span>
+        </span>
+        <span data-role="menuitem" onClick={onClick}>
+          Regular Item
+        </span>
+      </div>
+    );
+
+    render(getMenuElementWithSubmenu(ref, handleKeys, onClick));
+
+    await user.type(screen.getByTestId(testid), '{Enter}');
+
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('calls onClose on Tab or Escape', async () => {
     const ref = createRef<HTMLDivElement>();
     const onClose = jest.fn();
     const { result } = renderHook(() => useMenuFocus({ localRef: ref, onClose }));
@@ -179,10 +214,7 @@ describe('useMenuFocus', () => {
 
     render(getMenuElement(ref, handleKeys));
 
-    act(() => {
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'Tab' });
-      fireEvent.keyDown(screen.getByTestId(testid), { key: 'Escape' });
-    });
+    await user.type(screen.getByTestId(testid), '{Tab}{Escape}');
 
     expect(onClose).toHaveBeenCalledTimes(2);
   });

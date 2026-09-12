@@ -1,197 +1,370 @@
 package api
 
 import (
-	"context"
 	"net/http"
-	"strconv"
+	"strings"
 
-	"github.com/grafana/grafana/pkg/api/response"
-	"github.com/grafana/grafana/pkg/bus"
-	"github.com/grafana/grafana/pkg/models"
+	"k8s.io/apimachinery/pkg/api/errors"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+
+	playlistv1 "github.com/grafana/grafana/apps/playlist/pkg/apis/playlist/v1"
+	"github.com/grafana/grafana/pkg/api/dtos"
+	"github.com/grafana/grafana/pkg/api/routing"
+	"github.com/grafana/grafana/pkg/registry/apps/playlist"
+	grafanaapiserver "github.com/grafana/grafana/pkg/services/apiserver"
+	"github.com/grafana/grafana/pkg/services/apiserver/endpoints/request"
+	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
+	"github.com/grafana/grafana/pkg/util/errhttp"
 	"github.com/grafana/grafana/pkg/web"
 )
 
-func ValidateOrgPlaylist(c *models.ReqContext) {
-	id, err := strconv.ParseInt(web.Params(c.Req)[":id"], 10, 64)
+func (hs *HTTPServer) registerPlaylistAPI(apiRoute routing.RouteRegister) {
+	// Register the actual handlers
+	// Deprecated: use /apis/playlist.grafana.app/ instead
+	apiRoute.Group("/playlists", func(playlistRoute routing.RouteRegister) {
+		// Use k8s client to implement legacy API
+		handler := newPlaylistK8sHandler(hs)
+		playlistRoute.Get("/", handler.searchPlaylists)
+		playlistRoute.Get("/:uid", handler.getPlaylist)
+		playlistRoute.Get("/:uid/items", handler.getPlaylistItems)
+		playlistRoute.Delete("/:uid", handler.deletePlaylist)
+		playlistRoute.Put("/:uid", handler.updatePlaylist)
+		playlistRoute.Post("/", handler.createPlaylist)
+	})
+}
+
+// swagger:parameters searchPlaylists
+type SearchPlaylistsParams struct {
+	// in:query
+	// required:false
+	Query string `json:"query"`
+	// in:limit
+	// required:false
+	Limit int `json:"limit"`
+}
+
+// swagger:parameters getPlaylist
+type GetPlaylistParams struct {
+	// in:path
+	// required:true
+	UID string `json:"uid"`
+}
+
+// swagger:parameters getPlaylistItems
+type GetPlaylistItemsParams struct {
+	// in:path
+	// required:true
+	UID string `json:"uid"`
+}
+
+// swagger:parameters getPlaylistDashboards
+type GetPlaylistDashboardsParams struct {
+	// in:path
+	// required:true
+	UID string `json:"uid"`
+}
+
+// swagger:parameters deletePlaylist
+type DeletePlaylistParams struct {
+	// in:path
+	// required:true
+	UID string `json:"uid"`
+}
+
+// swagger:parameters updatePlaylist
+type UpdatePlaylistParams struct {
+	// in:body
+	// required:true
+	Body playlist.UpdatePlaylistCommand
+	// in:path
+	// required:true
+	UID string `json:"uid"`
+}
+
+// swagger:parameters createPlaylist
+type CreatePlaylistParams struct {
+	// in:body
+	// required:true
+	Body playlist.CreatePlaylistCommand
+}
+
+// swagger:response searchPlaylistsResponse
+type SearchPlaylistsResponse struct {
+	// The response message
+	// in: body
+	Body playlist.Playlists `json:"body"`
+}
+
+// swagger:response getPlaylistResponse
+type GetPlaylistResponse struct {
+	// The response message
+	// in: body
+	Body *playlist.PlaylistDTO `json:"body"`
+}
+
+// swagger:response getPlaylistItemsResponse
+type GetPlaylistItemsResponse struct {
+	// The response message
+	// in: body
+	Body []playlist.PlaylistItemDTO `json:"body"`
+}
+
+// swagger:response getPlaylistDashboardsResponse
+type GetPlaylistDashboardsResponse struct {
+	// The response message
+	// in: body
+	Body dtos.PlaylistDashboardsSlice `json:"body"`
+}
+
+// swagger:response updatePlaylistResponse
+type UpdatePlaylistResponse struct {
+	// The response message
+	// in: body
+	Body *playlist.PlaylistDTO `json:"body"`
+}
+
+// swagger:response createPlaylistResponse
+type CreatePlaylistResponse struct {
+	// The response message
+	// in: body
+	Body *playlist.Playlist `json:"body"`
+}
+
+type playlistK8sHandler struct {
+	namespacer           request.NamespaceMapper
+	gvr                  schema.GroupVersionResource
+	clientConfigProvider grafanaapiserver.DirectRestConfigProvider
+}
+
+//-----------------------------------------------------------------------------------------
+// Playlist k8s wrapper functions
+//-----------------------------------------------------------------------------------------
+
+func newPlaylistK8sHandler(hs *HTTPServer) *playlistK8sHandler {
+	return &playlistK8sHandler{
+		gvr:                  playlistv1.PlaylistKind().GroupVersionResource(),
+		namespacer:           request.GetNamespaceMapper(hs.Cfg),
+		clientConfigProvider: hs.clientConfigProvider,
+	}
+}
+
+// swagger:route GET /playlists playlists searchPlaylists
+//
+// Get playlists.
+//
+// Please refer to [new API](?api=playlist.grafana.app-v1).
+//
+// Deprecated: true
+//
+// Responses:
+// 200: searchPlaylistsResponse
+// 500: internalServerError
+func (pk8s *playlistK8sHandler) searchPlaylists(c *contextmodel.ReqContext) {
+	client, ok := pk8s.getClient(c)
+	if !ok {
+		return // error is already sent
+	}
+	out, err := client.List(c.Req.Context(), v1.ListOptions{})
 	if err != nil {
-		c.JsonApiErr(http.StatusBadRequest, "id is invalid", nil)
+		pk8s.writeError(c, err)
 		return
 	}
-	query := models.GetPlaylistByIdQuery{Id: id}
-	err = bus.Dispatch(c.Req.Context(), &query)
 
+	query := strings.ToUpper(c.Query("query"))
+	playlists := []playlist.Playlist{}
+	for _, item := range out.Items {
+		p := playlist.UnstructuredToLegacyPlaylist(item)
+		if p == nil {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToUpper(p.Name), query) {
+			continue // query filter
+		}
+		playlists = append(playlists, *p)
+	}
+	c.JSON(http.StatusOK, playlists)
+}
+
+// swagger:route GET /playlists/{uid} playlists getPlaylist
+//
+// Get playlist.
+//
+// Please refer to [new API](?api=playlist.grafana.app-v1).
+//
+// Deprecated: true
+//
+// Responses:
+// 200: getPlaylistResponse
+// 401: unauthorisedError
+// 403: forbiddenError
+// 404: notFoundError
+// 500: internalServerError
+func (pk8s *playlistK8sHandler) getPlaylist(c *contextmodel.ReqContext) {
+	client, ok := pk8s.getClient(c)
+	if !ok {
+		return // error is already sent
+	}
+	uid := web.Params(c.Req)[":uid"]
+	out, err := client.Get(c.Req.Context(), uid, v1.GetOptions{})
 	if err != nil {
-		c.JsonApiErr(404, "Playlist not found", err)
+		pk8s.writeError(c, err)
 		return
 	}
+	c.JSON(http.StatusOK, playlist.UnstructuredToLegacyPlaylistDTO(*out))
+}
 
-	if query.Result.OrgId == 0 {
-		c.JsonApiErr(404, "Playlist not found", err)
+// swagger:route GET /playlists/{uid}/items playlists getPlaylistItems
+//
+// Get playlist items.
+//
+// Please refer to [new API](?api=playlist.grafana.app-v1) instead (items are included in the playlist spec).
+//
+// Deprecated: true
+//
+// Responses:
+// 200: getPlaylistItemsResponse
+// 401: unauthorisedError
+// 403: forbiddenError
+// 404: notFoundError
+// 500: internalServerError
+func (pk8s *playlistK8sHandler) getPlaylistItems(c *contextmodel.ReqContext) {
+	client, ok := pk8s.getClient(c)
+	if !ok {
+		return // error is already sent
+	}
+	uid := web.Params(c.Req)[":uid"]
+	out, err := client.Get(c.Req.Context(), uid, v1.GetOptions{})
+	if err != nil {
+		pk8s.writeError(c, err)
 		return
 	}
+	c.JSON(http.StatusOK, playlist.UnstructuredToLegacyPlaylistDTO(*out).Items)
+}
 
-	if query.Result.OrgId != c.OrgId {
-		c.JsonApiErr(403, "You are not allowed to edit/view playlist", nil)
+// swagger:route DELETE /playlists/{uid} playlists deletePlaylist
+//
+// Delete playlist.
+//
+// Please refer to [new API](?api=playlist.grafana.app-v1).
+//
+// Deprecated: true
+//
+// Responses:
+// 200: okResponse
+// 401: unauthorisedError
+// 403: forbiddenError
+// 404: notFoundError
+// 500: internalServerError
+func (pk8s *playlistK8sHandler) deletePlaylist(c *contextmodel.ReqContext) {
+	client, ok := pk8s.getClient(c)
+	if !ok {
+		return // error is already sent
+	}
+	uid := web.Params(c.Req)[":uid"]
+	err := client.Delete(c.Req.Context(), uid, v1.DeleteOptions{})
+	if err != nil {
+		pk8s.writeError(c, err)
 		return
 	}
+	c.JSON(http.StatusOK, "")
 }
 
-func SearchPlaylists(c *models.ReqContext) response.Response {
-	query := c.Query("query")
-	limit := c.QueryInt("limit")
-
-	if limit == 0 {
-		limit = 1000
+// swagger:route PUT /playlists/{uid} playlists updatePlaylist
+//
+// Update playlist.
+//
+// Please refer to [new API](?api=playlist.grafana.app-v1).
+//
+// Deprecated: true
+//
+// Responses:
+// 200: updatePlaylistResponse
+// 401: unauthorisedError
+// 403: forbiddenError
+// 404: notFoundError
+// 500: internalServerError
+func (pk8s *playlistK8sHandler) updatePlaylist(c *contextmodel.ReqContext) {
+	client, ok := pk8s.getClient(c)
+	if !ok {
+		return // error is already sent
 	}
-
-	searchQuery := models.GetPlaylistsQuery{
-		Name:  query,
-		Limit: limit,
-		OrgId: c.OrgId,
-	}
-
-	err := bus.Dispatch(c.Req.Context(), &searchQuery)
-	if err != nil {
-		return response.Error(500, "Search failed", err)
-	}
-
-	return response.JSON(200, searchQuery.Result)
-}
-
-func GetPlaylist(c *models.ReqContext) response.Response {
-	id, err := strconv.ParseInt(web.Params(c.Req)[":id"], 10, 64)
-	if err != nil {
-		return response.Error(http.StatusBadRequest, "id is invalid", err)
-	}
-	cmd := models.GetPlaylistByIdQuery{Id: id}
-
-	if err := bus.Dispatch(c.Req.Context(), &cmd); err != nil {
-		return response.Error(500, "Playlist not found", err)
-	}
-
-	playlistDTOs, _ := LoadPlaylistItemDTOs(c.Req.Context(), id)
-
-	dto := &models.PlaylistDTO{
-		Id:       cmd.Result.Id,
-		Name:     cmd.Result.Name,
-		Interval: cmd.Result.Interval,
-		OrgId:    cmd.Result.OrgId,
-		Items:    playlistDTOs,
-	}
-
-	return response.JSON(200, dto)
-}
-
-func LoadPlaylistItemDTOs(ctx context.Context, id int64) ([]models.PlaylistItemDTO, error) {
-	playlistitems, err := LoadPlaylistItems(ctx, id)
-
-	if err != nil {
-		return nil, err
-	}
-
-	playlistDTOs := make([]models.PlaylistItemDTO, 0)
-
-	for _, item := range playlistitems {
-		playlistDTOs = append(playlistDTOs, models.PlaylistItemDTO{
-			Id:         item.Id,
-			PlaylistId: item.PlaylistId,
-			Type:       item.Type,
-			Value:      item.Value,
-			Order:      item.Order,
-			Title:      item.Title,
-		})
-	}
-
-	return playlistDTOs, nil
-}
-
-func LoadPlaylistItems(ctx context.Context, id int64) ([]models.PlaylistItem, error) {
-	itemQuery := models.GetPlaylistItemsByIdQuery{PlaylistId: id}
-	if err := bus.Dispatch(ctx, &itemQuery); err != nil {
-		return nil, err
-	}
-
-	return *itemQuery.Result, nil
-}
-
-func GetPlaylistItems(c *models.ReqContext) response.Response {
-	id, err := strconv.ParseInt(web.Params(c.Req)[":id"], 10, 64)
-	if err != nil {
-		return response.Error(http.StatusBadRequest, "id is invalid", err)
-	}
-
-	playlistDTOs, err := LoadPlaylistItemDTOs(c.Req.Context(), id)
-
-	if err != nil {
-		return response.Error(500, "Could not load playlist items", err)
-	}
-
-	return response.JSON(200, playlistDTOs)
-}
-
-func GetPlaylistDashboards(c *models.ReqContext) response.Response {
-	playlistID, err := strconv.ParseInt(web.Params(c.Req)[":id"], 10, 64)
-	if err != nil {
-		return response.Error(http.StatusBadRequest, "id is invalid", err)
-	}
-
-	playlists, err := LoadPlaylistDashboards(c.Req.Context(), c.OrgId, c.SignedInUser, playlistID)
-	if err != nil {
-		return response.Error(500, "Could not load dashboards", err)
-	}
-
-	return response.JSON(200, playlists)
-}
-
-func DeletePlaylist(c *models.ReqContext) response.Response {
-	id, err := strconv.ParseInt(web.Params(c.Req)[":id"], 10, 64)
-	if err != nil {
-		return response.Error(http.StatusBadRequest, "id is invalid", err)
-	}
-
-	cmd := models.DeletePlaylistCommand{Id: id, OrgId: c.OrgId}
-	if err := bus.Dispatch(c.Req.Context(), &cmd); err != nil {
-		return response.Error(500, "Failed to delete playlist", err)
-	}
-
-	return response.JSON(200, "")
-}
-
-func CreatePlaylist(c *models.ReqContext) response.Response {
-	cmd := models.CreatePlaylistCommand{}
+	uid := web.Params(c.Req)[":uid"]
+	cmd := playlist.UpdatePlaylistCommand{}
 	if err := web.Bind(c.Req, &cmd); err != nil {
-		return response.Error(http.StatusBadRequest, "bad request data", err)
+		c.JsonApiErr(http.StatusBadRequest, "bad request data", err)
+		return
 	}
-	cmd.OrgId = c.OrgId
-
-	if err := bus.Dispatch(c.Req.Context(), &cmd); err != nil {
-		return response.Error(500, "Failed to create playlist", err)
+	obj := playlist.LegacyUpdateCommandToUnstructured(cmd)
+	obj.SetName(uid)
+	existing, err := client.Get(c.Req.Context(), uid, v1.GetOptions{})
+	if err != nil {
+		pk8s.writeError(c, err)
+		return
 	}
-
-	return response.JSON(200, cmd.Result)
+	obj.SetResourceVersion(existing.GetResourceVersion())
+	out, err := client.Update(c.Req.Context(), &obj, v1.UpdateOptions{})
+	if err != nil {
+		pk8s.writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, playlist.UnstructuredToLegacyPlaylistDTO(*out))
 }
 
-func UpdatePlaylist(c *models.ReqContext) response.Response {
-	cmd := models.UpdatePlaylistCommand{}
+// swagger:route POST /playlists playlists createPlaylist
+//
+// Create playlist.
+//
+// Please refer to [new API](?api=playlist.grafana.app-v1).
+//
+// Deprecated: true
+//
+// Responses:
+// 200: createPlaylistResponse
+// 401: unauthorisedError
+// 403: forbiddenError
+// 404: notFoundError
+// 500: internalServerError
+func (pk8s *playlistK8sHandler) createPlaylist(c *contextmodel.ReqContext) {
+	client, ok := pk8s.getClient(c)
+	if !ok {
+		return // error is already sent
+	}
+	cmd := playlist.UpdatePlaylistCommand{}
 	if err := web.Bind(c.Req, &cmd); err != nil {
-		return response.Error(http.StatusBadRequest, "bad request data", err)
+		c.JsonApiErr(http.StatusBadRequest, "bad request data", err)
+		return
 	}
-	cmd.OrgId = c.OrgId
-	var err error
-	cmd.Id, err = strconv.ParseInt(web.Params(c.Req)[":id"], 10, 64)
+	obj := playlist.LegacyUpdateCommandToUnstructured(cmd)
+	out, err := client.Create(c.Req.Context(), &obj, v1.CreateOptions{})
 	if err != nil {
-		return response.Error(http.StatusBadRequest, "id is invalid", err)
+		pk8s.writeError(c, err)
+		return
 	}
+	c.JSON(http.StatusOK, playlist.UnstructuredToLegacyPlaylistDTO(*out))
+}
 
-	if err := bus.Dispatch(c.Req.Context(), &cmd); err != nil {
-		return response.Error(500, "Failed to save playlist", err)
-	}
+//-----------------------------------------------------------------------------------------
+// Utility functions
+//-----------------------------------------------------------------------------------------
 
-	playlistDTOs, err := LoadPlaylistItemDTOs(c.Req.Context(), cmd.Id)
+func (pk8s *playlistK8sHandler) getClient(c *contextmodel.ReqContext) (dynamic.ResourceInterface, bool) {
+	// NOTE! if you are copying this, consider using the hs.clientclientGenerator to get a typed client!
+	dyn, err := dynamic.NewForConfig(pk8s.clientConfigProvider.GetDirectRestConfig(c))
 	if err != nil {
-		return response.Error(500, "Failed to save playlist", err)
+		c.JsonApiErr(500, "client", err)
+		return nil, false
 	}
+	return dyn.Resource(pk8s.gvr).Namespace(pk8s.namespacer(c.OrgID)), true
+}
 
-	cmd.Result.Items = playlistDTOs
-	return response.JSON(200, cmd.Result)
+func (pk8s *playlistK8sHandler) writeError(c *contextmodel.ReqContext, err error) {
+	//nolint:errorlint
+	statusError, ok := err.(*errors.StatusError)
+	if ok {
+		c.JsonApiErr(int(statusError.Status().Code), statusError.Status().Message, err)
+		return
+	}
+	errhttp.Write(c.Req.Context(), err, c.Resp)
 }

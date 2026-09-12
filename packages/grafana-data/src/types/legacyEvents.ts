@@ -1,17 +1,19 @@
-import { DataQueryError, DataQueryResponseData } from './datasource';
-import { AngularPanelMenuItem } from './panel';
-import { DataFrame } from './dataFrame';
+import { type DataHoverPayload } from '../events/common';
 import { eventFactory } from '../events/eventFactory';
 import { BusEventBase, BusEventWithPayload } from '../events/types';
-import { DataHoverPayload } from '../events';
 
-export type AlertPayload = [string, string?];
-export type AlertErrorPayload = [string, (string | Error)?];
+import { type DataFrame } from './dataFrame';
+import { type DataQueryError, type DataQueryResponseData } from './datasource';
+import { type AngularPanelMenuItem } from './panel';
+
+export type AlertPayload = [string, string?, string?];
+export type AlertErrorPayload = [string, (string | Error)?, string?];
 
 export const AppEvents = {
   alertSuccess: eventFactory<AlertPayload>('alert-success'),
   alertWarning: eventFactory<AlertPayload>('alert-warning'),
   alertError: eventFactory<AlertErrorPayload>('alert-error'),
+  alertInfo: eventFactory<AlertPayload>('alert-info'),
 };
 
 export const PanelEvents = {

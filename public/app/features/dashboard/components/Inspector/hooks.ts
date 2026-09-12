@@ -1,73 +1,60 @@
-import { DataQueryError, DataSourceApi, PanelData, PanelPlugin } from '@grafana/data';
-import useAsync from 'react-use/lib/useAsync';
+import { type DataSourceApi, type PanelData } from '@grafana/data';
 import { getDataSourceSrv } from '@grafana/runtime';
-import { DashboardModel, PanelModel } from 'app/features/dashboard/state';
-import { useMemo } from 'react';
-import { supportsDataQuery } from '../PanelEditor/utils';
-import { InspectTab } from 'app/features/inspector/types';
-import { PanelInspectActionSupplier } from './PanelInspectActions';
 
-/**
- * Given PanelData return first data source supporting metadata inspector
- */
-export const useDatasourceMetadata = (data?: PanelData) => {
-  const state = useAsync(async () => {
-    const targets = data?.request?.targets || [];
+export async function getDataSourceWithInspector(data?: PanelData): Promise<DataSourceApi | undefined> {
+  const targets = data?.request?.targets || [];
 
-    if (data && data.series && targets.length) {
-      for (const frame of data.series) {
-        if (frame.meta && frame.meta.custom) {
-          // get data source from first query
-          const dataSource = await getDataSourceSrv().get(targets[0].datasource);
-          if (dataSource && dataSource.components?.MetadataInspector) {
-            return dataSource;
-          }
+  if (data && data.series && targets.length) {
+    for (const frame of data.series) {
+      if (frame.meta && frame.meta.custom) {
+        // get data source from first query
+        const dataSource = await getDataSourceSrv().get(targets[0].datasource);
+        if (dataSource && dataSource.components?.MetadataInspector) {
+          return dataSource;
         }
       }
     }
+  }
 
-    return undefined;
-  }, [data]);
-  return state.value;
-};
+  return undefined;
+}
 
 /**
- * Configures tabs for PanelInspector
+ * Whether the response has any errors or result notices worth showing in the errors and
+ * notices inspector tab. The standard inspector can render these for any data source.
  */
-export const useInspectTabs = (
-  panel: PanelModel,
-  dashboard: DashboardModel,
-  plugin: PanelPlugin | undefined | null,
-  error?: DataQueryError,
-  metaDs?: DataSourceApi
-) => {
-  return useMemo(() => {
-    const tabs = [];
-    if (supportsDataQuery(plugin)) {
-      tabs.push({ label: 'Data', value: InspectTab.Data });
-      tabs.push({ label: 'Stats', value: InspectTab.Stats });
-    }
+export function hasErrorsOrNotices(data?: PanelData): boolean {
+  if (!data) {
+    return false;
+  }
 
-    if (metaDs) {
-      tabs.push({ label: 'Meta Data', value: InspectTab.Meta });
-    }
+  const hasErrors = Boolean(data.error) || Boolean(data.errors?.length);
+  const hasNotices = (data.series ?? []).some((frame) => (frame.meta?.notices?.length ?? 0) > 0);
 
-    tabs.push({ label: 'JSON', value: InspectTab.JSON });
+  return hasErrors || hasNotices;
+}
 
-    if (error && error.message) {
-      tabs.push({ label: 'Error', value: InspectTab.Error });
-    }
+/**
+ * Returns the data source when it provides a custom ErrorsAndNoticesInspector. This is only
+ * resolved for non-mixed panels: with mixed data sources we can't pick a single custom
+ * inspector, so the standard inspector is used instead.
+ */
+export async function getDataSourceWithErrorsAndNoticesInspector(data?: PanelData): Promise<DataSourceApi | undefined> {
+  const targets = data?.request?.targets || [];
 
-    // This is a quick internal hack to allow custom actions in inspect
-    // For 8.1, something like this should be exposed through grafana/runtime
-    const supplier = (window as any).grafanaPanelInspectActionSupplier as PanelInspectActionSupplier;
-    if (supplier && supplier.getActions(panel)) {
-      tabs.push({ label: 'Actions', value: InspectTab.Actions });
-    }
+  if (!targets.length) {
+    return undefined;
+  }
 
-    if (dashboard.meta.canEdit && supportsDataQuery(plugin)) {
-      tabs.push({ label: 'Query', value: InspectTab.Query });
-    }
-    return tabs;
-  }, [panel, plugin, metaDs, dashboard, error]);
-};
+  const uniqueDataSourceUids = new Set(targets.map((target) => target.datasource?.uid));
+  if (uniqueDataSourceUids.size > 1) {
+    return undefined;
+  }
+
+  const dataSource = await getDataSourceSrv().get(targets[0].datasource);
+  if (dataSource && dataSource.components?.ErrorsAndNoticesInspector) {
+    return dataSource;
+  }
+
+  return undefined;
+}

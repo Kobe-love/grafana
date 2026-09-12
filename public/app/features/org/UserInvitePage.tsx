@@ -1,33 +1,38 @@
-import React, { FC } from 'react';
-import { connect } from 'react-redux';
+import { Trans, t } from '@grafana/i18n';
+import { reportInteraction } from '@grafana/runtime';
+import { Page } from 'app/core/components/Page/Page';
+import { contextSrv } from 'app/core/services/context_srv';
+
+import { UsersExternalButton } from '../users/UsersExternalButton';
+
 import UserInviteForm from './UserInviteForm';
-import { contextSrv } from 'app/core/core';
-import { getNavModel } from 'app/core/selectors/navModel';
-import { StoreState } from 'app/types/store';
-import Page from 'app/core/components/Page/Page';
-import { NavModel } from '@grafana/data';
 
-interface Props {
-  navModel: NavModel;
-}
+export function UserInvitePage() {
+  const subTitle = (
+    <Trans i18nKey="org.user-invite-page.sub-title" values={{ orgName: contextSrv.user.orgName }}>
+      Send invitation or add existing Grafana user to the organization.
+      <span className="highlight-word"> {'{{orgName}}'}</span>
+    </Trans>
+  );
 
-export const UserInvitePage: FC<Props> = ({ navModel }) => {
+  const onExternalUserMngClick = () => {
+    reportInteraction('admin_manage_users_invite_form_action_clicked');
+  };
+
+  const actions = <UsersExternalButton onExternalUserMngClick={onExternalUserMngClick} />;
+
   return (
-    <Page navModel={navModel}>
+    <Page
+      navId="global-users"
+      pageNav={{ text: t('org.user-invite-page.text.invite-user', 'Invite user') }}
+      subTitle={subTitle}
+      actions={actions}
+    >
       <Page.Contents>
-        <h3 className="page-sub-heading">Invite user</h3>
-        <div className="p-b-2">
-          Send invitation or add existing Grafana user to the organization.
-          <span className="highlight-word"> {contextSrv.user.orgName}</span>
-        </div>
         <UserInviteForm />
       </Page.Contents>
     </Page>
   );
-};
+}
 
-const mapStateToProps = (state: StoreState) => ({
-  navModel: getNavModel(state.navIndex, 'users'),
-});
-
-export default connect(mapStateToProps)(UserInvitePage);
+export default UserInvitePage;

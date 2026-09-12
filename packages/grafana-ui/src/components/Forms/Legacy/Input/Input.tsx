@@ -1,8 +1,11 @@
-import React, { PureComponent, ChangeEvent } from 'react';
-import classNames from 'classnames';
-import { validate, EventsWithValidation, hasValidationEvent } from '../../../../utils';
-import { ValidationEvents, ValidationRule } from '../../../../types';
+import classNames from 'clsx';
+import { PureComponent, ChangeEvent } from 'react';
+import * as React from 'react';
 
+import { ValidationEvents, ValidationRule } from '../../../../types/input';
+import { validate, EventsWithValidation, hasValidationEvent } from '../../../../utils/validate';
+
+/** @deprecated Please use the `Input` component, which does not require this enum. */
 export enum LegacyInputStatus {
   Invalid = 'invalid',
   Valid = 'valid',
@@ -11,7 +14,7 @@ export enum LegacyInputStatus {
 export interface Props extends React.HTMLProps<HTMLInputElement> {
   validationEvents?: ValidationEvents;
   hideErrorMessage?: boolean;
-  inputRef?: React.LegacyRef<HTMLInputElement>;
+  inputRef?: React.Ref<HTMLInputElement>;
 
   // Override event props and append status as argument
   onBlur?: (event: React.FocusEvent<HTMLInputElement>, status?: LegacyInputStatus) => void;
@@ -23,6 +26,7 @@ interface State {
   error: string | null;
 }
 
+/** @deprecated Please use the `Input` component. {@link https://developers.grafana.com/ui/latest/index.html?path=/story/forms-input--simple See Storybook for example.} */
 export class Input extends PureComponent<Props, State> {
   static defaultProps = {
     className: '',

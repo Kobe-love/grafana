@@ -1,12 +1,15 @@
-import React from 'react';
 import { css } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
-import { useStyles2 } from '../../themes';
-import { MenuItemProps } from './MenuItem';
-import { uniqueId } from 'lodash';
+import * as React from 'react';
+import { useId } from 'react';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useStyles2 } from '../../themes/ThemeContext';
+
+import { type MenuItemProps } from './MenuItem';
 
 /** @internal */
-export interface MenuItemsGroup<T = any> {
+export interface MenuItemsGroup<T = unknown> {
   /** Label for the menu items group */
   label?: string;
   /** Aria label for accessibility support */
@@ -22,9 +25,10 @@ export interface MenuGroupProps extends Partial<MenuItemsGroup> {
 }
 
 /** @internal */
-export const MenuGroup: React.FC<MenuGroupProps> = ({ label, ariaLabel, children }) => {
+export const MenuGroup = ({ label, ariaLabel, children }: MenuGroupProps) => {
   const styles = useStyles2(getStyles);
-  const labelID = `group-label-${uniqueId()}`;
+  const generatedId = useId();
+  const labelID = `group-label-${generatedId}`;
 
   return (
     <div role="group" aria-labelledby={!ariaLabel && label ? labelID : undefined} aria-label={ariaLabel}>
@@ -42,10 +46,10 @@ MenuGroup.displayName = 'MenuGroup';
 /** @internal */
 const getStyles = (theme: GrafanaTheme2) => {
   return {
-    groupLabel: css`
-      color: ${theme.colors.text.secondary};
-      font-size: ${theme.typography.size.sm};
-      padding: ${theme.spacing(0.5, 1)};
-    `,
+    groupLabel: css({
+      color: theme.colors.text.secondary,
+      fontSize: theme.typography.size.sm,
+      padding: theme.spacing(0.5, 1),
+    }),
   };
 };

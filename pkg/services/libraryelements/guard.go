@@ -3,50 +3,61 @@ package libraryelements
 import (
 	"context"
 
-	"github.com/grafana/grafana/pkg/models"
-	"github.com/grafana/grafana/pkg/services/dashboards"
-	"github.com/grafana/grafana/pkg/services/guardian"
+	"github.com/grafana/grafana/pkg/apimachinery/identity"
+	"github.com/grafana/grafana/pkg/services/accesscontrol"
+	"github.com/grafana/grafana/pkg/services/folder"
+	"github.com/grafana/grafana/pkg/services/libraryelements/model"
+	"github.com/grafana/grafana/pkg/services/org"
 )
 
 func isGeneralFolder(folderID int64) bool {
 	return folderID == 0
 }
 
+func isUIDGeneralFolder(folderUID string) bool {
+	return folderUID == accesscontrol.GeneralFolderUID
+}
+
 func (l *LibraryElementService) requireSupportedElementKind(kindAsInt int64) error {
-	kind := models.LibraryElementKind(kindAsInt)
+	kind := model.LibraryElementKind(kindAsInt)
 	switch kind {
-	case models.PanelElement:
-		return nil
-	case models.VariableElement:
+	case model.PanelElement:
 		return nil
 	default:
-		return errLibraryElementUnSupportedElementKind
+		return model.ErrLibraryElementUnSupportedElementKind
 	}
 }
 
-func (l *LibraryElementService) requirePermissionsOnFolder(ctx context.Context, user *models.SignedInUser, folderID int64) error {
-	if isGeneralFolder(folderID) && user.HasRole(models.ROLE_EDITOR) {
+func (l *LibraryElementService) requireEditPermissionsOnFolderUID(ctx context.Context, user identity.Requester, folderUID string) error {
+	// TODO remove these special cases and handle General folder case in access control guardian
+	if isUIDGeneralFolder(folderUID) && user.HasRole(org.RoleEditor) {
 		return nil
 	}
 
-	if isGeneralFolder(folderID) && user.HasRole(models.ROLE_VIEWER) {
-		return models.ErrFolderAccessDenied
+	if isUIDGeneralFolder(folderUID) && user.HasRole(org.RoleViewer) {
+		return folder.ErrAccessDenied
 	}
 
-	s := dashboards.NewFolderService(user.OrgId, user, l.SQLStore)
-	folder, err := s.GetFolderByID(ctx, folderID)
-	if err != nil {
-		return err
-	}
-
-	g := guardian.New(ctx, folder.Id, user.OrgId, user)
-
-	canEdit, err := g.CanEdit()
+	evaluator := accesscontrol.EvalPermission(folder.ActionFoldersWrite, folder.ScopeFoldersProvider.GetResourceScopeUID(folderUID))
+	canEdit, err := l.AccessControl.Evaluate(ctx, user, evaluator)
 	if err != nil {
 		return err
 	}
 	if !canEdit {
-		return models.ErrFolderAccessDenied
+		return folder.ErrAccessDenied
+	}
+
+	return nil
+}
+
+func (l *LibraryElementService) requireViewPermissionsOnFolderUID(ctx context.Context, user identity.Requester, folderUID string) error {
+	evaluator := accesscontrol.EvalPermission(folder.ActionFoldersRead, folder.ScopeFoldersProvider.GetResourceScopeUID(folderUID))
+	canView, err := l.AccessControl.Evaluate(ctx, user, evaluator)
+	if err != nil {
+		return err
+	}
+	if !canView {
+		return folder.ErrAccessDenied
 	}
 
 	return nil

@@ -1,54 +1,48 @@
-import React from 'react';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
-import { IconButton } from '../IconButton/IconButton';
-import { ContextMenu } from './ContextMenu';
-import { WithContextMenu } from './WithContextMenu';
-import mdx from './ContextMenu.mdx';
-import { MenuGroup } from '../Menu/MenuGroup';
-import { MenuItem } from '../Menu/MenuItem';
+import { type StoryFn, type Meta } from '@storybook/react-webpack5';
+import * as React from 'react';
+import { action } from 'storybook/actions';
 
-export default {
-  title: 'General/ContextMenu',
+import { IconButton } from '../IconButton/IconButton';
+import { Text } from '../Text/Text';
+
+import { ContextMenu, type ContextMenuProps } from './ContextMenu';
+import mdx from './ContextMenu.mdx';
+import { renderMenuItems } from './ContextMenuStoryHelper';
+import { WithContextMenu, type WithContextMenuProps } from './WithContextMenu';
+
+const meta: Meta<typeof ContextMenu> = {
+  title: 'Overlays/ContextMenu',
   component: ContextMenu,
-  decorators: [withCenteredStory],
   parameters: {
     docs: {
       page: mdx,
     },
+    controls: {
+      exclude: ['renderMenuItems', 'renderHeader', 'onClose', 'children'],
+    },
+  },
+  args: {
+    x: 200,
+    y: 300,
+    focusOnOpen: true,
+    renderMenuItems: renderMenuItems,
   },
 };
 
-const menuItems = [
-  {
-    label: 'Test',
-    items: [
-      { label: 'First', ariaLabel: 'First' },
-      { label: 'Second', ariaLabel: 'Second' },
-      { label: 'Third', ariaLabel: 'Third' },
-      { label: 'Fourth', ariaLabel: 'Fourth' },
-      { label: 'Fifth', ariaLabel: 'Fifth' },
-    ],
-  },
-];
-
-const renderMenuItems = () => {
-  return menuItems.map((group, index) => (
-    <MenuGroup key={`${group.label}${index}`} label={group.label}>
-      {group.items.map((item) => (
-        <MenuItem key={item.label} label={item.label} />
-      ))}
-    </MenuGroup>
-  ));
+const renderHeader = (): React.ReactNode => {
+  return <Text variant="h6">Menu</Text>;
 };
 
-export const Basic = () => {
-  return <ContextMenu x={10} y={11} onClose={() => {}} renderMenuItems={renderMenuItems} />;
+export const Basic: StoryFn<typeof ContextMenu> = (args: ContextMenuProps) => {
+  return <ContextMenu {...args} onClose={() => action('onClose')('closed menu')} renderHeader={renderHeader} />;
 };
 
-export const WithState = () => {
+export const WithState: StoryFn<typeof WithContextMenu> = (args: WithContextMenuProps) => {
   return (
-    <WithContextMenu renderMenuItems={renderMenuItems}>
-      {({ openMenu }) => <IconButton name="info-circle" onClick={openMenu} />}
+    <WithContextMenu {...args}>
+      {({ openMenu }) => <IconButton name="info-circle" onClick={openMenu} tooltip="More information" />}
     </WithContextMenu>
   );
 };
+
+export default meta;

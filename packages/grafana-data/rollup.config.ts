@@ -1,44 +1,52 @@
-import resolve from '@rollup/plugin-node-resolve';
-import commonjs from '@rollup/plugin-commonjs';
-import sourceMaps from 'rollup-plugin-sourcemaps';
 import json from '@rollup/plugin-json';
-import { terser } from 'rollup-plugin-terser';
-import path from 'path';
+import { createRequire } from 'node:module';
+import copy from 'rollup-plugin-copy';
 
-const pkg = require('./package.json');
+import { entryPoint, plugins, esmOutput, cjsOutput } from '../rollup.config.parts';
 
-const libraryName = pkg.name;
+const rq = createRequire(import.meta.url);
+const pkg = rq('./package.json');
 
-const buildCjsPackage = ({ env }) => {
-  return {
-    input: `compiled/index.js`,
-    output: [
+const grafanaDataPlugins = [
+  ...plugins,
+  copy({
+    targets: [
       {
-        file: `dist/index.${env}.js`,
-        name: libraryName,
-        format: 'cjs',
-        sourcemap: true,
-        exports: 'named',
-        globals: {},
+        src: 'src/themes/schema.generated.json',
+        dest: 'dist/esm/',
+      },
+      {
+        src: 'src/themes/themeDefinitions/*.json',
+        dest: 'dist/esm/',
       },
     ],
-    external: [
-      'lodash',
-      'rxjs',
-      '@grafana/schema', // Load from host
+    flatten: false,
+  }),
+  copy({
+    // tsc's declaration-only emit does not carry handwritten .d.ts inputs over to
+    // dist/types, but the declarations emitted for luxon_moment_compat import './luxon',
+    // so ship the file alongside them or type resolution breaks in the published tarball.
+    targets: [
+      {
+        src: 'src/datetime/luxon_moment_compat/luxon.d.ts',
+        dest: 'dist/types/datetime/luxon_moment_compat/',
+      },
     ],
-    plugins: [
-      resolve(),
-      json({
-        include: [path.relative('.', require.resolve('moment-timezone/data/packed/latest.json'))], // absolute path throws an error for whatever reason
-      }),
-      commonjs({
-        include: /node_modules/,
-      }),
-      resolve(),
-      sourceMaps(),
-      env === 'production' && terser(),
-    ],
-  };
-};
-export default [buildCjsPackage({ env: 'development' }), buildCjsPackage({ env: 'production' })];
+  }),
+  json(),
+];
+
+export default [
+  {
+    input: entryPoint,
+    plugins: grafanaDataPlugins,
+    output: [cjsOutput(pkg, 'grafana-data'), esmOutput(pkg, 'grafana-data')],
+    treeshake: false,
+  },
+  {
+    input: 'src/unstable.ts',
+    plugins: grafanaDataPlugins,
+    output: [cjsOutput(pkg, 'grafana-data'), esmOutput(pkg, 'grafana-data')],
+    treeshake: false,
+  },
+];

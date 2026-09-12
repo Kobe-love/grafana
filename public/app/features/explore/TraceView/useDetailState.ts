@@ -1,8 +1,9 @@
 import { useCallback, useState, useEffect } from 'react';
-import { DataFrame } from '@grafana/data';
-import { DetailState } from '@jaegertracing/jaeger-ui-components';
-import { TraceLog } from '@jaegertracing/jaeger-ui-components/src/types/trace';
 
+import { type DataFrame, type TraceLog } from '@grafana/data';
+
+import DetailState from './components/TraceTimelineViewer/SpanDetail/DetailState';
+import { type TraceSpanReference } from './components/types/trace';
 /**
  * Keeps state of the span detail. This means whether span details are open but also state of each detail subitem
  * like logs or tags.
@@ -42,6 +43,20 @@ export function useDetailState(frame: DataFrame) {
     [detailStates]
   );
 
+  const detailReferenceItemToggle = useCallback(
+    function detailReferenceItemToggle(spanID: string, reference: TraceSpanReference) {
+      const old = detailStates.get(spanID);
+      if (!old) {
+        return;
+      }
+      const detailState = old.toggleReferenceItem(reference);
+      const newDetailStates = new Map(detailStates);
+      newDetailStates.set(spanID, detailState);
+      return setDetailStates(newDetailStates);
+    },
+    [detailStates]
+  );
+
   return {
     detailStates,
     toggleDetail,
@@ -58,6 +73,7 @@ export function useDetailState(frame: DataFrame) {
       (spanID: string) => makeDetailSubsectionToggle('stackTraces', detailStates, setDetailStates)(spanID),
       [detailStates]
     ),
+    detailReferenceItemToggle,
     detailReferencesToggle: useCallback(
       (spanID: string) => makeDetailSubsectionToggle('references', detailStates, setDetailStates)(spanID),
       [detailStates]
@@ -70,11 +86,15 @@ export function useDetailState(frame: DataFrame) {
       (spanID: string) => makeDetailSubsectionToggle('tags', detailStates, setDetailStates)(spanID),
       [detailStates]
     ),
+    detailSummaryAttributesToggle: useCallback(
+      (spanID: string) => makeDetailSubsectionToggle('summaryAttributes', detailStates, setDetailStates)(spanID),
+      [detailStates]
+    ),
   };
 }
 
 function makeDetailSubsectionToggle(
-  subSection: 'tags' | 'process' | 'logs' | 'warnings' | 'references' | 'stackTraces',
+  subSection: 'tags' | 'process' | 'summaryAttributes' | 'logs' | 'warnings' | 'references' | 'stackTraces',
   detailStates: Map<string, DetailState>,
   setDetailStates: (detailStates: Map<string, DetailState>) => void
 ) {
@@ -88,14 +108,20 @@ function makeDetailSubsectionToggle(
       detailState = old.toggleTags();
     } else if (subSection === 'process') {
       detailState = old.toggleProcess();
+    } else if (subSection === 'summaryAttributes') {
+      detailState = old.toggleSummaryAttributes();
     } else if (subSection === 'warnings') {
       detailState = old.toggleWarnings();
     } else if (subSection === 'references') {
       detailState = old.toggleReferences();
     } else if (subSection === 'stackTraces') {
       detailState = old.toggleStackTraces();
-    } else {
+    } else if (subSection === 'logs') {
       detailState = old.toggleLogs();
+    } else {
+      // Exhaustive: every subsection is handled above. Bail rather than fall through to a
+      // default toggle if a new subsection is added without its own branch.
+      return;
     }
     const newDetailStates = new Map(detailStates);
     newDetailStates.set(spanID, detailState);

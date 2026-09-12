@@ -1,16 +1,22 @@
-//go:build memcached
-// +build memcached
-
 package remotecache
 
 import (
+	"os"
 	"testing"
 
 	"github.com/grafana/grafana/pkg/setting"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
-func TestMemcachedCacheStorage(t *testing.T) {
-	opts := &setting.RemoteCacheOptions{Name: memcachedCacheType, ConnStr: "localhost:11211"}
+func TestIntegrationMemcachedCacheStorage(t *testing.T) {
+	testutil.SkipIntegrationTestInShortMode(t)
+
+	u, ok := os.LookupEnv("MEMCACHED_HOSTS")
+	if !ok || u == "" {
+		t.Skip("No Memcached hosts provided")
+	}
+
+	opts := &setting.RemoteCacheSettings{Name: memcachedCacheType, ConnStr: u}
 	client := createTestClient(t, opts, nil)
 	runTestsForClient(t, client)
 }

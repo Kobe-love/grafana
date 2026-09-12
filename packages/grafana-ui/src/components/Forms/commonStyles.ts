@@ -1,17 +1,23 @@
 import { css, cx } from '@emotion/css';
-import { GrafanaTheme, GrafanaTheme2 } from '@grafana/data';
-import { focusCss } from '../../themes/mixins';
-import { ComponentSize } from '../../types/size';
 
-export const getFocusStyle = (theme: GrafanaTheme) => css`
-  &:focus {
-    ${focusCss(theme)}
-  }
-`;
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { getFocusStyles } from '../../themes/mixins';
+import { type ComponentSize } from '../../types/size';
+
+export const getFocusStyle = (theme: GrafanaTheme2) =>
+  css({
+    '&:focus': getFocusStyles(theme),
+  });
 
 export const sharedInputStyle = (theme: GrafanaTheme2, invalid = false) => {
-  const borderColor = invalid ? theme.colors.error.border : theme.components.input.borderColor;
-  const borderColorHover = invalid ? theme.colors.error.shade : theme.components.input.borderHover;
+  const visualRefreshEnabled = theme.flags.visualDesignRefresh;
+  let borderColor = invalid ? theme.colors.error.border : theme.components.input.borderColor;
+  let borderColorHover = invalid ? theme.colors.error.shade : theme.components.input.borderHover;
+  if (visualRefreshEnabled) {
+    borderColor = invalid ? theme.colors.error.border : theme.components.input.borderColor;
+    borderColorHover = invalid ? theme.colors.error.borderEmphasis : theme.components.input.borderHover;
+  }
   const background = theme.components.input.background;
   const textColor = theme.components.input.text;
 
@@ -21,89 +27,57 @@ export const sharedInputStyle = (theme: GrafanaTheme2, invalid = false) => {
 
   return cx(
     inputPadding(theme),
-    css`
-      background: ${background};
-      line-height: ${theme.typography.body.lineHeight};
-      font-size: ${theme.typography.size.md};
-      color: ${textColor};
-      border: 1px solid ${borderColor};
+    css({
+      background,
+      lineHeight: theme.typography.body.lineHeight,
+      minHeight: theme.spacing(theme.components.height.md),
+      fontSize: theme.typography.size.md,
+      color: textColor,
+      border: `1px solid ${borderColor}`,
 
-      &:-webkit-autofill,
-      &:-webkit-autofill:hover {
+      '&:-webkit-autofill, &:-webkit-autofill:hover': {
         /* Welcome to 2005. This is a HACK to get rid od Chromes default autofill styling */
-        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0), inset 0 0 0 100px ${background}!important;
-        -webkit-text-fill-color: ${textColor} !important;
-        border-color: ${autoFillBorder};
-      }
+        boxShadow: `inset 0 0 0 1px rgba(255, 255, 255, 0), inset 0 0 0 100px ${background}!important`,
+        WebkitTextFillColor: `${textColor} !important`,
+        borderColor: autoFillBorder,
+      },
 
-      &:-webkit-autofill:focus {
+      '&:-webkit-autofill:focus': {
         /* Welcome to 2005. This is a HACK to get rid od Chromes default autofill styling */
-        box-shadow: 0 0 0 2px ${theme.colors.background.primary}, 0 0 0px 4px ${theme.colors.primary.main},
-          inset 0 0 0 1px rgba(255, 255, 255, 0), inset 0 0 0 100px ${background}!important;
-        -webkit-text-fill-color: ${textColor} !important;
-      }
+        boxShadow: `0 0 0 2px ${theme.colors.background.primary}, 0 0 0px 4px ${theme.colors.primary.main}, inset 0 0 0 1px rgba(255, 255, 255, 0), inset 0 0 0 100px ${background}!important`,
+        WebkitTextFillColor: `${textColor} !important`,
+      },
 
-      &:hover {
-        border-color: ${borderColorHover};
-      }
+      '&:hover': {
+        borderColor: borderColorHover,
+      },
 
-      &:focus {
-        outline: none;
-      }
+      '&:focus': {
+        outline: 'none',
+      },
 
-      &:disabled {
-        background-color: ${theme.colors.action.disabledBackground};
-        color: ${theme.colors.action.disabledText};
-        border: 1px solid ${theme.colors.action.disabledBackground};
+      '&:disabled': {
+        backgroundColor: theme.colors.action.disabledBackground,
+        color: theme.colors.action.disabledText,
+        border: `1px solid ${theme.colors.action.disabledBackground}`,
 
-        &:hover {
-          border-color: ${borderColor};
-        }
-      }
+        '&:hover': {
+          borderColor,
+        },
+      },
 
-      &::placeholder {
-        color: ${theme.colors.text.disabled};
-        opacity: 1;
-      }
-    `
+      '&::placeholder': {
+        color: theme.colors.text.disabled,
+        opacity: 1,
+      },
+    })
   );
 };
 
 export const inputPadding = (theme: GrafanaTheme2) => {
-  return css`
-    padding: ${theme.spacing(0, 1, 0, 1)};
-  `;
-};
-
-export const inputSizes = () => {
-  return {
-    sm: css`
-      width: ${inputSizesPixels('sm')};
-    `,
-    md: css`
-      width: ${inputSizesPixels('md')};
-    `,
-    lg: css`
-      width: ${inputSizesPixels('lg')};
-    `,
-    auto: css`
-      width: ${inputSizesPixels('auto')};
-    `,
-  };
-};
-
-export const inputSizesPixels = (size: string) => {
-  switch (size) {
-    case 'sm':
-      return '200px';
-    case 'md':
-      return '320px';
-    case 'lg':
-      return '580px';
-    case 'auto':
-    default:
-      return 'auto';
-  }
+  return css({
+    padding: theme.spacing(0, 1, 0, 1),
+  });
 };
 
 export function getPropertiesForButtonSize(size: ComponentSize, theme: GrafanaTheme2) {

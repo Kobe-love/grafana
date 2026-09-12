@@ -1,13 +1,18 @@
-import { ComponentType } from 'react';
-import { Reducer } from 'redux';
-import { Registry, UrlQueryValue, VariableType } from '@grafana/data';
+import { type ComponentType } from 'react';
+import { type Reducer } from 'redux';
 
-import { VariableModel, VariableOption } from './types';
-import { VariableEditorProps } from './editor/types';
-import { VariablePickerProps } from './pickers/types';
-import { VariablesState } from './state/types';
+import {
+  Registry,
+  type TypedVariableModel,
+  type UrlQueryValue,
+  type VariableOption,
+  type VariableType,
+} from '@grafana/data';
 
-export interface VariableAdapter<Model extends VariableModel> {
+import { type VariablePickerProps } from './pickers/types';
+import { type VariablesState } from './state/types';
+
+export interface VariableAdapter<Model extends TypedVariableModel> {
   id: VariableType;
   description: string;
   name: string;
@@ -19,7 +24,6 @@ export interface VariableAdapter<Model extends VariableModel> {
   getSaveModel: (variable: Model, saveCurrentAsDefault?: boolean) => Partial<Model>;
   getValueForUrl: (variable: Model) => string | string[];
   picker: ComponentType<VariablePickerProps<Model>>;
-  editor: ComponentType<VariableEditorProps<Model>>;
   reducer: Reducer<VariablesState>;
   beforeAdding?: (model: any) => any;
 }

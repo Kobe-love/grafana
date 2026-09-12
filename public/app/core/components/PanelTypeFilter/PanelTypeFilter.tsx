@@ -1,34 +1,31 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { GrafanaTheme2, PanelPluginMeta, SelectableValue } from '@grafana/data';
-import { getAllPanelPluginMeta } from 'app/features/panel/state/util';
-import { Icon, MultiSelect, useStyles2 } from '@grafana/ui';
 import { css } from '@emotion/css';
+import { useCallback, useMemo, useState, type JSX } from 'react';
+
+import { type GrafanaTheme2, type PanelPluginMeta, type SelectableValue } from '@grafana/data';
+import { Trans, t } from '@grafana/i18n';
+import { useListedPanelPluginMetas } from '@grafana/runtime/internal';
+import { Icon, Button, MultiSelect, useStyles2 } from '@grafana/ui';
 
 export interface Props {
   onChange: (plugins: PanelPluginMeta[]) => void;
   maxMenuHeight?: number;
 }
 
+const collator = new Intl.Collator();
+
 export const PanelTypeFilter = ({ onChange: propsOnChange, maxMenuHeight }: Props): JSX.Element => {
-  const plugins = useMemo<PanelPluginMeta[]>(() => {
-    return getAllPanelPluginMeta();
-  }, []);
+  const { value: plugins = [] } = useListedPanelPluginMetas();
   const options = useMemo(
     () =>
       plugins
         .map((p) => ({ label: p.name, imgUrl: p.info.logos.small, value: p }))
-        .sort((a, b) => a.label?.localeCompare(b.label)),
+        .sort((a, b) => collator.compare(a.label, b.label)),
     [plugins]
   );
   const [value, setValue] = useState<Array<SelectableValue<PanelPluginMeta>>>([]);
   const onChange = useCallback(
     (plugins: Array<SelectableValue<PanelPluginMeta>>) => {
-      const changedPlugins = [];
-      for (const plugin of plugins) {
-        if (plugin.value) {
-          changedPlugins.push(plugin.value);
-        }
-      }
+      const changedPlugins = plugins.filter((p) => p.value).map((p) => p.value!);
       propsOnChange(changedPlugins);
       setValue(plugins);
     },
@@ -38,10 +35,10 @@ export const PanelTypeFilter = ({ onChange: propsOnChange, maxMenuHeight }: Prop
 
   const selectOptions = {
     defaultOptions: true,
-    getOptionLabel: (i: any) => i.label,
-    getOptionValue: (i: any) => i.value,
-    noOptionsMessage: 'No Panel types found',
-    placeholder: 'Filter by type',
+    getOptionLabel: (i: SelectableValue<PanelPluginMeta>) => i.label,
+    getOptionValue: (i: SelectableValue<PanelPluginMeta>) => i.value,
+    noOptionsMessage: t('panel-type-filter.select-no-options', 'No panel types found'),
+    placeholder: t('panel-type-filter.select-placeholder', 'Filter by type'),
     maxMenuHeight,
     options,
     value,
@@ -51,36 +48,33 @@ export const PanelTypeFilter = ({ onChange: propsOnChange, maxMenuHeight }: Prop
   return (
     <div className={styles.container}>
       {value.length > 0 && (
-        <span className={styles.clear} onClick={() => onChange([])}>
-          Clear types
-        </span>
+        <Button size="xs" icon="trash-alt" fill="text" className={styles.clear} onClick={() => onChange([])}>
+          <Trans i18nKey="panel-type-filter.clear-button">Clear types</Trans>
+        </Button>
       )}
-      <MultiSelect menuShouldPortal {...selectOptions} prefix={<Icon name="filter" />} aria-label="Panel Type filter" />
+      <MultiSelect<PanelPluginMeta>
+        {...selectOptions}
+        prefix={<Icon name="filter" />}
+        aria-label={t('panel-type-filter.select-aria-label', 'Panel type filter')}
+      />
     </div>
   );
 };
 
 function getStyles(theme: GrafanaTheme2) {
   return {
-    container: css`
-      label: container;
-      position: relative;
-      min-width: 180px;
-      flex-grow: 1;
-    `,
-    clear: css`
-      label: clear;
-      text-decoration: underline;
-      font-size: ${theme.spacing(1.5)};
-      position: absolute;
-      top: -${theme.spacing(2.75)};
-      right: 0;
-      cursor: pointer;
-      color: ${theme.colors.text.link};
-
-      &:hover {
-        color: ${theme.colors.text.maxContrast};
-      }
-    `,
+    container: css({
+      label: 'container',
+      position: 'relative',
+      minWidth: '180px',
+      flexGrow: 1,
+    }),
+    clear: css({
+      label: 'clear',
+      fontSize: theme.spacing(1.5),
+      position: 'absolute',
+      top: theme.spacing(-4.5),
+      right: 0,
+    }),
   };
 }

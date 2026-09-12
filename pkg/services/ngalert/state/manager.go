@@ -2,303 +2,673 @@ package state
 
 import (
 	"context"
-	"fmt"
 	"net/url"
-	"strconv"
+	"strings"
 	"time"
 
-	"github.com/grafana/grafana/pkg/models"
-	"github.com/grafana/grafana/pkg/services/annotations"
-	"github.com/grafana/grafana/pkg/services/sqlstore"
+	"github.com/benbjohnson/clock"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/grafana/grafana/pkg/infra/log"
-
+	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/services/ngalert/eval"
 	"github.com/grafana/grafana/pkg/services/ngalert/metrics"
 	ngModels "github.com/grafana/grafana/pkg/services/ngalert/models"
-	"github.com/grafana/grafana/pkg/services/ngalert/store"
+	history_model "github.com/grafana/grafana/pkg/services/ngalert/state/historian/model"
 )
 
-var ResendDelay = 30 * time.Second
+var (
+	ResendDelay = 30 * time.Second
+)
+
+type takeImageFn func(reason string) *ngModels.Image
+
+// AlertInstanceManager defines the interface for querying the current alert instances.
+type AlertInstanceManager interface {
+	GetAll(ctx context.Context, orgID int64) []*State
+	GetStatesForRuleUID(ctx context.Context, orgID int64, alertRuleUID string) []*State
+}
+
+type StatePersister interface {
+	Async(ctx context.Context, instancesProvider AlertInstancesProvider)
+	Sync(ctx context.Context, span trace.Span, ruleKey ngModels.AlertRuleKeyWithGroup, states StateTransitions)
+}
+
+// Sender is an optional callback intended for sending the states to an alertmanager.
+type Sender func(context.Context, StateTransitions)
+
+// DefaultMaxLabelValueSize is the default byte cap applied to any single
+// expanded label/annotation value written into alert state, complementing
+// the sender-side clamp (pkg/services/ngalert/sender). Chosen generously as
+// a safety net, not a routine content limit.
+const DefaultMaxLabelValueSize = 1 << 22 // 4 MiB
 
 type Manager struct {
 	log     log.Logger
 	metrics *metrics.State
+	tracer  tracing.Tracer
 
-	cache       *cache
-	quit        chan struct{}
-	ResendDelay time.Duration
+	clock             clock.Clock
+	cache             *cache
+	ResendDelay       time.Duration
+	ResolvedRetention time.Duration
 
-	ruleStore     store.RuleStore
-	instanceStore store.InstanceStore
+	instanceStore InstanceStore
+	images        ImageCapturer
+	historian     Historian
+	externalURL   *url.URL
+
+	rulesPerRuleGroupLimit int64
+
+	// maxLabelValueSize caps the byte length of any single expanded label/annotation
+	// value written into state. A non-positive value disables the clamp.
+	maxLabelValueSize int
+
+	persister StatePersister
+
+	ignorePendingForNoDataAndError bool
+
+	// readiness gates whether evaluation results may be applied before the cache is warmed.
+	readiness ReadinessProbe
 }
 
-func NewManager(logger log.Logger, metrics *metrics.State, externalURL *url.URL, ruleStore store.RuleStore, instanceStore store.InstanceStore) *Manager {
-	manager := &Manager{
-		cache:         newCache(logger, metrics, externalURL),
-		quit:          make(chan struct{}),
-		ResendDelay:   ResendDelay, // TODO: make this configurable
-		log:           logger,
-		metrics:       metrics,
-		ruleStore:     ruleStore,
-		instanceStore: instanceStore,
+type ManagerCfg struct {
+	Metrics       *metrics.State
+	ExternalURL   *url.URL
+	InstanceStore InstanceStore
+	Images        ImageCapturer
+	Clock         clock.Clock
+	Historian     Historian
+	// MaxStateSaveConcurrency controls the number of goroutines (per rule) that can save alert state in parallel.
+	MaxStateSaveConcurrency int
+	// StatePeriodicSaveBatchSize controls the size of the alert instance batch that is saved periodically when the
+	// alertingSaveStatePeriodic feature flag is enabled.
+	StatePeriodicSaveBatchSize int
+	// StatePeriodicSaveInterval controls the interval for periodic state saves.
+	StatePeriodicSaveInterval time.Duration
+	// StatePeriodicSaveJitterEnabled enables jitter for periodic state saves to distribute database load.
+	StatePeriodicSaveJitterEnabled bool
+
+	RulesPerRuleGroupLimit int64
+
+	// MaxLabelValueSize caps the byte length of any single expanded label/annotation
+	// value written into state. Zero uses [DefaultMaxLabelValueSize]; a negative
+	// value disables the clamp.
+	MaxLabelValueSize int
+
+	DisableExecution bool
+
+	// Duration for which a resolved alert state transition will continue to be sent to the Alertmanager.
+	ResolvedRetention time.Duration
+
+	Tracer tracing.Tracer
+	Log    log.Logger
+
+	IgnorePendingForNoDataAndError bool // TODO: Remove
+
+	// RequireWarm gates evaluation until the cache is warmed. Off by default; the ruler sets it
+	// because it warms asynchronously after (re)assignment.
+	RequireWarm bool
+	// WarmGateTimeout is the grace window before gated evaluation proceeds anyway. 0 uses the default.
+	WarmGateTimeout time.Duration
+}
+
+func NewManager(cfg ManagerCfg, statePersister StatePersister) *Manager {
+	// Metrics for the cache use a collector, so they need access to the register directly.
+	c := newCache()
+	// Only expose the metrics if this grafana server does execute alerts.
+	if cfg.Metrics != nil && !cfg.DisableExecution {
+		c.RegisterMetrics(cfg.Metrics.Registerer())
 	}
-	go manager.recordMetrics()
-	return manager
+
+	// Vanilla Grafana warms before evaluating, so it never needs to gate; the ruler warms
+	// asynchronously and sets RequireWarm to gate until the cache is warmed.
+	var readiness ReadinessProbe = AlwaysReady{}
+	if cfg.RequireWarm {
+		readiness = newGatedProbe(cfg.Clock, cfg.WarmGateTimeout)
+	}
+
+	maxLabelValueSize := cfg.MaxLabelValueSize
+	switch {
+	case maxLabelValueSize == 0:
+		maxLabelValueSize = DefaultMaxLabelValueSize
+	case maxLabelValueSize < 0:
+		maxLabelValueSize = 0
+	}
+
+	m := &Manager{
+		cache:                  c,
+		ResendDelay:            ResendDelay, // TODO: make this configurable
+		ResolvedRetention:      cfg.ResolvedRetention,
+		log:                    cfg.Log,
+		metrics:                cfg.Metrics,
+		instanceStore:          cfg.InstanceStore,
+		images:                 cfg.Images,
+		historian:              cfg.Historian,
+		clock:                  cfg.Clock,
+		externalURL:            cfg.ExternalURL,
+		rulesPerRuleGroupLimit: cfg.RulesPerRuleGroupLimit,
+		maxLabelValueSize:      maxLabelValueSize,
+		persister:              statePersister,
+		tracer:                 cfg.Tracer,
+
+		ignorePendingForNoDataAndError: cfg.IgnorePendingForNoDataAndError,
+
+		readiness: readiness,
+	}
+
+	return m
 }
 
-func (st *Manager) Close() {
-	st.quit <- struct{}{}
+// Ready reports whether results may be applied to the state cache.
+func (st *Manager) Ready() Readiness {
+	return st.readiness.Ready()
 }
 
-func (st *Manager) Warm() {
-	st.log.Info("warming cache for startup")
-	st.ResetCache()
+func (st *Manager) ClearCache() {
+	st.cache.reset()
+	st.readiness.Reset()
+}
 
-	orgIds, err := st.instanceStore.FetchOrgIds()
+func (st *Manager) Run(ctx context.Context) error {
+	st.persister.Async(ctx, st.cache)
+	return nil
+}
+
+func (st *Manager) Warm(ctx context.Context, orgReader OrgReader, rulesReader RuleReader, instanceReader InstanceReader) {
+	logger := st.log.FromContext(ctx)
+
+	success := true
+	startTime := time.Now()
+	rulesCount := 0
+	statesCount := 0
+	defer func() {
+		// TODO this is how it works since the inception. This needs to be reviewed and changed because it has an implication for state history.
+		// Mark ready regardless of the outcome.
+		st.readiness.MarkReady()
+		if !success {
+			logger.Warn("State cache initialization finished with errors. Continue with empty state")
+			return
+		}
+		logger.Info("State cache has been initialized", "rules", rulesCount, "states", statesCount, "duration", time.Since(startTime))
+	}()
+
+	if orgReader == nil || rulesReader == nil || instanceReader == nil {
+		logger.Error("Unable to warm state cache, missing required store readers")
+		success = false
+		return
+	}
+
+	logger.Info("Warming state cache for startup")
+
+	orgIds, err := orgReader.FetchOrgIds(ctx)
 	if err != nil {
-		st.log.Error("unable to fetch orgIds", "msg", err.Error())
+		logger.Error("Unable to warm state cache, failed to fetch org IDs", "error", err)
+		success = false
+		return
 	}
 
-	var states []*State
 	for _, orgId := range orgIds {
 		// Get Rules
 		ruleCmd := ngModels.ListAlertRulesQuery{
 			OrgID: orgId,
 		}
-		if err := st.ruleStore.GetOrgAlertRules(&ruleCmd); err != nil {
-			st.log.Error("unable to fetch previous state", "msg", err.Error())
+		alertRules, err := rulesReader.ListAlertRules(ctx, &ruleCmd)
+		if err != nil {
+			logger.Error("Unable to fetch rules", "error", err)
+			success = false
+			continue
+		}
+		rulesCount += len(alertRules)
+
+		ruleByUID := make(map[string]*ngModels.AlertRule, len(alertRules))
+		groupSizes := make(map[string]int64)
+		for _, rule := range alertRules {
+			ruleByUID[rule.UID] = rule
+			groupSizes[rule.RuleGroup] += 1
 		}
 
-		ruleByUID := make(map[string]*ngModels.AlertRule, len(ruleCmd.Result))
-		for _, rule := range ruleCmd.Result {
-			ruleByUID[rule.UID] = rule
+		// Emit a warning if we detect a large group.
+		// We will not enforce this here, but it's convenient to emit the warning here as we load up all the rules.
+		for name, size := range groupSizes {
+			if st.rulesPerRuleGroupLimit > 0 && size > st.rulesPerRuleGroupLimit {
+				logger.Warn(
+					"Large rule group was loaded. Large groups are discouraged and changes to them may be disallowed in the future.",
+					"limit", st.rulesPerRuleGroupLimit,
+					"actual", size,
+					"group", name,
+				)
+			}
 		}
 
 		// Get Instances
 		cmd := ngModels.ListAlertInstancesQuery{
 			RuleOrgID: orgId,
 		}
-		if err := st.instanceStore.ListAlertInstances(&cmd); err != nil {
-			st.log.Error("unable to fetch previous state", "msg", err.Error())
+		alertInstances, err := instanceReader.ListAlertInstances(ctx, &cmd)
+		if err != nil {
+			logger.Error("Unable to fetch previous state.", "error", err)
+			success = false
+			continue
 		}
-
-		for _, entry := range cmd.Result {
+		// TODO change this to consider situation when there is already a state, e.g. when readiness probe expired and state started from scratch.
+		for _, entry := range alertInstances {
 			ruleForEntry, ok := ruleByUID[entry.RuleUID]
 			if !ok {
-				st.log.Error("rule not found for instance, ignoring", "rule", entry.RuleUID)
 				continue
 			}
 
-			lbs := map[string]string(entry.Labels)
-			cacheId, err := entry.Labels.StringKey()
-			if err != nil {
-				st.log.Error("error getting cacheId for entry", "msg", err.Error())
+			state := AlertInstanceToState(entry, logger)
+
+			// Use persisted annotations if available, otherwise fall back to rule annotations
+			if len(state.Annotations) == 0 {
+				state.Annotations = ruleForEntry.Annotations
 			}
-			stateForEntry := &State{
-				AlertRuleUID:       entry.RuleUID,
-				OrgID:              entry.RuleOrgID,
-				CacheId:            cacheId,
-				Labels:             lbs,
-				State:              translateInstanceState(entry.CurrentState),
-				Results:            []Evaluation{},
-				StartsAt:           entry.CurrentStateSince,
-				EndsAt:             entry.CurrentStateEnd,
-				LastEvaluationTime: entry.LastEvalTime,
-				Annotations:        ruleForEntry.Annotations,
+			if state.Annotations == nil {
+				state.Annotations = make(map[string]string)
 			}
-			states = append(states, stateForEntry)
+
+			st.cache.set(state)
+			statesCount++
 		}
 	}
-
-	for _, s := range states {
-		st.set(s)
-	}
 }
 
-func (st *Manager) getOrCreate(ctx context.Context, alertRule *ngModels.AlertRule, result eval.Result) *State {
-	return st.cache.getOrCreate(ctx, alertRule, result)
-}
-
-func (st *Manager) set(entry *State) {
-	st.cache.set(entry)
-}
-
-func (st *Manager) Get(orgID int64, alertRuleUID, stateId string) (*State, error) {
+func (st *Manager) Get(orgID int64, alertRuleUID string, stateId data.Fingerprint) *State {
 	return st.cache.get(orgID, alertRuleUID, stateId)
 }
 
-// ResetCache is used to ensure a clean cache on startup.
-func (st *Manager) ResetCache() {
-	st.cache.reset()
+// DeleteStateByRuleUID removes the rule instances from cache and instanceStore.
+func (st *Manager) DeleteStateByRuleUID(ctx context.Context, ruleKey ngModels.AlertRuleKeyWithGroup, reason string) []StateTransition {
+	logger := st.log.FromContext(ctx)
+	logger.Debug("Resetting state of the rule")
+
+	states := st.ForgetStateByRuleUID(ctx, ruleKey)
+
+	if len(states) == 0 {
+		return nil
+	}
+
+	now := st.clock.Now()
+	transitions := make([]StateTransition, 0, len(states))
+	for _, s := range states {
+		oldState := s.State
+		oldReason := s.StateReason
+		startsAt := s.StartsAt
+		if s.State != eval.Normal {
+			startsAt = now
+		}
+		s.SetNormal(reason, startsAt, now)
+		// By setting ResolvedAt we trigger the scheduler to send a resolved notification to the Alertmanager.
+		if s.ShouldBeResolved(oldState) {
+			s.ResolvedAt = &now
+		} else {
+			s.ResolvedAt = nil
+		}
+		s.LastEvaluationTime = now
+		s.Values = map[string]float64{}
+		transitions = append(transitions, StateTransition{
+			State:               s,
+			PreviousState:       oldState,
+			PreviousStateReason: oldReason,
+		})
+	}
+
+	if st.instanceStore != nil {
+		err := st.instanceStore.DeleteAlertInstancesByRule(ctx, ruleKey)
+		if err != nil {
+			logger.Error("Failed to delete states that belong to a rule from database", "error", err)
+		}
+	}
+
+	logger.Info("Rules state was reset", "states", len(states))
+
+	return transitions
 }
 
-// RemoveByRuleUID deletes all entries in the state manager that match the given rule UID.
-func (st *Manager) RemoveByRuleUID(orgID int64, ruleUID string) {
-	st.cache.removeByRuleUID(orgID, ruleUID)
+func (st *Manager) ForgetStateByRuleUID(ctx context.Context, ruleKey ngModels.AlertRuleKeyWithGroup) []*State {
+	logger := st.log.FromContext(ctx)
+	logger.Debug("Removing rule state from cache")
+
+	return st.cache.removeByRuleUID(ruleKey.OrgID, ruleKey.UID)
 }
 
-func (st *Manager) ProcessEvalResults(ctx context.Context, alertRule *ngModels.AlertRule, results eval.Results) []*State {
-	st.log.Debug("state manager processing evaluation results", "uid", alertRule.UID, "resultCount", len(results))
-	var states []*State
-	processedResults := make(map[string]*State, len(results))
+// ResetStateByRuleUID removes the rule instances from cache and instanceStore and saves state history. If the state
+// history has to be saved, rule must not be nil.
+func (st *Manager) ResetStateByRuleUID(ctx context.Context, rule *ngModels.AlertRule, reason string) []StateTransition {
+	if rule == nil {
+		return nil
+	}
+
+	ruleKey := rule.GetKeyWithGroup()
+	transitions := st.DeleteStateByRuleUID(ctx, ruleKey, reason)
+
+	if st.historian == nil || len(transitions) == 0 {
+		return transitions
+	}
+
+	ruleMeta := history_model.NewRuleMeta(rule, st.log)
+	errCh := st.historian.Record(ctx, ruleMeta, transitions)
+	go func() {
+		err := <-errCh
+		if err != nil {
+			st.log.FromContext(ctx).Error("Error updating historian state reset transitions", append(ruleKey.LogContext(), "reason", reason, "error", err)...)
+		}
+	}()
+	return transitions
+}
+
+// ProcessEvalResults updates the current states that belong to a rule with the evaluation results.
+// if extraLabels is not empty, those labels will be added to every state. The extraLabels take precedence over rule labels and result labels
+// This will update the states in cache/store and return the state transitions that need to be sent to the alertmanager.
+// A non-nil error means the results were not applied; the returned StateTransitions is nil in that case.
+func (st *Manager) ProcessEvalResults(
+	ctx context.Context,
+	evaluatedAt time.Time,
+	alertRule *ngModels.AlertRule,
+	results eval.Results,
+	extraLabels data.Labels,
+	send Sender,
+) (StateTransitions, error) {
+	logger := st.log.FromContext(ctx)
+
+	// Don't apply results to a cold cache, or we write spurious transitions to state history.
+	switch st.readiness.Ready() {
+	case Ready:
+		// Cache is warm (or gating is disabled) — process normally.
+	case NotReady:
+		return nil, ErrNotReady
+	case TimedOut:
+		logger.Warn("Processing evaluation results before the state cache is ready; readiness grace period elapsed")
+	}
+
+	utcTick := evaluatedAt.UTC().Format(time.RFC3339Nano)
+	ctx, span := st.tracer.Start(ctx, "alert rule state calculation", trace.WithAttributes(
+		attribute.String("rule_uid", alertRule.UID),
+		attribute.Int64("org_id", alertRule.OrgID),
+		attribute.Int64("rule_version", alertRule.Version),
+		attribute.String("tick", utcTick),
+		attribute.Int("results", len(results))))
+	defer span.End()
+
+	// lazy evaluation of takeImage only once and only if it is requested.
+	var fn takeImageFn
+	{
+		var image *ngModels.Image
+		var imageTaken bool
+		fn = func(reason string) *ngModels.Image {
+			if imageTaken {
+				return image
+			}
+			logger.Debug("Taking image", "dashboard", alertRule.GetDashboardUID(), "panel", alertRule.GetPanelID(), "reason", reason)
+			img, err := takeImage(ctx, st.images, alertRule)
+			imageTaken = true
+			if err != nil {
+				logger.Warn("Failed to take an image",
+					"dashboard", alertRule.GetDashboardUID(),
+					"panel", alertRule.GetPanelID(), "reason", reason,
+					"error", err)
+				return nil
+			}
+			image = img
+			return image
+		}
+	}
+
+	logger.Debug("State manager processing evaluation results", "resultCount", len(results))
+	states := st.setNextStateForRule(ctx, alertRule, results, extraLabels, logger, fn, evaluatedAt)
+
+	missingSeriesStates, staleCount := st.processMissingSeriesStates(logger, evaluatedAt, alertRule, fn)
+	span.AddEvent("results processed", trace.WithAttributes(
+		attribute.Int("state_transitions", len(states)),
+		attribute.Int("stale_states", staleCount),
+	))
+
+	allChanges := StateTransitions(append(states, missingSeriesStates...))
+
+	// It's important that this is done *before* we sync the states to the persister. Otherwise, we will not persist
+	// the LastSentAt field to the store.
+	var statesToSend StateTransitions
+	if send != nil {
+		statesToSend = st.updateLastSentAt(allChanges, evaluatedAt)
+	}
+
+	st.persister.Sync(ctx, span, alertRule.GetKeyWithGroup(), allChanges)
+	if st.historian != nil {
+		st.historian.Record(ctx, history_model.NewRuleMeta(alertRule, logger), allChanges)
+	}
+
+	// Optional callback intended for sending the states to an alertmanager.
+	// Some uses ,such as backtesting or the testing api, do not send.
+	if send != nil {
+		send(ctx, statesToSend)
+	}
+
+	return allChanges, nil
+}
+
+// updateLastSentAt returns the subset StateTransitions that need sending and updates their LastSentAt field.
+// Note: This is not idempotent, running this twice can (and usually will) return different results.
+func (st *Manager) updateLastSentAt(states StateTransitions, evaluatedAt time.Time) StateTransitions {
+	var result StateTransitions
+	for _, t := range states {
+		if t.NeedsSending(evaluatedAt, st.ResendDelay, st.ResolvedRetention) {
+			t.LastSentAt = &evaluatedAt
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+func (st *Manager) setNextStateForRule(ctx context.Context, alertRule *ngModels.AlertRule, results eval.Results, extraLabels data.Labels, logger log.Logger, takeImageFn takeImageFn, now time.Time) []StateTransition {
+	if results.IsNoData() && (alertRule.NoDataState == ngModels.Alerting || alertRule.NoDataState == ngModels.OK || alertRule.NoDataState == ngModels.KeepLast) { // If it is no data, check the mapping and switch all results to the new state
+		// aggregate UID of datasources that returned NoData into one and provide as auxiliary info via annotationa. See: https://github.com/grafana/grafana/issues/88184
+		var refIds strings.Builder
+		var datasourceUIDs strings.Builder
+		// for deduplication of datasourceUIDs
+		dsUIDSet := make(map[string]bool)
+		for i, result := range results {
+			if refid, ok := result.Instance["ref_id"]; ok {
+				if i > 0 {
+					refIds.WriteString(",")
+				}
+				refIds.WriteString(refid)
+			}
+			if dsUID, ok := result.Instance["datasource_uid"]; ok {
+				if !dsUIDSet[dsUID] {
+					if i > 0 {
+						refIds.WriteString(",")
+					}
+					datasourceUIDs.WriteString(dsUID)
+					dsUIDSet[dsUID] = true
+				}
+			}
+		}
+		annotations := map[string]string{
+			"datasource_uid": datasourceUIDs.String(),
+			"ref_id":         refIds.String(),
+		}
+		result := eval.Result{
+			Instance:    data.Labels{},
+			State:       eval.NoData,
+			EvaluatedAt: now,
+		}
+		if len(results) > 0 {
+			result = results[0]
+		}
+		transitions := st.setNextStateForAll(alertRule, result, logger, annotations, takeImageFn)
+		if len(transitions) > 0 {
+			return transitions // if there are no current states for the rule. Create ones for each result
+		}
+	}
+	if results.IsError() && (alertRule.ExecErrState == ngModels.AlertingErrState || alertRule.ExecErrState == ngModels.OkErrState || alertRule.ExecErrState == ngModels.KeepLastErrState) {
+		// TODO squash all errors into one, and provide as annotation
+		transitions := st.setNextStateForAll(alertRule, results[0], logger, nil, takeImageFn)
+		if len(transitions) > 0 {
+			return transitions // if there are no current states for the rule. Create ones for each result
+		}
+	}
+	transitions := make([]StateTransition, 0, len(results))
 	for _, result := range results {
-		s := st.setNextState(ctx, alertRule, result)
-		states = append(states, s)
-		processedResults[s.CacheId] = s
+		newState := newState(ctx, logger, alertRule, result, extraLabels, st.externalURL, st.maxLabelValueSize, st.metrics)
+		if curState := st.cache.get(alertRule.OrgID, alertRule.UID, newState.CacheID); curState != nil {
+			patch(newState, curState, result)
+		}
+		start := st.clock.Now()
+		s := newState.transition(alertRule, result, nil, logger, takeImageFn, st.ignorePendingForNoDataAndError)
+		if st.metrics != nil {
+			st.metrics.StateUpdateDuration.Observe(st.clock.Now().Sub(start).Seconds())
+		}
+		st.cache.set(newState) // replace the existing state with the new one
+		transitions = append(transitions, s)
 	}
-	st.staleResultsHandler(alertRule, processedResults)
-	return states
+	return transitions
 }
 
-// Set the current state based on evaluation results
-func (st *Manager) setNextState(ctx context.Context, alertRule *ngModels.AlertRule, result eval.Result) *State {
-	currentState := st.getOrCreate(ctx, alertRule, result)
-
-	currentState.LastEvaluationTime = result.EvaluatedAt
-	currentState.EvaluationDuration = result.EvaluationDuration
-	currentState.Results = append(currentState.Results, Evaluation{
-		EvaluationTime:   result.EvaluatedAt,
-		EvaluationState:  result.State,
-		EvaluationString: result.EvaluationString,
-		Values:           NewEvaluationValues(result.Values),
-	})
-	currentState.TrimResults(alertRule)
-	oldState := currentState.State
-
-	st.log.Debug("setting alert state", "uid", alertRule.UID)
-	switch result.State {
-	case eval.Normal:
-		currentState.resultNormal(alertRule, result)
-	case eval.Alerting:
-		currentState.resultAlerting(alertRule, result)
-	case eval.Error:
-		currentState.resultError(alertRule, result)
-	case eval.NoData:
-		currentState.resultNoData(alertRule, result)
-	case eval.Pending: // we do not emit results with this state
+func (st *Manager) setNextStateForAll(alertRule *ngModels.AlertRule, result eval.Result, logger log.Logger, extraAnnotations data.Labels, takeImageFn takeImageFn) []StateTransition {
+	currentStates := st.cache.getStatesForRuleUID(alertRule.OrgID, alertRule.UID)
+	transitions := make([]StateTransition, 0, len(currentStates))
+	updated := ruleStates{
+		states: make(map[data.Fingerprint]*State, len(currentStates)),
 	}
-
-	// Set Resolved property so the scheduler knows to send a postable alert
-	// to Alertmanager.
-	currentState.Resolved = oldState == eval.Alerting && currentState.State == eval.Normal
-
-	st.set(currentState)
-	if oldState != currentState.State {
-		go st.createAlertAnnotation(ctx, currentState.State, alertRule, result, oldState)
+	for _, currentState := range currentStates {
+		start := st.clock.Now()
+		newState := currentState.Copy()
+		t := newState.transition(alertRule, result, extraAnnotations, logger, takeImageFn, st.ignorePendingForNoDataAndError)
+		if st.metrics != nil {
+			st.metrics.StateUpdateDuration.Observe(st.clock.Now().Sub(start).Seconds())
+		}
+		updated.states[newState.CacheID] = newState
+		transitions = append(transitions, t)
 	}
-	return currentState
+	st.cache.setRuleStates(alertRule.GetKey(), updated)
+	return transitions
 }
 
-func (st *Manager) GetAll(orgID int64) []*State {
-	return st.cache.getAll(orgID)
+func (st *Manager) GetAll(_ context.Context, orgID int64) []*State {
+	allStates := st.cache.getAll(orgID)
+	return allStates
 }
 
-func (st *Manager) GetStatesForRuleUID(orgID int64, alertRuleUID string) []*State {
+func (st *Manager) GetStatesForRuleUID(_ context.Context, orgID int64, alertRuleUID string) []*State {
 	return st.cache.getStatesForRuleUID(orgID, alertRuleUID)
 }
 
-func (st *Manager) recordMetrics() {
-	// TODO: parameterize?
-	// Setting to a reasonable default scrape interval for Prometheus.
-	dur := time.Duration(15) * time.Second
-	ticker := time.NewTicker(dur)
-	for {
-		select {
-		case <-ticker.C:
-			st.log.Debug("recording state cache metrics", "now", time.Now())
-			st.cache.recordMetrics()
-		case <-st.quit:
-			st.log.Debug("stopping state cache metrics recording", "now", time.Now())
-			ticker.Stop()
-			return
-		}
-	}
+func (st *Manager) GetStatusForRuleUID(ctx context.Context, orgID int64, alertRuleUID string) ngModels.RuleStatus {
+	states := st.GetStatesForRuleUID(ctx, orgID, alertRuleUID)
+	return StatesToRuleStatus(states)
 }
 
 func (st *Manager) Put(states []*State) {
 	for _, s := range states {
-		st.set(s)
+		st.cache.set(s)
 	}
 }
 
-func translateInstanceState(state ngModels.InstanceStateType) eval.State {
-	switch {
-	case state == ngModels.InstanceStateFiring:
-		return eval.Alerting
-	case state == ngModels.InstanceStateNormal:
-		return eval.Normal
-	default:
-		return eval.Error
-	}
-}
+// processMissingSeriesStates finds cached states missing from the current evaluation,
+// resolves any that are stale, and returns them to be sent to the Alertmanager if needed.
+func (st *Manager) processMissingSeriesStates(logger log.Logger, evaluatedAt time.Time, alertRule *ngModels.AlertRule, takeImageFn takeImageFn) ([]StateTransition, int) {
+	missingTransitions := []StateTransition{}
+	staleStates := map[data.Fingerprint]struct{}{}
 
-func (st *Manager) createAlertAnnotation(ctx context.Context, new eval.State, alertRule *ngModels.AlertRule, result eval.Result, oldState eval.State) {
-	st.log.Debug("alert state changed creating annotation", "alertRuleUID", alertRule.UID, "newState", new.String(), "oldState", oldState.String())
-
-	annotationText := fmt.Sprintf("%s {%s} - %s", alertRule.Title, result.Instance.String(), new.String())
-
-	item := &annotations.Item{
-		AlertId:   alertRule.ID,
-		OrgId:     alertRule.OrgID,
-		PrevState: oldState.String(),
-		NewState:  new.String(),
-		Text:      annotationText,
-		Epoch:     result.EvaluatedAt.UnixNano() / int64(time.Millisecond),
-	}
-
-	dashUid, ok := alertRule.Annotations[ngModels.DashboardUIDAnnotation]
-	if ok {
-		panelUid := alertRule.Annotations[ngModels.PanelIDAnnotation]
-
-		panelId, err := strconv.ParseInt(panelUid, 10, 64)
-		if err != nil {
-			st.log.Error("error parsing panelUID for alert annotation", "panelUID", panelUid, "alertRuleUID", alertRule.UID, "error", err.Error())
-			return
+	for _, s := range st.cache.getStatesForRuleUID(alertRule.OrgID, alertRule.UID) {
+		// Skip states that were just evaluated. They're not missing.
+		if s.LastEvaluationTime.Equal(evaluatedAt) {
+			continue
 		}
 
-		query := &models.GetDashboardQuery{
-			Uid:   dashUid,
-			OrgId: alertRule.OrgID,
+		// After this point, we know that the state is not in the current evaluation.
+		// Check if it's stale, and if so, resolve it.
+		missingEvalsToResolve := alertRule.GetMissingSeriesEvalsToResolve()
+
+		// 'Error' and 'NoData' states (including Pending with Error/NoData reason) should be resolved
+		// after 1 missing evaluation instead of waiting for the configured missing series evaluations.
+		// This ensures these transient error conditions are cleaned up promptly when the series disappears.
+		if s.State == eval.Error || s.State == eval.NoData ||
+			(s.State == eval.Pending && (s.StateReason == ngModels.StateReasonError || s.StateReason == ngModels.StateReasonNoData)) {
+			missingEvalsToResolve = 1
 		}
 
-		err = sqlstore.GetDashboard(ctx, query)
-		if err != nil {
-			st.log.Error("error getting dashboard for alert annotation", "dashboardUID", dashUid, "alertRuleUID", alertRule.UID, "error", err.Error())
-			return
-		}
+		oldState, oldReason := s.State, s.StateReason
+		if stateIsStale(evaluatedAt, s.LastEvaluationTime, alertRule.IntervalSeconds, missingEvalsToResolve) {
+			logger.Info("Detected stale state entry", "cacheID", s.CacheID, "state", s.State, "reason", s.StateReason)
 
-		item.PanelId = panelId
-		item.DashboardId = query.Result.Id
-	}
+			s.State = eval.Normal
+			s.StateReason = ngModels.StateReasonMissingSeries
+			s.LastEvaluationTime = evaluatedAt
+			s.EndsAt = evaluatedAt
 
-	annotationRepo := annotations.GetRepository()
-	if err := annotationRepo.Save(item); err != nil {
-		st.log.Error("error saving alert annotation", "alertRuleUID", alertRule.UID, "error", err.Error())
-		return
-	}
-}
-
-func (st *Manager) staleResultsHandler(alertRule *ngModels.AlertRule, states map[string]*State) {
-	allStates := st.GetStatesForRuleUID(alertRule.OrgID, alertRule.UID)
-	for _, s := range allStates {
-		_, ok := states[s.CacheId]
-		if !ok && isItStale(s.LastEvaluationTime, alertRule.IntervalSeconds) {
-			st.log.Debug("removing stale state entry", "orgID", s.OrgID, "alertRuleUID", s.AlertRuleUID, "cacheID", s.CacheId)
-			st.cache.deleteEntry(s.OrgID, s.AlertRuleUID, s.CacheId)
-			ilbs := ngModels.InstanceLabels(s.Labels)
-			_, labelsHash, err := ilbs.StringAndHash()
-			if err != nil {
-				st.log.Error("unable to get labelsHash", "error", err.Error(), "orgID", s.OrgID, "alertRuleUID", s.AlertRuleUID)
+			// By setting 'ResolvedAt' we trigger the scheduler to send a 'resolved' alert to the Alertmanager.
+			if s.ShouldBeResolved(oldState) {
+				s.ResolvedAt = &evaluatedAt
+				s.Image = takeImageFn("stale state") // Potentially nil
 			}
 
-			if err = st.instanceStore.DeleteAlertInstance(s.OrgID, s.AlertRuleUID, labelsHash); err != nil {
-				st.log.Error("unable to delete stale instance from database", "error", err.Error(), "orgID", s.OrgID, "alertRuleUID", s.AlertRuleUID, "cacheID", s.CacheId)
-			}
+			staleStates[s.CacheID] = struct{}{}
+		} else if s.State == eval.Alerting {
+			// Update 'EndsAt' so the Alertmanager won't auto-resolve this alert.
+			s.Maintain(alertRule.IntervalSeconds, evaluatedAt)
 		}
+
+		missingTransitions = append(missingTransitions, StateTransition{
+			State:               s,
+			PreviousState:       oldState,
+			PreviousStateReason: oldReason,
+		})
 	}
+
+	// deleteRuleStates holds a lock on the cache, thus the pre-computed map of states.
+	st.cache.deleteRuleStates(alertRule.GetKey(), func(s *State) bool {
+		_, ok := staleStates[s.CacheID]
+		return ok
+	})
+
+	return missingTransitions, len(staleStates)
 }
 
-func isItStale(lastEval time.Time, intervalSeconds int64) bool {
-	return lastEval.Add(2 * time.Duration(intervalSeconds) * time.Second).Before(time.Now())
+// stateIsStale determines whether the evaluation state is considered stale.
+// A state is considered stale if the data has been missing for at least missingSeriesEvalsToResolve evaluation intervals.
+func stateIsStale(evaluatedAt time.Time, lastEval time.Time, intervalSeconds int64, missingSeriesEvalsToResolve int64) bool {
+	// If the last evaluation time equals the current evaluation time, the state is not stale.
+	if evaluatedAt.Equal(lastEval) {
+		return false
+	}
+
+	resolveIfMissingDuration := time.Duration(missingSeriesEvalsToResolve*intervalSeconds) * time.Second
+
+	// timeSinceLastEval >= resolveIfMissingDuration
+	return evaluatedAt.Sub(lastEval) >= resolveIfMissingDuration
+}
+
+func StatesToRuleStatus(states []*State) ngModels.RuleStatus {
+	status := ngModels.RuleStatus{
+		Health:              "ok",
+		LastError:           nil,
+		EvaluationTimestamp: time.Time{},
+	}
+	for _, state := range states {
+		if state.LastEvaluationTime.After(status.EvaluationTimestamp) {
+			status.EvaluationTimestamp = state.LastEvaluationTime
+			status.EvaluationDuration = state.EvaluationDuration
+		}
+
+		switch state.State {
+		case eval.Normal:
+		case eval.Pending:
+		case eval.Alerting:
+		case eval.Recovering:
+		case eval.Error:
+			status.Health = "error"
+		case eval.NoData:
+			status.Health = "nodata"
+		}
+
+		if state.Error != nil {
+			status.LastError = state.Error
+			status.Health = "error"
+		}
+	}
+	return status
 }

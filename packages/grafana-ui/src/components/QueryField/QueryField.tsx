@@ -1,26 +1,36 @@
+import { css, cx } from '@emotion/css';
+import classnames from 'clsx';
 import { debounce } from 'lodash';
-import React, { Context } from 'react';
-
-import { Value, Editor as CoreEditor } from 'slate';
-import { Editor, Plugin } from '@grafana/slate-react';
+import { PureComponent } from 'react';
+import * as React from 'react';
+import { type Value } from 'slate';
 import Plain from 'slate-plain-serializer';
-import classnames from 'classnames';
+import { Editor, type EventHook, type Plugin } from 'slate-react';
 
-import {
-  ClearPlugin,
-  NewlinePlugin,
-  SelectionShortcutsPlugin,
-  IndentationPlugin,
-  ClipboardPlugin,
-  RunnerPlugin,
-  SuggestionsPlugin,
-} from '../../slate-plugins';
-
-import { makeValue, SCHEMA, CompletionItemGroup, TypeaheadOutput, TypeaheadInput, SuggestionsState } from '../..';
+import { type GrafanaTheme2 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 
-export interface QueryFieldProps {
+import { ClearPlugin } from '../../slate-plugins/clear';
+import { ClipboardPlugin } from '../../slate-plugins/clipboard';
+import { IndentationPlugin } from '../../slate-plugins/indentation';
+import { NewlinePlugin } from '../../slate-plugins/newline';
+import { RunnerPlugin } from '../../slate-plugins/runner';
+import { SelectionShortcutsPlugin } from '../../slate-plugins/selection_shortcuts';
+import { SuggestionsPlugin } from '../../slate-plugins/suggestions';
+import { withTheme2 } from '../../themes/ThemeContext';
+import { getFocusStyles } from '../../themes/mixins';
+import {
+  type CompletionItemGroup,
+  type SuggestionsState,
+  type TypeaheadInput,
+  type TypeaheadOutput,
+} from '../../types/completion';
+import { type Themeable2 } from '../../types/theme';
+import { makeValue, SCHEMA } from '../../utils/slate';
+
+export interface QueryFieldProps extends Themeable2 {
   additionalPlugins?: Plugin[];
+  ['aria-labelledby']?: string;
   cleanText?: (text: string) => string;
   disabled?: boolean;
   // We have both value and local state. This is usually an antipattern but we need to keep local state
@@ -31,13 +41,14 @@ export interface QueryFieldProps {
   onBlur?: () => void;
   onChange?: (value: string) => void;
   onRichValueChange?: (value: Value) => void;
-  onClick?: (event: Event, editor: CoreEditor, next: () => any) => any;
+  onClick?: EventHook<React.MouseEvent<Element, MouseEvent>>;
   onTypeahead?: (typeahead: TypeaheadInput) => Promise<TypeaheadOutput>;
   onWillApplySuggestion?: (suggestion: string, state: SuggestionsState) => string;
   placeholder?: string;
   portalOrigin: string;
   syntax?: string;
   syntaxLoaded?: boolean;
+  theme: GrafanaTheme2;
 }
 
 export interface QueryFieldState {
@@ -48,21 +59,21 @@ export interface QueryFieldState {
   value: Value;
 }
 
-/**
- * Renders an editor field.
- * Pass initial value as initialQuery and listen to changes in props.onValueChanged.
- * This component can only process strings. Internally it uses Slate Value.
- * Implement props.onTypeahead to use suggestions, see PromQueryField.tsx as an example.
- */
-export class QueryField extends React.PureComponent<QueryFieldProps, QueryFieldState> {
-  plugins: Plugin[];
+export class UnThemedQueryField extends PureComponent<QueryFieldProps, QueryFieldState> {
+  plugins: Array<Plugin<Editor>>;
   runOnChangeDebounced: Function;
   lastExecutedValue: Value | null = null;
   mounted = false;
   editor: Editor | null = null;
 
-  constructor(props: QueryFieldProps, context: Context<any>) {
-    super(props, context);
+  // By default QueryField calls onChange if onBlur is not defined, this will trigger a rerender
+  // And slate will claim the focus, making it impossible to leave the field.
+  static defaultProps = {
+    onBlur: () => {},
+  };
+
+  constructor(props: QueryFieldProps) {
+    super(props);
 
     this.runOnChangeDebounced = debounce(this.runOnChange, 500);
 
@@ -101,7 +112,6 @@ export class QueryField extends React.PureComponent<QueryFieldProps, QueryFieldS
 
   componentDidUpdate(prevProps: QueryFieldProps, prevState: QueryFieldState) {
     const { query, syntax, syntaxLoaded } = this.props;
-
     if (!prevProps.syntaxLoaded && syntaxLoaded && this.editor) {
       // Need a bogus edit to re-render the editor after syntax has fully loaded
       const editor = this.editor.insertText(' ').deleteBackward(1);
@@ -173,14 +183,14 @@ export class QueryField extends React.PureComponent<QueryFieldProps, QueryFieldS
   /**
    * We need to handle blur events here mainly because of dashboard panels which expect to have query executed on blur.
    */
-  handleBlur = (event: Event, editor: CoreEditor, next: Function) => {
+  handleBlur = (_: React.FocusEvent | undefined, editor: Editor, next: Function) => {
     const { onBlur } = this.props;
 
     if (onBlur) {
       onBlur();
     } else {
       // Run query by default on blur
-      const previousValue = this.lastExecutedValue ? Plain.serialize(this.lastExecutedValue) : null;
+      const previousValue = this.lastExecutedValue ? Plain.serialize(this.lastExecutedValue) : '';
       const currentValue = Plain.serialize(editor.value);
 
       if (previousValue !== currentValue) {
@@ -197,22 +207,25 @@ export class QueryField extends React.PureComponent<QueryFieldProps, QueryFieldS
   }
 
   render() {
-    const { disabled } = this.props;
+    const { disabled, theme, ['aria-labelledby']: ariaLabelledby } = this.props;
     const wrapperClassName = classnames('slate-query-field__wrapper', {
       'slate-query-field__wrapper--disabled': disabled,
     });
+    const styles = getStyles(theme);
 
     return (
-      <div className={wrapperClassName}>
-        <div className="slate-query-field" aria-label={selectors.components.QueryField.container}>
+      <div className={cx(wrapperClassName, styles.wrapper)}>
+        <div className="slate-query-field" data-testid={selectors.components.QueryField.container}>
           <Editor
-            ref={(editor) => (this.editor = editor!)}
+            ref={(editor) => {
+              this.editor = editor;
+            }}
+            aria-labelledby={ariaLabelledby}
             schema={SCHEMA}
             autoCorrect={false}
             readOnly={this.props.disabled}
             onBlur={this.handleBlur}
             onClick={this.props.onClick}
-            // onKeyDown={this.onKeyDown}
             onChange={(change: { value: Value }) => {
               this.onChange(change.value, false);
             }}
@@ -227,4 +240,23 @@ export class QueryField extends React.PureComponent<QueryFieldProps, QueryFieldS
   }
 }
 
-export default QueryField;
+/**
+ * Renders an editor field.
+ * Pass initial value as initialQuery and listen to changes in props.onValueChanged.
+ * This component can only process strings. Internally it uses Slate Value.
+ * Implement props.onTypeahead to use suggestions.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/inputs-deprecated-queryfield--docs
+ *
+ * @deprecated
+ */
+export const QueryField = withTheme2(UnThemedQueryField);
+
+const getStyles = (theme: GrafanaTheme2) => {
+  const focusStyles = getFocusStyles(theme);
+  return {
+    wrapper: css({
+      '&:focus-within': focusStyles,
+    }),
+  };
+};

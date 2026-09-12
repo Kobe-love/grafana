@@ -1,33 +1,6 @@
 import { omit } from 'lodash';
-import { FieldConfigSource, PanelPlugin } from '@grafana/data';
-import { PanelModel } from '../../state/PanelModel';
-import { DisplayMode } from './types';
-import { GRID_CELL_HEIGHT, GRID_CELL_VMARGIN, GRID_COLUMN_COUNT } from 'app/core/constants';
 
-export function calculatePanelSize(mode: DisplayMode, width: number, height: number, panel: PanelModel) {
-  if (mode === DisplayMode.Fill) {
-    return { width, height };
-  }
-  const panelPadding = 8 * 6;
-  const sidebarWidth = 60;
-
-  const colWidth = (window.innerWidth - sidebarWidth - GRID_CELL_VMARGIN * 4) / GRID_COLUMN_COUNT;
-  const pWidth = colWidth * panel.gridPos.w;
-  const pHeight = GRID_CELL_HEIGHT * panel.gridPos.h + panelPadding;
-  const scale = Math.min(width / pWidth, height / pHeight);
-
-  if (pWidth <= width && pHeight <= height) {
-    return {
-      width: pWidth,
-      height: pHeight,
-    };
-  }
-
-  return {
-    width: pWidth * scale,
-    height: pHeight * scale,
-  };
-}
+import { type FieldConfigSource, type PanelPlugin } from '@grafana/data';
 
 export function supportsDataQuery(plugin: PanelPlugin | undefined | null): boolean {
   return plugin?.meta.skipDataQuery === false;
@@ -36,7 +9,7 @@ export function supportsDataQuery(plugin: PanelPlugin | undefined | null): boole
 export const updateDefaultFieldConfigValue = (
   config: FieldConfigSource,
   name: string,
-  value: any,
+  value: unknown,
   isCustom?: boolean
 ) => {
   let defaults = { ...config.defaults };
@@ -71,7 +44,7 @@ export function setOptionImmutably<T extends object>(options: T, path: string | 
   if (key.endsWith(']')) {
     const idx = key.lastIndexOf('[');
     const index = +key.substring(idx + 1, key.length - 1);
-    const propKey = key.substr(0, idx);
+    const propKey = key.substring(0, idx);
     let current = (options as Record<string, any>)[propKey];
     const arr = Array.isArray(current) ? [...current] : [];
     if (splat.length) {

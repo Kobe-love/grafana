@@ -1,72 +1,65 @@
-import React, { PureComponent } from 'react';
-import { Map } from 'ol';
-import { transform } from 'ol/proj';
-import { stylesFactory } from '@grafana/ui';
-import { GrafanaTheme } from '@grafana/data';
 import { css } from '@emotion/css';
-import { config } from 'app/core/config';
-import tinycolor from 'tinycolor2';
-import { Coordinate } from 'ol/coordinate';
+import type Map from 'ol/Map';
+import { type Coordinate } from 'ol/coordinate';
+import { transform } from 'ol/proj';
+import { memo, useState, useEffect } from 'react';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { Trans } from '@grafana/i18n';
+import { useStyles2 } from '@grafana/ui';
 
 interface Props {
   map: Map;
 }
 
-interface State {
-  zoom?: number;
-  center: Coordinate;
-}
+export const DebugOverlay = memo(function DebugOverlay({ map }: Props) {
+  const style = useStyles2(getStyles);
+  const [zoom, setZoom] = useState<number | undefined>(0);
+  const [center, setCenter] = useState<Coordinate>([0, 0]);
 
-export class DebugOverlay extends PureComponent<Props, State> {
-  style = getStyles(config.theme);
+  useEffect(() => {
+    const updateViewState = () => {
+      const view = map.getView();
+      setZoom(view.getZoom());
+      setCenter(transform(view.getCenter()!, view.getProjection(), 'EPSG:4326'));
+    };
 
-  constructor(props: Props) {
-    super(props);
-    this.state = { zoom: 0, center: [0, 0] };
-  }
+    map.on('moveend', updateViewState);
+    updateViewState();
 
-  updateViewState = () => {
-    const view = this.props.map.getView();
-    this.setState({
-      zoom: view.getZoom(),
-      center: transform(view.getCenter()!, view.getProjection(), 'EPSG:4326'),
-    });
-  };
+    return () => map.un('moveend', updateViewState);
+  }, [map]);
 
-  componentDidMount() {
-    this.props.map.on('moveend', this.updateViewState);
-    this.updateViewState();
-  }
+  return (
+    <div className={style.infoWrap} data-testid={selectors.components.DebugOverlay.wrapper}>
+      <table>
+        <tbody>
+          <tr>
+            <th>
+              <Trans i18nKey="geomap.debug-overlay.zoom">Zoom:</Trans>
+            </th>
+            <td>{zoom?.toFixed(1)}</td>
+          </tr>
+          <tr>
+            <th>
+              <Trans i18nKey="geomap.debug-overlay.center">Center:</Trans>&nbsp;
+            </th>
+            <td>
+              {center[0].toFixed(5)}, {center[1].toFixed(5)}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+});
 
-  render() {
-    const { zoom, center } = this.state;
-
-    return (
-      <div className={this.style.infoWrap}>
-        <table>
-          <tbody>
-            <tr>
-              <th>Zoom:</th>
-              <td>{zoom?.toFixed(1)}</td>
-            </tr>
-            <tr>
-              <th>Center:&nbsp;</th>
-              <td>
-                {center[0].toFixed(5)}, {center[1].toFixed(5)}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-}
-
-const getStyles = stylesFactory((theme: GrafanaTheme) => ({
-  infoWrap: css`
-    color: ${theme.colors.text};
-    background: ${tinycolor(theme.colors.panelBg).setAlpha(0.7).toString()};
-    border-radius: 2px;
-    padding: 8px;
-  `,
-}));
+const getStyles = (theme: GrafanaTheme2) => ({
+  infoWrap: css({
+    color: theme.colors.text.primary,
+    background: `rgb(from ${theme.components.panel.background} r g b / 0.7)`,
+    borderRadius: theme.shape.radius.default,
+    padding: theme.spacing(1),
+  }),
+});

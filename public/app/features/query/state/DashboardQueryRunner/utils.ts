@@ -1,12 +1,14 @@
 import { cloneDeep } from 'lodash';
-import { Observable, of } from 'rxjs';
-import { AnnotationEvent, AnnotationQuery, DataFrame, DataFrameView, DataSourceApi } from '@grafana/data';
-import { config, toDataQueryError } from '@grafana/runtime';
+import { type Observable, of } from 'rxjs';
 
+import { type AnnotationEvent, type AnnotationQuery, type DataSourceApi } from '@grafana/data';
+import { config, toDataQueryError } from '@grafana/runtime';
 import { dispatch } from 'app/store/store';
+
 import { createErrorNotification } from '../../../../core/copy/appNotification';
 import { notifyApp } from '../../../../core/reducers/appNotification';
-import { DashboardQueryRunnerWorkerResult } from './types';
+
+import { type DashboardQueryRunnerWorkerResult } from './types';
 
 export function handleAnnotationQueryRunnerError(err: any): Observable<AnnotationEvent[]> {
   if (err.cancelled) {
@@ -42,8 +44,31 @@ function notifyWithError(title: string, err: any) {
 }
 
 export function getAnnotationsByPanelId(annotations: AnnotationEvent[], panelId?: number) {
+  if (panelId == null) {
+    return annotations;
+  }
+
   return annotations.filter((item) => {
-    if (panelId !== undefined && item.panelId && item.source?.type === 'dashboard') {
+    let source: AnnotationQuery;
+    source = item.source;
+    if (!source) {
+      return true; // should not happen
+    }
+
+    // generic panel filtering
+    if (source.filter) {
+      const includes = (source.filter.ids ?? []).includes(panelId);
+      if (source.filter.exclude) {
+        if (includes) {
+          return false;
+        }
+      } else if (!includes) {
+        return false;
+      }
+    }
+
+    // this is valid for the main 'grafana' datasource
+    if (item.panelId && item.source.type === 'dashboard') {
       return item.panelId === panelId;
     }
     return true;
@@ -87,21 +112,4 @@ export function translateQueryResult(annotation: AnnotationQuery, results: Annot
   }
 
   return results;
-}
-
-export function annotationsFromDataFrames(data?: DataFrame[]): AnnotationEvent[] {
-  if (!data || !data.length) {
-    return [];
-  }
-
-  const annotations: AnnotationEvent[] = [];
-  for (const frame of data) {
-    const view = new DataFrameView<AnnotationEvent>(frame);
-    for (let index = 0; index < frame.length; index++) {
-      const annotation = cloneDeep(view.get(index));
-      annotations.push(annotation);
-    }
-  }
-
-  return annotations;
 }

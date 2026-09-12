@@ -1,40 +1,28 @@
-import React, { FC, useMemo, useState, useEffect } from 'react';
-import { StandardEditorProps, SelectableValue, GrafanaTheme2 } from '@grafana/data';
-import { Alert, Select, stylesFactory, useTheme2 } from '@grafana/ui';
-import { COUNTRIES_GAZETTEER_PATH, Gazetteer, getGazetteer } from '../gazetteer/gazetteer';
 import { css } from '@emotion/css';
+import { useMemo, useState, useEffect } from 'react';
 
-const defaultPaths: Array<SelectableValue<string>> = [
-  {
-    label: 'Countries',
-    description: 'Lookup countries by name, two letter code, or three letter code',
-    value: COUNTRIES_GAZETTEER_PATH,
-  },
-  {
-    label: 'USA States',
-    description: 'Lookup states by name or 2 ',
-    value: 'public/gazetteer/usa-states.json',
-  },
-  {
-    label: 'Airports',
-    description: 'Lookup airports by id or code',
-    value: 'public/gazetteer/airports.geojson',
-  },
-];
+import { type StandardEditorProps, type SelectableValue, type GrafanaTheme2 } from '@grafana/data';
+import { Alert, Select, useStyles2 } from '@grafana/ui';
+
+import { GAZETTEER_OPTIONS, type Gazetteer, getGazetteer } from '../gazetteer/gazetteer';
+
+const defaultPaths: Array<SelectableValue<string>> = Object.values(GAZETTEER_OPTIONS).map(
+  ({ label, description, path }) => ({ label, description, value: path })
+);
 
 export interface GazetteerPathEditorConfigSettings {
   options?: Array<SelectableValue<string>>;
 }
 
-export const GazetteerPathEditor: FC<StandardEditorProps<string, any, any, GazetteerPathEditorConfigSettings>> = ({
+export const GazetteerPathEditor = ({
   value,
   onChange,
   context,
   item,
-}) => {
-  const styles = getStyles(useTheme2());
+}: StandardEditorProps<string, GazetteerPathEditorConfigSettings>) => {
+  const styles = useStyles2(getStyles);
   const [gaz, setGaz] = useState<Gazetteer>();
-  const settings = item.settings as any;
+  const settings = item.settings;
 
   useEffect(() => {
     async function fetchData() {
@@ -60,7 +48,6 @@ export const GazetteerPathEditor: FC<StandardEditorProps<string, any, any, Gazet
   return (
     <>
       <Select
-        menuShouldPortal
         value={current}
         options={options}
         onChange={(v) => onChange(v.value)}
@@ -85,17 +72,15 @@ export const GazetteerPathEditor: FC<StandardEditorProps<string, any, any, Gazet
   );
 };
 
-const getStyles = stylesFactory((theme: GrafanaTheme2) => {
-  return {
-    keys: css`
-      margin-top: 4px;
-      text-overflow: ellipsis;
-      overflow: hidden;
-      white-space: nowrap;
+const getStyles = (theme: GrafanaTheme2) => ({
+  keys: css({
+    marginTop: theme.spacing(0.5),
+    textOverflow: 'ellipsis',
+    overflow: 'hidden',
+    whiteSpace: 'nowrap',
 
-      > span {
-        margin-left: 4px;
-      }
-    `,
-  };
+    '> span': {
+      marginLeft: theme.spacing(0.5),
+    },
+  }),
 });

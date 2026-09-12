@@ -1,7 +1,10 @@
 package dtos
 
 type NewApiKeyResult struct {
-	ID   int64  `json:"id"`
+	// example: 1
+	ID int64 `json:"id"`
+	// example: grafana
 	Name string `json:"name"`
-	Key  string `json:"key"`
+	// example: glsa_iNValIdinValiDinvalidinvalidinva_5b582697
+	Key string `json:"key"`
 }

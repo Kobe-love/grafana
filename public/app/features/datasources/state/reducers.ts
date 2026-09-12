@@ -1,9 +1,13 @@
-import { AnyAction, createAction } from '@reduxjs/toolkit';
-import { DataSourcePluginMeta, DataSourceSettings, LayoutMode, LayoutModes } from '@grafana/data';
+import { type AnyAction, createAction } from '@reduxjs/toolkit';
 
-import { DataSourcesState, DataSourceSettingsState, TestingStatus } from 'app/types';
-import { DataSourceTypesLoadedPayload } from './actions';
-import { GenericDataSourcePlugin } from '../settings/PluginSettings';
+import { type DataSourcePluginMeta, type DataSourceSettings, type LayoutMode, LayoutModes } from '@grafana/data';
+import { t } from '@grafana/i18n';
+import { type TestingStatus } from '@grafana/runtime';
+import { type DataSourcesState, type DataSourceSettingsState } from 'app/types/datasources';
+
+import { type GenericDataSourcePlugin } from '../types';
+
+import { type DataSourceTypesLoadedPayload } from './actions';
 
 export const initialState: DataSourcesState = {
   dataSources: [],
@@ -14,12 +18,14 @@ export const initialState: DataSourcesState = {
   searchQuery: '',
   dataSourcesCount: 0,
   dataSourceTypeSearchQuery: '',
-  hasFetched: false,
   isLoadingDataSources: false,
+  isLoadingDataSourcePlugins: false,
   dataSourceMeta: {} as DataSourcePluginMeta,
+  isSortAscending: true,
 };
 
 export const dataSourceLoaded = createAction<DataSourceSettings>('dataSources/dataSourceLoaded');
+export const dataSourcesLoad = createAction<void>('dataSources/dataSourcesLoad');
 export const dataSourcesLoaded = createAction<DataSourceSettings[]>('dataSources/dataSourcesLoaded');
 export const dataSourceMetaLoaded = createAction<DataSourcePluginMeta>('dataSources/dataSourceMetaLoaded');
 export const dataSourcePluginsLoad = createAction('dataSources/dataSourcePluginsLoad');
@@ -29,8 +35,11 @@ export const dataSourcePluginsLoaded = createAction<DataSourceTypesLoadedPayload
 export const setDataSourcesSearchQuery = createAction<string>('dataSources/setDataSourcesSearchQuery');
 export const setDataSourcesLayoutMode = createAction<LayoutMode>('dataSources/setDataSourcesLayoutMode');
 export const setDataSourceTypeSearchQuery = createAction<string>('dataSources/setDataSourceTypeSearchQuery');
-export const setDataSourceName = createAction<string>('dataSources/setDataSourceName');
-export const setIsDefault = createAction<boolean>('dataSources/setIsDefault');
+export const setNameAndVersion = createAction<{ name: string; version?: number }>('dataSources/setNameAndVersion');
+export const setDefaultAndVersion = createAction<{ isDefault: boolean; version?: number }>(
+  'dataSources/setDefaultAndVersion'
+);
+export const setIsSortAscending = createAction<boolean>('dataSources/setIsSortAscending');
 
 // Redux Toolkit uses ImmerJs as part of their solution to ensure that state objects are not mutated.
 // ImmerJs has an autoFreeze option that freezes objects from change which means this reducer can't be migrated to createSlice
@@ -38,10 +47,14 @@ export const setIsDefault = createAction<boolean>('dataSources/setIsDefault');
 // the frozen state.
 // https://github.com/reduxjs/redux-toolkit/issues/242
 export const dataSourcesReducer = (state: DataSourcesState = initialState, action: AnyAction): DataSourcesState => {
+  if (dataSourcesLoad.match(action)) {
+    return { ...state, isLoadingDataSources: true };
+  }
+
   if (dataSourcesLoaded.match(action)) {
     return {
       ...state,
-      hasFetched: true,
+      isLoadingDataSources: false,
       dataSources: action.payload,
       dataSourcesCount: action.payload.length,
     };
@@ -60,7 +73,7 @@ export const dataSourcesReducer = (state: DataSourcesState = initialState, actio
   }
 
   if (dataSourcePluginsLoad.match(action)) {
-    return { ...state, plugins: [], isLoadingDataSources: true };
+    return { ...state, plugins: [], isLoadingDataSourcePlugins: true };
   }
 
   if (dataSourcePluginsLoaded.match(action)) {
@@ -68,7 +81,7 @@ export const dataSourcesReducer = (state: DataSourcesState = initialState, actio
       ...state,
       plugins: action.payload.plugins,
       categories: action.payload.categories,
-      isLoadingDataSources: false,
+      isLoadingDataSourcePlugins: false,
     };
   }
 
@@ -80,14 +93,28 @@ export const dataSourcesReducer = (state: DataSourcesState = initialState, actio
     return { ...state, dataSourceMeta: action.payload };
   }
 
-  if (setDataSourceName.match(action)) {
-    return { ...state, dataSource: { ...state.dataSource, name: action.payload } };
-  }
-
-  if (setIsDefault.match(action)) {
+  if (setNameAndVersion.match(action)) {
     return {
       ...state,
-      dataSource: { ...state.dataSource, isDefault: action.payload },
+      dataSource: {
+        ...state.dataSource,
+        name: action.payload.name,
+        version: action.payload.version,
+      },
+    };
+  }
+
+  if (setDefaultAndVersion.match(action)) {
+    return {
+      ...state,
+      dataSource: { ...state.dataSource, isDefault: action.payload.isDefault, version: action.payload.version },
+    };
+  }
+
+  if (setIsSortAscending.match(action)) {
+    return {
+      ...state,
+      isSortAscending: action.payload,
     };
   }
 
@@ -129,7 +156,10 @@ export const dataSourceSettingsReducer = (
     return {
       ...state,
       testingStatus: {
-        message: 'Testing...',
+        message: t(
+          'datasources.data-source-settings-reducer.message.testing-could-couple-minutes',
+          'Testing... this could take up to a couple of minutes'
+        ),
         status: 'info',
       },
     };

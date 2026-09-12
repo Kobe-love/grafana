@@ -1,40 +1,23 @@
-import { TeamPermissionLevel } from './acl';
+import { type TeamDto as TeamDtoLegacy } from 'app/api/clients/legacy';
 
-export interface Team {
-  id: number;
+import { type Role } from './accessControl';
+
+export interface TeamDTO {
+  /**
+   * Email of the team.
+   */
+  email?: string;
+  /**
+   * Name of the team.
+   */
   name: string;
-  avatarUrl: string;
-  email: string;
-  memberCount: number;
-  permission: TeamPermissionLevel;
 }
 
-export interface TeamMember {
-  userId: number;
-  teamId: number;
-  avatarUrl: string;
-  email: string;
-  name: string;
-  login: string;
-  labels: string[];
-  permission: number;
-}
+export type Team = TeamDtoLegacy;
 
-export interface TeamGroup {
-  groupId: string;
-  teamId: number;
-}
-
-export interface TeamsState {
-  teams: Team[];
-  searchQuery: string;
-  searchPage: number;
-  hasFetched: boolean;
-}
-
-export interface TeamState {
-  team: Team;
-  members: TeamMember[];
-  groups: TeamGroup[];
-  searchMemberQuery: string;
+export interface TeamWithRoles extends Team {
+  /**
+   * RBAC roles assigned to the team.
+   */
+  roles?: Role[];
 }

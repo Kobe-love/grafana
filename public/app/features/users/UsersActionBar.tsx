@@ -1,77 +1,85 @@
-import React, { PureComponent } from 'react';
-import { connect } from 'react-redux';
-import { setUsersSearchQuery } from './state/reducers';
-import { getInviteesCount, getUsersSearchQuery } from './state/selectors';
-import { RadioButtonGroup, LinkButton, FilterInput } from '@grafana/ui';
-import { contextSrv } from 'app/core/core';
-import { AccessControlAction } from 'app/types';
+import type { JSX } from 'react';
+import { connect, type ConnectedProps } from 'react-redux';
 
-export interface Props {
-  searchQuery: string;
-  setUsersSearchQuery: typeof setUsersSearchQuery;
-  onShowInvites: () => void;
-  pendingInvitesCount: number;
-  canInvite: boolean;
+import { Trans, t } from '@grafana/i18n';
+import { reportInteraction } from '@grafana/runtime';
+import { RadioButtonGroup, LinkButton, FilterInput, InlineField } from '@grafana/ui';
+import { useUserListTabExtensions } from 'app/features/admin/useUserListTabExtensions';
+import { type StoreState } from 'app/types/store';
+
+import { selectTotal } from '../invites/state/selectors';
+
+import { UsersExternalButton } from './UsersExternalButton';
+import { changeSearchQuery } from './state/actions';
+import { getUsersSearchQuery } from './state/selectors';
+import { getCanInviteUsersToOrg } from './utils';
+
+interface OwnProps {
   showInvites: boolean;
-  externalUserMngLinkUrl: string;
-  externalUserMngLinkName: string;
+  onShowInvites: () => void;
 }
 
-export class UsersActionBar extends PureComponent<Props> {
-  render() {
-    const {
-      canInvite,
-      externalUserMngLinkName,
-      externalUserMngLinkUrl,
-      searchQuery,
-      pendingInvitesCount,
-      setUsersSearchQuery,
-      onShowInvites,
-      showInvites,
-    } = this.props;
-    const options = [
-      { label: 'Users', value: 'users' },
-      { label: `Pending Invites (${pendingInvitesCount})`, value: 'invites' },
-    ];
-    const canAddToOrg = contextSrv.hasAccess(AccessControlAction.UsersCreate, canInvite);
-
-    return (
-      <div className="page-action-bar">
-        <div className="gf-form gf-form--grow">
-          <FilterInput
-            value={searchQuery}
-            onChange={setUsersSearchQuery}
-            placeholder="Search user by login, email or name"
-          />
-        </div>
-        {pendingInvitesCount > 0 && (
-          <div style={{ marginLeft: '1rem' }}>
-            <RadioButtonGroup value={showInvites ? 'invites' : 'users'} options={options} onChange={onShowInvites} />
-          </div>
-        )}
-        {canAddToOrg && <LinkButton href="org/users/invite">Invite</LinkButton>}
-        {externalUserMngLinkUrl && (
-          <LinkButton href={externalUserMngLinkUrl} target="_blank" rel="noopener">
-            {externalUserMngLinkName}
-          </LinkButton>
-        )}
-      </div>
-    );
-  }
-}
-
-function mapStateToProps(state: any) {
+function mapStateToProps(state: StoreState) {
   return {
     searchQuery: getUsersSearchQuery(state.users),
-    pendingInvitesCount: getInviteesCount(state.users),
-    externalUserMngLinkName: state.users.externalUserMngLinkName,
-    externalUserMngLinkUrl: state.users.externalUserMngLinkUrl,
-    canInvite: state.users.canInvite,
+    pendingInvitesCount: selectTotal(state.invites),
   };
 }
 
 const mapDispatchToProps = {
-  setUsersSearchQuery,
+  changeSearchQuery,
 };
 
-export default connect(mapStateToProps, mapDispatchToProps)(UsersActionBar);
+const connector = connect(mapStateToProps, mapDispatchToProps);
+
+export type Props = ConnectedProps<typeof connector> & OwnProps;
+
+export const UsersActionBarUnconnected = ({
+  searchQuery,
+  pendingInvitesCount,
+  changeSearchQuery,
+  onShowInvites,
+  showInvites,
+}: Props): JSX.Element => {
+  const hasUserListExtension = useUserListTabExtensions().length > 0;
+
+  const options = [
+    { label: t('users.users-action-bar-unconnected.options.label.users', 'Users'), value: 'users' },
+    { label: `Pending Invites (${pendingInvitesCount})`, value: 'invites' },
+  ];
+
+  const onExternalUserMngClick = () => {
+    reportInteraction('users_admin_actions_clicked', {
+      category: 'org_users',
+      item: 'manage_users_external',
+    });
+  };
+
+  return (
+    <div className="page-action-bar" data-testid="users-action-bar">
+      <InlineField grow>
+        <FilterInput
+          value={searchQuery}
+          onChange={changeSearchQuery}
+          placeholder={t(
+            'users.users-action-bar-unconnected.placeholder-search-login-email',
+            'Search user by login, email or name'
+          )}
+        />
+      </InlineField>
+      {pendingInvitesCount > 0 && (
+        <div style={{ marginLeft: '1rem' }}>
+          <RadioButtonGroup value={showInvites ? 'invites' : 'users'} options={options} onChange={onShowInvites} />
+        </div>
+      )}
+      {getCanInviteUsersToOrg() && (
+        <LinkButton href="org/users/invite">
+          <Trans i18nKey="users.users-action-bar-unconnected.invite">Invite</Trans>
+        </LinkButton>
+      )}
+      {!hasUserListExtension && <UsersExternalButton onExternalUserMngClick={onExternalUserMngClick} />}
+    </div>
+  );
+};
+
+export const UsersActionBar = connector(UsersActionBarUnconnected);

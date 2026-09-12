@@ -1,25 +1,47 @@
 name: Run commands when issues are labeled or comments added
+
 on:
   issues:
     types: [labeled, unlabeled]
   issue_comment:
     types: [created]
 
+concurrency:
+  group: issue-commands-${{ github.event.issue.number }}
+
+permissions: {}
+
 jobs:
-  main:
-    runs-on: ubuntu-latest
+  config:
+    runs-on: ubuntu-arm64-small
+    outputs:
+      has-secrets: ${{ steps.check.outputs.has-secrets }}
     steps:
-      - name: Checkout Actions
-        uses: actions/checkout@v2
+      - name: "Check for secrets"
+        id: check
+        shell: bash
+        run: |
+          if [ "${{ github.repository }}" == "grafana/grafana" ]; then
+            echo "has-secrets=1" >> "$GITHUB_OUTPUT"
+          fi
+
+  main:
+    needs: config
+    if: needs.config.outputs.has-secrets
+    runs-on: ubuntu-arm64-small
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Get GitHub App token
+        id: get-github-app-token
+        uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
         with:
-          repository: "grafana/grafana-github-actions"
-          path: ./actions
-          ref: main
-      - name: Install Actions
-        run: npm install --production --prefix ./actions
-      - name: Run Commands
-        uses: ./actions/commands
+          github_app: grafana-pr-automation
+
+      - name: Run commands
+        uses: grafana/grafana-github-actions/commands@main
         with:
-          metricsWriteAPIKey: ${{secrets.GRAFANA_MISC_STATS_API_KEY}}
-          token: ${{secrets.GH_BOT_ACCESS_TOKEN}}
+          metricsWriteAPIKey: ""
+          token: ${{ steps.get-github-app-token.outputs.token }}
           configPath: commands

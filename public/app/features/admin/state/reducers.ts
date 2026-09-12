@@ -1,18 +1,18 @@
-import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
+
+import { type LdapState, type LdapConnectionInfo, type LdapError, type SyncInfo, type LdapUser } from 'app/types/ldap';
 import {
-  LdapConnectionInfo,
-  LdapError,
-  LdapState,
-  LdapUser,
-  SyncInfo,
-  UserAdminError,
-  UserAdminState,
-  UserDTO,
-  UserOrg,
-  UserSession,
-  UserListAdminState,
-  UserFilter,
-} from 'app/types';
+  type UserAdminState,
+  type UserDTO,
+  type UserOrg,
+  type UserSession,
+  type UserAdminError,
+  type UserListAdminState,
+  type UserFilter,
+  type UserListAnonymousDevicesState,
+  type UserAnonymousDeviceDTO,
+  type AnonUserFilter,
+} from 'app/types/user';
 
 const initialLdapState: LdapState = {
   connectionInfo: [],
@@ -82,7 +82,7 @@ const initialUserAdminState: UserAdminState = {
   error: undefined,
 };
 
-export const userAdminSlice = createSlice({
+const userAdminSlice = createSlice({
   name: 'userAdmin',
   initialState: initialUserAdminState,
   reducers: {
@@ -130,7 +130,7 @@ const initialUserListAdminState: UserListAdminState = {
   totalPages: 1,
   showPaging: false,
   filters: [{ name: 'activeLast30Days', value: false }],
-  isLoading: false,
+  isLoading: true,
 };
 
 interface UsersFetched {
@@ -140,7 +140,7 @@ interface UsersFetched {
   totalCount: number;
 }
 
-export const userListAdminSlice = createSlice({
+const userListAdminSlice = createSlice({
   name: 'userListAdmin',
   initialState: initialUserListAdminState,
   reducers: {
@@ -172,35 +172,109 @@ export const userListAdminSlice = createSlice({
       ...state,
       page: action.payload,
     }),
+    sortChanged: (state, action: PayloadAction<UserListAdminState['sort']>) => ({
+      ...state,
+      page: 0,
+      sort: action.payload,
+    }),
     filterChanged: (state, action: PayloadAction<UserFilter>) => {
       const { name, value } = action.payload;
 
       if (state.filters.some((filter) => filter.name === name)) {
         return {
           ...state,
+          page: 0,
           filters: state.filters.map((filter) => (filter.name === name ? { ...filter, value } : filter)),
         };
       }
       return {
         ...state,
+        page: 0,
         filters: [...state.filters, action.payload],
       };
     },
   },
 });
 
-export const {
-  usersFetched,
-  usersFetchBegin,
-  usersFetchEnd,
-  queryChanged,
-  pageChanged,
-  filterChanged,
-} = userListAdminSlice.actions;
+export const { usersFetched, usersFetchBegin, usersFetchEnd, queryChanged, pageChanged, filterChanged, sortChanged } =
+  userListAdminSlice.actions;
 export const userListAdminReducer = userListAdminSlice.reducer;
+
+// UserListAnonymousPage
+
+const initialUserListAnonymousDevicesState: UserListAnonymousDevicesState = {
+  devices: [],
+  query: '',
+  page: 0,
+  perPage: 50,
+  totalPages: 1,
+  showPaging: false,
+  filters: [{ name: 'activeLast30Days', value: true }],
+};
+
+interface UsersAnonymousDevicesFetched {
+  devices: UserAnonymousDeviceDTO[];
+  perPage: number;
+  page: number;
+  totalCount: number;
+}
+
+const userListAnonymousDevicesSlice = createSlice({
+  name: 'userListAnonymousDevices',
+  initialState: initialUserListAnonymousDevicesState,
+  reducers: {
+    usersAnonymousDevicesFetched: (state, action: PayloadAction<UsersAnonymousDevicesFetched>) => {
+      const { totalCount, perPage, ...rest } = action.payload;
+      const totalPages = Math.ceil(totalCount / perPage);
+
+      return {
+        ...state,
+        ...rest,
+        totalPages,
+        perPage,
+        showPaging: totalPages > 1,
+      };
+    },
+    anonQueryChanged: (state, action: PayloadAction<string>) => ({
+      ...state,
+      query: action.payload,
+      page: 0,
+    }),
+    anonPageChanged: (state, action: PayloadAction<number>) => ({
+      ...state,
+      page: action.payload,
+    }),
+    anonUserSortChanged: (state, action: PayloadAction<UserListAnonymousDevicesState['sort']>) => ({
+      ...state,
+      page: 0,
+      sort: action.payload,
+    }),
+    filterChanged: (state, action: PayloadAction<AnonUserFilter>) => {
+      const { name, value } = action.payload;
+
+      if (state.filters.some((filter) => filter.name === name)) {
+        return {
+          ...state,
+          page: 0,
+          filters: state.filters.map((filter) => (filter.name === name ? { ...filter, value } : filter)),
+        };
+      }
+      return {
+        ...state,
+        page: 0,
+        filters: [...state.filters, action.payload],
+      };
+    },
+  },
+});
+
+export const { usersAnonymousDevicesFetched, anonUserSortChanged, anonPageChanged, anonQueryChanged } =
+  userListAnonymousDevicesSlice.actions;
+const userListAnonymousDevicesReducer = userListAnonymousDevicesSlice.reducer;
 
 export default {
   ldap: ldapReducer,
   userAdmin: userAdminReducer,
   userListAdmin: userListAdminReducer,
+  userListAnonymousDevices: userListAnonymousDevicesReducer,
 };

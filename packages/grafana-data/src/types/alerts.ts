@@ -7,6 +7,7 @@ export enum AlertState {
   Alerting = 'alerting',
   OK = 'ok',
   Pending = 'pending',
+  Recovering = 'recovering',
   Unknown = 'unknown',
 }
 
@@ -15,7 +16,9 @@ export enum AlertState {
  */
 export interface AlertStateInfo {
   id: number;
-  dashboardId: number;
+  dashboardUID: string | undefined;
   panelId: number;
   state: AlertState;
+  /** UID of the Grafana-managed alert rule linked to this panel, when known. */
+  ruleUID?: string;
 }

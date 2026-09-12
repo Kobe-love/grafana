@@ -1,48 +1,67 @@
-import { AnyAction, combineReducers } from 'redux';
-import { CleanUp, cleanUpAction } from '../actions/cleanUp';
+import { type ReducersMapObject } from '@reduxjs/toolkit';
+import { type AnyAction, combineReducers } from 'redux';
+
+import { generatedAPI as legacyAPI } from '@grafana/api-clients/internal/rtkq/legacy';
+import { generatedAPI as migrateToCloudAPI } from '@grafana/api-clients/internal/rtkq/legacy/migrate-to-cloud';
+import { generatedAPI as preferencesUserAPI } from '@grafana/api-clients/internal/rtkq/legacy/preferences/user';
+import { allReducers as allApiClientReducers } from '@grafana/api-clients/rtkq';
+import { scopeAPIv0alpha1 } from 'app/api/clients/scope/v0alpha1';
 import sharedReducers from 'app/core/reducers';
-import alertingReducers from 'app/features/alerting/state/reducers';
-import teamsReducers from 'app/features/teams/state/reducers';
-import apiKeysReducers from 'app/features/api-keys/state/reducers';
-import foldersReducers from 'app/features/folders/state/reducers';
-import dashboardReducers from 'app/features/dashboard/state/reducers';
-import exploreReducers from 'app/features/explore/state/main';
-import { reducer as pluginsReducer } from 'app/features/plugins/admin/state/reducer';
-import dataSourcesReducers from 'app/features/datasources/state/reducers';
-import usersReducers from 'app/features/users/state/reducers';
-import userReducers from 'app/features/profile/state/reducers';
-import organizationReducers from 'app/features/org/state/reducers';
 import ldapReducers from 'app/features/admin/state/reducers';
-import templatingReducers from 'app/features/variables/state/reducers';
-import importDashboardReducers from 'app/features/manage-dashboards/state/reducers';
+import alertingReducers from 'app/features/alerting/state/reducers';
+import authConfigReducers from 'app/features/auth-config/state/reducers';
+import { browseDashboardsAPI } from 'app/features/browse-dashboards/api/browseDashboardsAPI';
+import browseDashboardsReducers from 'app/features/browse-dashboards/state/slice';
+import { publicDashboardApi } from 'app/features/dashboard/api/publicDashboardApi';
 import panelEditorReducers from 'app/features/dashboard/components/PanelEditor/state/reducers';
+import dashboardReducers from 'app/features/dashboard/state/reducers';
+import dataSourcesReducers from 'app/features/datasources/state/reducers';
+import exploreReducers from 'app/features/explore/state/main';
+import invitesReducers from 'app/features/invites/state/reducers';
+import organizationReducers from 'app/features/org/state/reducers';
 import panelsReducers from 'app/features/panel/state/reducers';
+import { reducer as pluginsReducer } from 'app/features/plugins/admin/state/reducer';
+import userReducers from 'app/features/profile/state/reducers';
 import serviceAccountsReducer from 'app/features/serviceaccounts/state/reducers';
+import supportBundlesReducer from 'app/features/support-bundles/state/reducers';
+import usersReducers from 'app/features/users/state/reducers';
+import templatingReducers from 'app/features/variables/state/keyedVariablesReducer';
+
+import { alertingApi } from '../../features/alerting/unified/api/alertingApi';
+import { cleanUpAction } from '../actions/cleanUp';
 
 const rootReducers = {
   ...sharedReducers,
   ...alertingReducers,
-  ...teamsReducers,
-  ...apiKeysReducers,
-  ...foldersReducers,
   ...dashboardReducers,
   ...exploreReducers,
   ...dataSourcesReducers,
   ...usersReducers,
   ...serviceAccountsReducer,
   ...userReducers,
+  ...invitesReducers,
   ...organizationReducers,
+  ...browseDashboardsReducers,
   ...ldapReducers,
-  ...templatingReducers,
-  ...importDashboardReducers,
   ...panelEditorReducers,
   ...panelsReducers,
+  ...templatingReducers,
+  ...supportBundlesReducer,
+  ...authConfigReducers,
+  [legacyAPI.reducerPath]: legacyAPI.reducer,
+  [migrateToCloudAPI.reducerPath]: migrateToCloudAPI.reducer,
+  [preferencesUserAPI.reducerPath]: preferencesUserAPI.reducer,
   plugins: pluginsReducer,
+  [alertingApi.reducerPath]: alertingApi.reducer,
+  [publicDashboardApi.reducerPath]: publicDashboardApi.reducer,
+  [browseDashboardsAPI.reducerPath]: browseDashboardsAPI.reducer,
+  [scopeAPIv0alpha1.reducerPath]: scopeAPIv0alpha1.reducer,
+  ...allApiClientReducers,
 };
 
 const addedReducers = {};
 
-export const addReducer = (newReducers: any) => {
+export const addReducer = (newReducers: ReducersMapObject) => {
   Object.assign(addedReducers, newReducers);
 };
 
@@ -52,38 +71,14 @@ export const createRootReducer = () => {
     ...addedReducers,
   });
 
-  return (state: any, action: AnyAction) => {
+  return (state: Parameters<typeof appReducer>[0], action: AnyAction) => {
     if (action.type !== cleanUpAction.type) {
       return appReducer(state, action);
     }
 
-    const { stateSelector } = action.payload as CleanUp<any>;
-    const stateSlice = stateSelector(state);
-    recursiveCleanState(state, stateSlice);
+    const { cleanupAction } = action.payload;
+    cleanupAction(state);
 
     return appReducer(state, action);
   };
-};
-
-export const recursiveCleanState = (state: any, stateSlice: any): boolean => {
-  for (const stateKey in state) {
-    if (!state.hasOwnProperty(stateKey)) {
-      continue;
-    }
-
-    const slice = state[stateKey];
-    if (slice === stateSlice) {
-      state[stateKey] = undefined;
-      return true;
-    }
-
-    if (typeof slice === 'object') {
-      const cleaned = recursiveCleanState(slice, stateSlice);
-      if (cleaned) {
-        return true;
-      }
-    }
-  }
-
-  return false;
 };

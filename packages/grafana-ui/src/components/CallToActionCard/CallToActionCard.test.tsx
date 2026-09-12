@@ -1,33 +1,66 @@
-import React from 'react';
-import { render } from 'enzyme';
+import { render, screen } from '@testing-library/react';
+
+import { TextLink } from '../Link/TextLink';
+
 import { CallToActionCard } from './CallToActionCard';
 
 describe('CallToActionCard', () => {
   describe('rendering', () => {
-    it('when no message and footer provided', () => {
-      const tree = render(<CallToActionCard callToActionElement={<a href="http://dummy.link">Click me</a>} />);
-      expect(tree).toMatchSnapshot();
-    });
-
-    it('when message and no footer provided', () => {
-      const tree = render(
+    it('should render callToActionElement', () => {
+      render(
         <CallToActionCard
-          message="Click button bellow"
-          callToActionElement={<a href="http://dummy.link">Click me</a>}
+          callToActionElement={
+            <TextLink external href="http://dummy.link">
+              Click me
+            </TextLink>
+          }
         />
       );
-      expect(tree).toMatchSnapshot();
+      expect(screen.getByRole('link', { name: 'Click me' })).toBeInTheDocument();
     });
 
-    it('when message and footer provided', () => {
-      const tree = render(
+    it('should render message when provided', () => {
+      render(
         <CallToActionCard
-          message="Click button bellow"
+          message="Click button below"
+          callToActionElement={
+            <TextLink external href="http://dummy.link">
+              Click me
+            </TextLink>
+          }
+        />
+      );
+      expect(screen.getByText('Click button below')).toBeInTheDocument();
+    });
+
+    it('should render footer when provided', () => {
+      render(
+        <CallToActionCard
           footer="footer content"
-          callToActionElement={<a href="http://dummy.link">Click me</a>}
+          callToActionElement={
+            <TextLink external href="http://dummy.link">
+              Click me
+            </TextLink>
+          }
         />
       );
-      expect(tree).toMatchSnapshot();
+      expect(screen.getByText('footer content')).toBeInTheDocument();
+    });
+
+    it('should render both message and footer when provided', () => {
+      render(
+        <CallToActionCard
+          message="Click button below"
+          footer="footer content"
+          callToActionElement={
+            <TextLink external href="http://dummy.link">
+              Click me
+            </TextLink>
+          }
+        />
+      );
+      expect(screen.getByText('Click button below')).toBeInTheDocument();
+      expect(screen.getByText('footer content')).toBeInTheDocument();
     });
   });
 });

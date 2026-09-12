@@ -1,9 +1,11 @@
-import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { PluginErrorCode, PluginSignatureStatus } from '@grafana/data';
-import { PluginListItemBadges } from './PluginListItemBadges';
-import { CatalogPlugin } from '../types';
+
+import { PluginErrorCode, PluginSignatureStatus, PluginSignatureType } from '@grafana/data';
 import { config } from '@grafana/runtime';
+
+import { type CatalogPlugin, PluginUpdateStrategy } from '../types';
+
+import { PluginListItemBadges } from './PluginListItemBadges';
 
 describe('PluginListItemBadges', () => {
   const plugin: CatalogPlugin = {
@@ -15,6 +17,7 @@ describe('PluginListItemBadges', () => {
         small: 'https://grafana.com/api/plugins/test-plugin/versions/0.0.10/logos/small',
         large: 'https://grafana.com/api/plugins/test-plugin/versions/0.0.10/logos/large',
       },
+      keywords: ['test', 'plugin'],
     },
     name: 'Testing Plugin',
     orgName: 'Test',
@@ -28,7 +31,10 @@ describe('PluginListItemBadges', () => {
     isDev: false,
     isEnterprise: false,
     isDisabled: false,
+    isDeprecated: false,
     isPublished: true,
+    isPreinstalled: { found: false, withVersion: false },
+    managed: { enabled: false, strategy: undefined },
   };
 
   afterEach(() => {
@@ -55,12 +61,11 @@ describe('PluginListItemBadges', () => {
     expect(screen.queryByRole('button', { name: /learn more/i })).not.toBeInTheDocument();
   });
 
-  it('renders an enterprise badge with icon and link (when a license is invalid)', () => {
+  it('renders an enterprise badge with icon (when a license is invalid)', () => {
     config.licenseInfo.enabledFeatures = {};
     render(<PluginListItemBadges plugin={{ ...plugin, isEnterprise: true }} />);
     expect(screen.getByText(/enterprise/i)).toBeVisible();
-    expect(screen.getByLabelText(/lock icon/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /learn more/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/enterprise/i)).toBeInTheDocument();
   });
 
   it('renders a error badge (when plugin has an error)', () => {
@@ -71,5 +76,34 @@ describe('PluginListItemBadges', () => {
   it('renders an upgrade badge (when plugin has an available update)', () => {
     render(<PluginListItemBadges plugin={{ ...plugin, hasUpdate: true, installedVersion: '0.0.9' }} />);
     expect(screen.getByText(/update available/i)).toBeVisible();
+  });
+
+  it('does not render an upgrade badge (when plugin has an available update and is managed)', () => {
+    render(
+      <PluginListItemBadges
+        plugin={{
+          ...plugin,
+          hasUpdate: true,
+          installedVersion: '0.0.9',
+          managed: { enabled: true, strategy: PluginUpdateStrategy.Assigned },
+          signatureType: PluginSignatureType.grafana,
+        }}
+      />
+    );
+    expect(screen.queryByText(/update available/i)).toBeNull();
+  });
+
+  it('does not render an upgrade badge (when plugin is preinstalled with a version)', () => {
+    render(
+      <PluginListItemBadges
+        plugin={{
+          ...plugin,
+          hasUpdate: true,
+          installedVersion: '0.0.9',
+          isPreinstalled: { found: true, withVersion: true },
+        }}
+      />
+    );
+    expect(screen.queryByText(/update available/i)).toBeNull();
   });
 });

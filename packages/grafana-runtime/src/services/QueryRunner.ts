@@ -1,4 +1,6 @@
-import { QueryRunner } from '@grafana/data';
+import { type Observable } from 'rxjs';
+
+import { type DataQueryRequest, type DataSourceApi, type PanelData, type QueryRunner } from '@grafana/data';
 
 let factory: QueryRunnerFactory | undefined;
 
@@ -31,3 +33,30 @@ export const createQueryRunner = (): QueryRunner => {
   }
   return factory();
 };
+
+type RunRequestFn = (
+  datasource: DataSourceApi,
+  request: DataQueryRequest,
+  queryFunction?: typeof datasource.query
+) => Observable<PanelData>;
+
+let runRequest: RunRequestFn | undefined;
+
+/**
+ * Used to exspose runRequest implementation to libraries, i.e. @grafana/scenes
+ *
+ * @internal
+ */
+export function setRunRequest(fn: RunRequestFn): void {
+  if (runRequest && process.env.NODE_ENV !== 'test') {
+    throw new Error('runRequest function should only be set once, when Grafana is starting.');
+  }
+  runRequest = fn;
+}
+
+export function getRunRequest(): RunRequestFn {
+  if (!runRequest) {
+    throw new Error('getRunRequest can only be used after Grafana instance has started.');
+  }
+  return runRequest;
+}

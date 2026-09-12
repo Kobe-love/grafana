@@ -1,11 +1,14 @@
-import React from 'react';
-import { VizLegendBaseProps, VizLegendItem } from './types';
+import { css, cx } from '@emotion/css';
+import { useMemo } from 'react';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useStyles2 } from '../../themes/ThemeContext';
 import { InlineList } from '../List/InlineList';
 import { List } from '../List/List';
-import { css, cx } from '@emotion/css';
-import { useStyles } from '../../themes';
-import { GrafanaTheme } from '@grafana/data';
+
 import { VizLegendListItem } from './VizLegendListItem';
+import { type VizLegendBaseProps, type VizLegendItem } from './types';
 
 export interface Props<T> extends VizLegendBaseProps<T> {}
 
@@ -15,14 +18,18 @@ export interface Props<T> extends VizLegendBaseProps<T> {}
 export const VizLegendList = <T extends unknown>({
   items,
   itemRenderer,
-  onLabelMouseEnter,
+  onLabelMouseOver,
   onLabelMouseOut,
   onLabelClick,
   placement,
   className,
   readonly,
+  limit = 0,
+  filterAction,
 }: Props<T>) => {
-  const styles = useStyles(getStyles);
+  const styles = useStyles2(getStyles);
+
+  const allItemsSelected = useMemo(() => !items.some((item) => item.disabled), [items]);
 
   if (!itemRenderer) {
     /* eslint-disable-next-line react/display-name */
@@ -30,12 +37,22 @@ export const VizLegendList = <T extends unknown>({
       <VizLegendListItem
         item={item}
         onLabelClick={onLabelClick}
-        onLabelMouseEnter={onLabelMouseEnter}
+        onLabelMouseOver={onLabelMouseOver}
         onLabelMouseOut={onLabelMouseOut}
         readonly={readonly}
+        allItemsSelected={allItemsSelected}
       />
     );
   }
+
+  const leftItems = useMemo(
+    () => (placement === 'right' ? items : items.filter((item) => item.yAxis === 1)),
+    [placement, items]
+  );
+  const rightItems = useMemo(
+    () => (placement === 'right' ? [] : items.filter((item) => item.yAxis !== 1)),
+    [placement, items]
+  );
 
   const getItemKey = (item: VizLegendItem<T>) => `${item.getItemKey ? item.getItemKey() : item.label}`;
 
@@ -47,7 +64,8 @@ export const VizLegendList = <T extends unknown>({
 
       return (
         <div className={cx(styles.rightWrapper, className)}>
-          <List items={items} renderItem={renderItem} getItemKey={getItemKey} />
+          {filterAction && <span className={styles.itemRight}>{filterAction}</span>}
+          <List items={leftItems} renderItem={renderItem} getItemKey={getItemKey} limit={limit} />
         </div>
       );
     }
@@ -59,20 +77,18 @@ export const VizLegendList = <T extends unknown>({
 
       return (
         <div className={cx(styles.bottomWrapper, className)}>
-          <div className={styles.section}>
-            <InlineList
-              items={items.filter((item) => item.yAxis === 1)}
-              renderItem={renderItem}
-              getItemKey={getItemKey}
-            />
-          </div>
-          <div className={cx(styles.section, styles.sectionRight)}>
-            <InlineList
-              items={items.filter((item) => item.yAxis !== 1)}
-              renderItem={renderItem}
-              getItemKey={getItemKey}
-            />
-          </div>
+          {leftItems.length > 0 && (
+            <div className={styles.section}>
+              {filterAction && <span className={styles.itemBottom}>{filterAction}</span>}
+              <InlineList items={leftItems} renderItem={renderItem} getItemKey={getItemKey} limit={limit} />
+            </div>
+          )}
+          {rightItems.length > 0 && (
+            <div className={cx(styles.section, styles.sectionRight)}>
+              {!leftItems.length && filterAction && <span className={styles.itemBottom}>{filterAction}</span>}
+              <InlineList items={rightItems} renderItem={renderItem} getItemKey={getItemKey} limit={limit} />
+            </div>
+          )}
         </div>
       );
     }
@@ -81,38 +97,41 @@ export const VizLegendList = <T extends unknown>({
 
 VizLegendList.displayName = 'VizLegendList';
 
-const getStyles = (theme: GrafanaTheme) => {
-  const itemStyles = css`
-    padding-right: 10px;
-    display: flex;
-    font-size: ${theme.typography.size.sm};
-    white-space: nowrap;
-  `;
+const getStyles = (theme: GrafanaTheme2) => {
+  const itemStyles = css({
+    paddingRight: '10px',
+    display: 'flex',
+    fontSize: theme.typography.bodySmall.fontSize,
+    whiteSpace: 'nowrap',
+  });
 
   return {
     itemBottom: itemStyles,
     itemRight: cx(
       itemStyles,
-      css`
-        margin-bottom: ${theme.spacing.xs};
-      `
+      css({
+        marginBottom: theme.spacing(0.5),
+      })
     ),
-    rightWrapper: css`
-      padding-left: ${theme.spacing.sm};
-    `,
-    bottomWrapper: css`
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      width: 100%;
-      padding-left: ${theme.spacing.md};
-    `,
-    section: css`
-      display: flex;
-    `,
-    sectionRight: css`
-      justify-content: flex-end;
-      flex-grow: 1;
-    `,
+    rightWrapper: css({
+      padding: theme.spacing(0.5),
+    }),
+    bottomWrapper: css({
+      display: 'flex',
+      flexWrap: 'wrap',
+      justifyContent: 'space-between',
+      width: '100%',
+      padding: theme.spacing(0.5),
+      gap: '15px 25px',
+    }),
+    section: css({
+      display: 'flex',
+      flexWrap: 'wrap',
+    }),
+    sectionRight: css({
+      justifyContent: 'flex-end',
+      flexGrow: 1,
+      flexBasis: '50%',
+    }),
   };
 };

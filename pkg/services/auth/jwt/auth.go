@@ -6,11 +6,12 @@ import (
 	"errors"
 	"strings"
 
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
+
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/infra/remotecache"
-	"github.com/grafana/grafana/pkg/models"
 	"github.com/grafana/grafana/pkg/setting"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 const ServiceName = "AuthService"
@@ -33,7 +34,7 @@ func newService(cfg *setting.Cfg, remoteCache *remotecache.RemoteCache) *AuthSer
 }
 
 func (s *AuthService) init() error {
-	if !s.Cfg.JWTAuthEnabled {
+	if !s.Cfg.JWTAuth.Enabled {
 		return nil
 	}
 
@@ -53,7 +54,7 @@ type AuthService struct {
 
 	keySet           keySet
 	log              log.Logger
-	expect           map[string]interface{}
+	expect           map[string]any
 	expectRegistered jwt.Expected
 }
 
@@ -65,11 +66,12 @@ func sanitizeJWT(jwtToken string) string {
 	return strings.ReplaceAll(jwtToken, string(base64.StdPadding), "")
 }
 
-func (s *AuthService) Verify(ctx context.Context, strToken string) (models.JWTClaims, error) {
+func (s *AuthService) Verify(ctx context.Context, strToken string) (map[string]any, error) {
 	s.log.Debug("Parsing JSON Web Token")
 
 	strToken = sanitizeJWT(strToken)
-	token, err := jwt.ParseSigned(strToken)
+	token, err := jwt.ParseSigned(strToken, []jose.SignatureAlgorithm{jose.EdDSA, jose.HS256, jose.HS384,
+		jose.HS512, jose.RS512, jose.RS256, jose.ES256, jose.ES384, jose.ES512, jose.PS256, jose.PS384, jose.PS512})
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +86,7 @@ func (s *AuthService) Verify(ctx context.Context, strToken string) (models.JWTCl
 
 	s.log.Debug("Trying to verify JSON Web Token using a key")
 
-	var claims models.JWTClaims
+	var claims map[string]any
 	for _, key := range keys {
 		if err = token.Claims(key, &claims); err == nil {
 			break
@@ -101,4 +103,21 @@ func (s *AuthService) Verify(ctx context.Context, strToken string) (models.JWTCl
 	}
 
 	return claims, nil
+}
+
+// HasSubClaim checks if the provided JWT token contains a non-empty "sub" claim.
+// Returns true if it contains, otherwise returns false.
+func HasSubClaim(jwtToken string) bool {
+	parsed, err := jwt.ParseSigned(sanitizeJWT(jwtToken), []jose.SignatureAlgorithm{jose.EdDSA, jose.HS256, jose.HS384,
+		jose.HS512, jose.RS512, jose.RS256, jose.ES256, jose.ES384, jose.ES512, jose.PS256, jose.PS384, jose.PS512})
+	if err != nil {
+		return false
+	}
+
+	var claims jwt.Claims
+	if err := parsed.UnsafeClaimsWithoutVerification(&claims); err != nil {
+		return false
+	}
+
+	return claims.Subject != ""
 }

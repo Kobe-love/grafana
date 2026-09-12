@@ -1,4 +1,11 @@
-import { ScopedVars, DataSourceApi, DataSourceInstanceSettings, DataSourceRef } from '@grafana/data';
+import {
+  type ScopedVars,
+  type DataSourceApi,
+  type DataSourceInstanceSettings,
+  type DataSourceRef,
+} from '@grafana/data';
+
+import { type RuntimeDataSource } from './RuntimeDataSource';
 
 /**
  * This is the entry point for communicating with a datasource that is added as
@@ -11,7 +18,7 @@ import { ScopedVars, DataSourceApi, DataSourceInstanceSettings, DataSourceRef } 
 export interface DataSourceSrv {
   /**
    * Returns the requested dataSource. If it cannot be found it rejects the promise.
-   * @param ref - The datasource identifier, typically an object with UID and type,
+   * @param ref - The datasource identifier, it can be a name, UID or DataSourceRef (an object with UID),
    * @param scopedVars - variables used to interpolate a templated passed as name.
    */
   get(ref?: DataSourceRef | string | null, scopedVars?: ScopedVars): Promise<DataSourceApi>;
@@ -28,6 +35,20 @@ export interface DataSourceSrv {
     ref?: DataSourceRef | string | null,
     scopedVars?: ScopedVars
   ): DataSourceInstanceSettings | undefined;
+
+  /**
+   * Reloads the DataSourceSrv
+   */
+  reload(): Promise<void>;
+
+  /**
+   * Registers a runtime data source. Make sure your data source uid is unique.
+   */
+  registerRuntimeDataSource(entry: RuntimeDataSourceRegistration): void;
+}
+
+export interface RuntimeDataSourceRegistration {
+  dataSource: RuntimeDataSource;
 }
 
 /** @public */
@@ -40,6 +61,9 @@ export interface GetDataSourceListFilters {
 
   /** Only return data sources that support tracing response */
   tracing?: boolean;
+
+  /** Only return data sources that support logging response */
+  logs?: boolean;
 
   /** Only return data sources that support annotations */
   annotations?: boolean;

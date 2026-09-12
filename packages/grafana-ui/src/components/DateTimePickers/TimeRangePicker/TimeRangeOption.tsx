@@ -1,38 +1,52 @@
-import React, { memo } from 'react';
 import { css, cx } from '@emotion/css';
-import { GrafanaTheme2, TimeOption } from '@grafana/data';
+import { memo, useId } from 'react';
+
+import { type GrafanaTheme2, type TimeOption } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+
 import { useStyles2 } from '../../../themes/ThemeContext';
 import { getFocusStyles } from '../../../themes/mixins';
-import { v4 as uuidv4 } from 'uuid';
 
 const getStyles = (theme: GrafanaTheme2) => {
   return {
-    container: css`
-      display: flex;
-      align-items: center;
-      flex-direction: row-reverse;
-      justify-content: space-between;
-      padding: 7px 9px 7px 9px;
+    container: css({
+      display: 'flex',
+      alignItems: 'center',
+      flexDirection: 'row-reverse',
+      justifyContent: 'space-between',
+      position: 'relative',
+    }),
+    radio: css({
+      opacity: 0,
+      width: '0 !important',
+      '&:focus-visible + label': getFocusStyles(theme),
+    }),
+    label: css({
+      cursor: 'pointer',
+      flex: 1,
+      padding: theme.spacing(1),
+      borderRadius: theme.shape.radius.default,
 
-      &:hover {
-        background: ${theme.colors.action.hover};
-        cursor: pointer;
-      }
-    `,
-    selected: css`
-      background: ${theme.colors.action.selected};
-      font-weight: ${theme.typography.fontWeightMedium};
-    `,
-    radio: css`
-      opacity: 0;
+      '&:hover': {
+        background: theme.colors.action.hover,
+        cursor: 'pointer',
+      },
+    }),
+    labelSelected: css({
+      background: theme.colors.action.selected,
 
-      &:focus-visible + label {
-        ${getFocusStyles(theme)};
-      }
-    `,
-    label: css`
-      cursor: pointer;
-    `,
+      '&::before': {
+        backgroundImage: theme.colors.gradients.brandVertical,
+        borderRadius: theme.shape.radius.default,
+        content: '" "',
+        display: 'block',
+        height: '100%',
+        position: 'absolute',
+        width: theme.spacing(0.5),
+        left: 0,
+        top: 0,
+      },
+    }),
   };
 };
 
@@ -49,19 +63,24 @@ interface Props {
 export const TimeRangeOption = memo<Props>(({ value, onSelect, selected = false, name }) => {
   const styles = useStyles2(getStyles);
   // In case there are more of the same timerange in the list
-  const id = uuidv4();
+  const id = useId();
 
   return (
-    <li onClick={() => onSelect(value)} className={cx(styles.container, selected && styles.selected)}>
+    <li
+      className={styles.container}
+      data-testid={selectors.components.TimePicker.timeRangeOption(value.from, value.to)}
+    >
       <input
         className={styles.radio}
         checked={selected}
         name={name}
         type="checkbox"
+        data-role="item"
+        tabIndex={-1}
         id={id}
         onChange={() => onSelect(value)}
       />
-      <label className={styles.label} htmlFor={id}>
+      <label className={cx(styles.label, selected && styles.labelSelected)} htmlFor={id}>
         {value.display}
       </label>
     </li>

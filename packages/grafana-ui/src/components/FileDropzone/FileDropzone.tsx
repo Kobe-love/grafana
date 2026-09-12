@@ -1,11 +1,12 @@
-import { css, cx } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
-import { uniqueId } from 'lodash';
-import React, { ReactNode, useCallback, useState } from 'react';
-import { DropEvent, DropzoneOptions, FileRejection, useDropzone } from 'react-dropzone';
-import { useTheme2 } from '../../themes';
-import { Icon } from '../Icon/Icon';
-import { FileListItem } from './FileListItem';
+import { lazy, Suspense, type ReactNode } from 'react';
+import type { Accept, DropzoneOptions } from 'react-dropzone';
+
+export { FileDropzoneDefaultChildren } from './FileDropzoneDefaultChildren';
+
+export type BackwardsCompatibleDropzoneOptions = Omit<DropzoneOptions, 'accept'> & {
+  // For backward compatibility we are still allowing the old `string | string[]` format for adding accepted file types (format changed in v13.0.0)
+  accept?: string | string[] | Accept;
+};
 
 export interface FileDropzoneProps {
   /**
@@ -18,10 +19,11 @@ export interface FileDropzoneProps {
    *  maxSize: Infinity,
    *  minSize: 0,
    *  multiple: true,
+   *  useFsAccessApi: false,
    *  maxFiles: 0,
    * }
    */
-  options?: DropzoneOptions;
+  options?: BackwardsCompatibleDropzoneOptions;
   /**
    * Use this to change the FileReader's read.
    */
@@ -35,6 +37,12 @@ export interface FileDropzoneProps {
    * any list return null in the function.
    */
   fileListRenderer?: (file: DropzoneFile, removeFile: (file: DropzoneFile) => void) => ReactNode;
+  onFileRemove?: (file: DropzoneFile) => void;
+  /**
+   * Optional id attribute for the underlying input element
+   * Use to link a label to the input for accessibility
+   */
+  id?: string;
 }
 
 export interface DropzoneFile {
@@ -46,185 +54,23 @@ export interface DropzoneFile {
   retryUpload?: () => void;
 }
 
-export function FileDropzone({ options, children, readAs, onLoad, fileListRenderer }: FileDropzoneProps) {
-  const [files, setFiles] = useState<DropzoneFile[]>([]);
+// react-dropzone is only needed once a dropzone actually renders, so load the
+// implementation on demand to keep it out of the initial bundle.
+const FileDropzoneInner = lazy(() =>
+  import(/* webpackChunkName: "file-dropzone" */ './FileDropzoneInner').then((m) => ({
+    default: m.FileDropzoneInner,
+  }))
+);
 
-  const setFileProperty = useCallback(
-    (customFile: DropzoneFile, action: (customFileToModify: DropzoneFile) => void) => {
-      setFiles((oldFiles) => {
-        return oldFiles.map((oldFile) => {
-          if (oldFile.id === customFile.id) {
-            action(oldFile);
-            return oldFile;
-          }
-          return oldFile;
-        });
-      });
-    },
-    []
-  );
-
-  const onDrop = useCallback(
-    (acceptedFiles: File[], rejectedFiles: FileRejection[], event: DropEvent) => {
-      let customFiles = acceptedFiles.map(mapToCustomFile);
-      if (options?.multiple === false) {
-        setFiles(customFiles);
-      } else {
-        setFiles((oldFiles) => [...oldFiles, ...customFiles]);
-      }
-
-      if (options?.onDrop) {
-        options.onDrop(acceptedFiles, rejectedFiles, event);
-      } else {
-        for (const customFile of customFiles) {
-          const reader = new FileReader();
-
-          const read = () => {
-            if (readAs) {
-              reader[readAs](customFile.file);
-            } else {
-              reader.readAsText(customFile.file);
-            }
-          };
-
-          // Set abort FileReader
-          setFileProperty(customFile, (fileToModify) => {
-            fileToModify.abortUpload = () => {
-              reader.abort();
-            };
-            fileToModify.retryUpload = () => {
-              setFileProperty(customFile, (fileToModify) => {
-                fileToModify.error = null;
-                fileToModify.progress = undefined;
-              });
-              read();
-            };
-          });
-
-          reader.onabort = () => {
-            setFileProperty(customFile, (fileToModify) => {
-              fileToModify.error = new DOMException('Aborted');
-            });
-          };
-
-          reader.onprogress = (event) => {
-            setFileProperty(customFile, (fileToModify) => {
-              fileToModify.progress = event.loaded;
-            });
-          };
-
-          reader.onload = () => {
-            onLoad?.(reader.result);
-          };
-
-          reader.onerror = () => {
-            setFileProperty(customFile, (fileToModify) => {
-              fileToModify.error = reader.error;
-            });
-          };
-
-          read();
-        }
-      }
-    },
-    [onLoad, options, readAs, setFileProperty]
-  );
-
-  const removeFile = (file: DropzoneFile) => {
-    const newFiles = files.filter((f) => file.id !== f.id);
-    setFiles(newFiles);
-  };
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ ...options, onDrop });
-  const theme = useTheme2();
-  const styles = getStyles(theme, isDragActive);
-  const fileList = files.map((file) => {
-    if (fileListRenderer) {
-      return fileListRenderer(file, removeFile);
-    }
-    return <FileListItem key={file.id} file={file} removeFile={removeFile} />;
-  });
-
+/**
+ * A dropzone component to use for file uploads.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/inputs-filedropzone--docs
+ */
+export function FileDropzone(props: FileDropzoneProps) {
   return (
-    <div className={styles.container}>
-      <div data-testid="dropzone" {...getRootProps({ className: styles.dropzone })}>
-        <input {...getInputProps()} />
-        {children ?? <FileDropzoneDefaultChildren primaryText={getPrimaryText(files, options)} />}
-      </div>
-      {options?.accept && (
-        <small className={cx(styles.small, styles.acceptMargin)}>{getAcceptedFileTypeText(options)}</small>
-      )}
-      {fileList}
-    </div>
+    <Suspense fallback={null}>
+      <FileDropzoneInner {...props} />
+    </Suspense>
   );
-}
-
-export function FileDropzoneDefaultChildren({
-  primaryText = 'Upload file',
-  secondaryText = 'Drag and drop here or browse',
-}) {
-  const theme = useTheme2();
-  const styles = getStyles(theme);
-
-  return (
-    <div className={styles.iconWrapper}>
-      <Icon name="upload" size="xxl" />
-      <h3>{primaryText}</h3>
-      <small className={styles.small}>{secondaryText}</small>
-    </div>
-  );
-}
-function getPrimaryText(files: DropzoneFile[], options?: DropzoneOptions) {
-  if (options?.multiple === undefined || options?.multiple) {
-    return 'Upload file';
-  }
-  return files.length ? 'Replace file' : 'Upload file';
-}
-
-function getAcceptedFileTypeText(options: DropzoneOptions) {
-  if (Array.isArray(options.accept)) {
-    return `Accepted file types: ${options.accept.join(', ')}`;
-  }
-
-  return `Accepted file type: ${options.accept}`;
-}
-
-function mapToCustomFile(file: File): DropzoneFile {
-  return {
-    id: uniqueId('file'),
-    file,
-    error: null,
-  };
-}
-
-function getStyles(theme: GrafanaTheme2, isDragActive?: boolean) {
-  return {
-    container: css`
-      display: flex;
-      flex-direction: column;
-      width: 100%;
-    `,
-    dropzone: css`
-      display: flex;
-      flex: 1;
-      flex-direction: column;
-      align-items: center;
-      padding: ${theme.spacing(6)};
-      border-radius: 2px;
-      border: 2px dashed ${theme.colors.border.medium};
-      background-color: ${isDragActive ? theme.colors.background.secondary : theme.colors.background.primary};
-      cursor: pointer;
-    `,
-    iconWrapper: css`
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    `,
-    acceptMargin: css`
-      margin: ${theme.spacing(2, 0, 1)};
-    `,
-    small: css`
-      color: ${theme.colors.text.secondary};
-    `,
-  };
 }

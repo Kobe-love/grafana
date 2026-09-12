@@ -1,21 +1,73 @@
-import React from 'react';
 import { render, prettyDOM, screen } from '@testing-library/react';
-import { TraceView } from './TraceView';
-import { setDataSourceSrv } from '@grafana/runtime';
-import { ExploreId } from 'app/types';
-import { TraceData, TraceSpanData } from '@jaegertracing/jaeger-ui-components/src/types/trace';
-import { MutableDataFrame } from '@grafana/data';
-import { configureStore } from '../../../store/configureStore';
-import { Provider } from 'react-redux';
 import userEvent from '@testing-library/user-event';
+import { createRef } from 'react';
+import { Provider } from 'react-redux';
 
-function renderTraceView(frames = [frameOld]) {
+import { type DataFrame, MutableDataFrame } from '@grafana/data';
+import { mockTimeRange } from '@grafana/plugin-ui/test';
+import {
+  setPluginLinksHook,
+  setPluginComponentsHook,
+  useAppPluginInstalled,
+  reportInteraction,
+} from '@grafana/runtime';
+
+import { configureStore } from '../../../store/configureStore';
+
+import { TraceView } from './TraceView';
+import { type TraceData, type TraceSpanData } from './components/types/trace';
+import { transformDataFrames } from './utils/transform';
+
+jest.mock('@grafana/runtime', () => ({
+  ...jest.requireActual('@grafana/runtime'),
+  useAppPluginInstalled: jest.fn(),
+  reportInteraction: jest.fn(),
+}));
+
+// The summary-span minimap gradient emits fractional rgb() channels that real browsers accept
+// but jest-canvas-mock rejects. The canvas render is not exercised by these tests, so stub it.
+jest.mock('./components/TracePageHeader/SpanGraph/render-into-canvas', () => ({
+  ...jest.requireActual('./components/TracePageHeader/SpanGraph/render-into-canvas'),
+  __esModule: true,
+  default: jest.fn(),
+}));
+
+jest.mock('@grafana/runtime/unstable', () => ({
+  ...jest.requireActual('@grafana/runtime/unstable'),
+  useDataSourceInstanceSettings: jest.fn().mockReturnValue({ isLoading: false, settings: undefined }),
+}));
+
+const mockUseAppPluginInstalled = jest.mocked(useAppPluginInstalled);
+
+function mockPluginInstalled(installedPluginIds: string[] = []) {
+  mockUseAppPluginInstalled.mockImplementation((pluginId: string) => ({
+    loading: false,
+    error: undefined,
+    value: installedPluginIds.includes(pluginId),
+  }));
+}
+
+function getTraceView(frames: DataFrame[]) {
   const store = configureStore();
-  const { container, baseElement } = render(
+  const topOfViewRef = createRef<HTMLDivElement>();
+
+  return (
     <Provider store={store}>
-      <TraceView exploreId={ExploreId.left} dataFrames={frames} splitOpenFn={() => {}} />
+      <TraceView
+        dataFrames={frames}
+        splitOpenFn={() => {}}
+        traceProp={transformDataFrames(frames[0])!}
+        datasource={undefined}
+        topOfViewRef={topOfViewRef}
+        timeRange={mockTimeRange()}
+      />
     </Provider>
   );
+}
+
+function renderTraceView(frames = [frameOld]) {
+  const { container, baseElement } = render(getTraceView(frames));
+
   return {
     header: container.children[0],
     timeline: container.children[1],
@@ -29,12 +81,23 @@ function renderTraceViewNew() {
 }
 
 describe('TraceView', () => {
+  beforeEach(() => {
+    mockPluginInstalled();
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
   beforeAll(() => {
-    setDataSourceSrv({
-      getInstanceSettings() {
-        return undefined;
-      },
-    } as any);
+    setPluginLinksHook(() => ({
+      isLoading: false,
+      links: [],
+    }));
+
+    setPluginComponentsHook(() => ({
+      isLoading: false,
+      components: [],
+    }));
   });
 
   it('renders TraceTimelineViewer', () => {
@@ -55,113 +118,146 @@ describe('TraceView', () => {
     expect(prettyDOM(baseElement)).toEqual(prettyDOM(baseElementOld));
   });
 
-  it('does not render anything on missing trace', () => {
+  it('only renders noDataMsg on missing trace', () => {
     // Simulating Explore's access to empty response data
     const { container } = renderTraceView([]);
-    expect(container.hasChildNodes()).toBeFalsy();
+    expect(container.childNodes.length === 1).toBeTruthy();
   });
 
   it('toggles detailState', async () => {
     renderTraceViewNew();
-    expect(screen.queryByText(/Tags/)).toBeFalsy();
-    const spanView = screen.getAllByText('', { selector: 'div[data-test-id="span-view"]' })[0];
-    userEvent.click(spanView);
-    expect(screen.queryByText(/Tags/)).toBeTruthy();
+    expect(screen.queryByText(/Span attributes/)).toBeFalsy();
+    const spanView = screen.getAllByText('', { selector: 'div[data-testid="span-view"]' })[0];
+    await userEvent.click(spanView);
+    expect(screen.queryByText(/Span attributes/)).toBeTruthy();
 
-    userEvent.click(spanView);
-    screen.debug(screen.queryAllByText(/Tags/));
-    expect(screen.queryByText(/Tags/)).toBeFalsy();
+    await userEvent.click(spanView);
+    screen.debug(screen.queryAllByText(/Span attributes/));
+    expect(screen.queryByText(/Span attributes/)).toBeFalsy();
   });
 
-  it('toggles children visibility', () => {
-    renderTraceViewNew();
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(3);
-    userEvent.click(screen.getAllByText('', { selector: 'span[data-test-id="SpanTreeOffset--indentGuide"]' })[0]);
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(1);
-
-    userEvent.click(screen.getAllByText('', { selector: 'span[data-test-id="SpanTreeOffset--indentGuide"]' })[0]);
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(3);
+  it('reports opening the detail of a summary span', async () => {
+    renderTraceView([frameSummary]);
+    const summarySpan = screen.getAllByText('', { selector: 'div[data-testid="span-view"]' })[0];
+    await userEvent.click(summarySpan);
+    expect(reportInteraction).toHaveBeenCalledWith(
+      'grafana_traces_summary_span_detail_opened',
+      expect.objectContaining({ spanCount: 4 })
+    );
   });
 
-  it('toggles collapses and expands one level of spans', () => {
+  it('does not report a summary detail open for a normal span', async () => {
     renderTraceViewNew();
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(3);
-    userEvent.click(screen.getByLabelText('Collapse +1'));
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(2);
-    userEvent.click(screen.getByLabelText('Expand +1'));
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(3);
+    const normalSpan = screen.getAllByText('', { selector: 'div[data-testid="span-view"]' })[0];
+    await userEvent.click(normalSpan);
+    expect(reportInteraction).not.toHaveBeenCalledWith('grafana_traces_summary_span_detail_opened', expect.anything());
   });
 
-  it('toggles collapses and expands all levels', () => {
-    renderTraceViewNew();
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(3);
-    userEvent.click(screen.getByLabelText('Collapse All'));
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(1);
-    userEvent.click(screen.getByLabelText('Expand All'));
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(3);
-  });
-
-  it('searches for spans', () => {
-    renderTraceViewNew();
-    userEvent.type(screen.getByPlaceholderText('Find...'), '1ed38015486087ca');
-    expect(
-      (screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' })[0].parentNode! as HTMLElement).className
-    ).toContain('rowMatchingFilter');
+  it('reports toggling the Summary attributes accordion', async () => {
+    renderTraceView([frameSummary]);
+    const summarySpan = screen.getAllByText('', { selector: 'div[data-testid="span-view"]' })[0];
+    await userEvent.click(summarySpan);
+    await userEvent.click(screen.getByText(/Summary attributes/));
+    expect(reportInteraction).toHaveBeenCalledWith(
+      'grafana_traces_summary_attributes_toggled',
+      expect.objectContaining({ isOpen: true })
+    );
   });
 
   it('shows timeline ticks', () => {
     renderTraceViewNew();
     function ticks() {
-      return screen.getByText('', { selector: 'div[data-test-id="TimelineHeaderRow"]' }).children[1].children[1]
+      return screen.getByText('', { selector: 'div[data-testid="TimelineHeaderRow"]' }).children[1].children[1]
         .textContent;
     }
     expect(ticks()).toBe('0μs274.5μs549μs823.5μs1.1ms');
   });
 
-  it('correctly shows processes for each span', () => {
+  it('correctly shows processes for each span', async () => {
     renderTraceView();
-    let table: HTMLElement;
-    expect(screen.queryAllByText('', { selector: 'div[data-test-id="span-view"]' }).length).toBe(3);
+    expect(screen.queryAllByText('', { selector: 'div[data-testid="span-view"]' }).length).toBe(3);
 
-    const firstSpan = screen.getAllByText('', { selector: 'div[data-test-id="span-view"]' })[0];
-    userEvent.click(firstSpan);
-    userEvent.click(screen.getByText(/Process/));
-    table = screen.getByText('', { selector: 'div[data-test-id="KeyValueTable"]' });
-    expect(table.innerHTML).toContain('client-uuid-1');
-    userEvent.click(firstSpan);
+    const firstSpan = screen.getAllByText('', { selector: 'div[data-testid="span-view"]' })[0];
+    await userEvent.click(firstSpan);
+    // Resource attributes are open by default alongside span attributes
+    expect(
+      screen
+        .getAllByText('', { selector: 'div[data-testid="KeyValueTable"]' })
+        .some((table) => table.innerHTML.includes('client-uuid-1'))
+    ).toBe(true);
+    await userEvent.click(firstSpan);
 
-    const secondSpan = screen.getAllByText('', { selector: 'div[data-test-id="span-view"]' })[1];
-    userEvent.click(secondSpan);
-    userEvent.click(screen.getByText(/Process/));
-    table = screen.getByText('', { selector: 'div[data-test-id="KeyValueTable"]' });
-    expect(table.innerHTML).toContain('client-uuid-2');
-    userEvent.click(secondSpan);
+    const secondSpan = screen.getAllByText('', { selector: 'div[data-testid="span-view"]' })[1];
+    await userEvent.click(secondSpan);
+    expect(
+      screen
+        .getAllByText('', { selector: 'div[data-testid="KeyValueTable"]' })
+        .some((table) => table.innerHTML.includes('client-uuid-2'))
+    ).toBe(true);
+    await userEvent.click(secondSpan);
 
-    const thirdSpan = screen.getAllByText('', { selector: 'div[data-test-id="span-view"]' })[2];
-    userEvent.click(thirdSpan);
-    userEvent.click(screen.getByText(/Process/));
-    table = screen.getByText('', { selector: 'div[data-test-id="KeyValueTable"]' });
-    expect(table.innerHTML).toContain('client-uuid-3');
+    const thirdSpan = screen.getAllByText('', { selector: 'div[data-testid="span-view"]' })[2];
+    await userEvent.click(thirdSpan);
+    expect(
+      screen
+        .getAllByText('', { selector: 'div[data-testid="KeyValueTable"]' })
+        .some((table) => table.innerHTML.includes('client-uuid-3'))
+    ).toBe(true);
   });
 
-  it('resets detail view for new trace with the identical spanID', () => {
-    const store = configureStore();
-    const { rerender } = render(
-      <Provider store={store}>
-        <TraceView exploreId={ExploreId.left} dataFrames={[frameOld]} splitOpenFn={() => {}} />
-      </Provider>
-    );
-    const span = screen.getAllByText('', { selector: 'div[data-test-id="span-view"]' })[2];
-    userEvent.click(span);
+  it('resets detail view for new trace with the identical spanID', async () => {
+    const { rerender } = render(getTraceView([frameOld]));
+    const span = screen.getAllByText('', { selector: 'div[data-testid="span-view"]' })[2];
+    await userEvent.click(span);
     //Process is in detail view
-    expect(screen.getByText(/Process/)).toBeInTheDocument();
+    expect(screen.getByText(/Resource/)).toBeInTheDocument();
 
-    rerender(
-      <Provider store={store}>
-        <TraceView exploreId={ExploreId.left} dataFrames={[frameNew]} splitOpenFn={() => {}} />
-      </Provider>
-    );
-    expect(screen.queryByText(/Process/)).not.toBeInTheDocument();
+    rerender(getTraceView([frameNew]));
+    expect(screen.queryByText(/Resource/)).not.toBeInTheDocument();
+  });
+
+  describe('Adaptive Traces restored banner', () => {
+    const restoredBannerTitle = /Trace restored by Adaptive Traces/;
+
+    it('does not render the banner when no span has the restored attribute', async () => {
+      renderTraceView();
+      expect(screen.queryByText(restoredBannerTitle)).not.toBeInTheDocument();
+    });
+
+    it('does not render the banner when grafana-adaptivetraces-app is not installed', async () => {
+      mockPluginInstalled();
+      renderTraceView([frameRestoredByAdaptiveTraces]);
+      expect(screen.queryByText(restoredBannerTitle)).not.toBeInTheDocument();
+    });
+
+    it('renders the banner when at least one span has grafana.adaptivetraces.restored=true', async () => {
+      mockPluginInstalled(['grafana-adaptivetraces-app']);
+      renderTraceView([frameRestoredByAdaptiveTraces]);
+      expect(await screen.findByText(restoredBannerTitle)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /documentation/ })).toBeInTheDocument();
+    });
+
+    it('hides the banner after the user dismisses it', async () => {
+      mockPluginInstalled(['grafana-adaptivetraces-app']);
+      renderTraceView([frameRestoredByAdaptiveTraces]);
+      expect(await screen.findByText(restoredBannerTitle)).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: /close alert/i }));
+      expect(screen.queryByText(restoredBannerTitle)).not.toBeInTheDocument();
+    });
+
+    it('shows the banner again after dismiss when navigating directly to a different restored trace', async () => {
+      mockPluginInstalled(['grafana-adaptivetraces-app']);
+      const { rerender } = render(getTraceView([frameRestoredByAdaptiveTraces]));
+      expect(await screen.findByText(restoredBannerTitle)).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: /close alert/i }));
+      expect(screen.queryByText(restoredBannerTitle)).not.toBeInTheDocument();
+
+      // Navigating straight from one restored trace to another must surface the banner again.
+      rerender(getTraceView([frameRestoredByAdaptiveTracesB]));
+      expect(await screen.findByText(restoredBannerTitle)).toBeInTheDocument();
+    });
   });
 });
 
@@ -173,7 +269,7 @@ const response: TraceData & { spans: TraceSpanData[] } = {
       spanID: '1ed38015486087ca',
       flags: 1,
       operationName: 'HTTP POST - api_prom_push',
-      references: [] as any,
+      references: [],
       startTime: 1585244579835187,
       duration: 1098,
       tags: [
@@ -207,7 +303,7 @@ const response: TraceData & { spans: TraceSpanData[] } = {
         },
       ],
       processID: '1ed38015486087ca',
-      warnings: null as any,
+      warnings: null,
     },
     {
       traceID: '1ed38015486087ca',
@@ -239,9 +335,9 @@ const response: TraceData & { spans: TraceSpanData[] } = {
         { key: 'component', type: 'string', value: 'gRPC' },
         { key: 'internal.span.format', type: 'string', value: 'proto' },
       ],
-      logs: [] as any,
+      logs: [],
       processID: '35118c298fc91f68',
-      warnings: null as any,
+      warnings: null,
     },
   ],
   processes: {
@@ -273,10 +369,10 @@ const response: TraceData & { spans: TraceSpanData[] } = {
       ],
     },
   },
-  warnings: null as any,
+  warnings: null,
 };
 
-const frameOld = new MutableDataFrame({
+export const frameOld = new MutableDataFrame({
   fields: [
     {
       name: 'trace',
@@ -374,6 +470,76 @@ const frameNew = new MutableDataFrame({
     },
     { name: 'warnings', values: [undefined, undefined] },
     { name: 'stackTraces', values: [undefined, undefined] },
+  ],
+  meta: {
+    preferredVisualisationType: 'trace',
+  },
+});
+
+const restoredResponse: TraceData & { spans: TraceSpanData[] } = {
+  ...response,
+  spans: response.spans.map((span, index) =>
+    index === 0
+      ? {
+          ...span,
+          tags: [...(span.tags ?? []), { key: 'grafana.adaptivetraces.restored', type: 'bool', value: true }],
+        }
+      : span
+  ),
+};
+
+const summaryResponse: TraceData & { spans: TraceSpanData[] } = {
+  ...response,
+  spans: response.spans.map((span, index) =>
+    index === 0
+      ? {
+          ...span,
+          tags: [
+            ...(span.tags ?? []),
+            { key: 'aggregation.is_summary', type: 'bool', value: true },
+            { key: 'aggregation.span_count', type: 'int64', value: 4 },
+          ],
+        }
+      : span
+  ),
+};
+
+const frameSummary = new MutableDataFrame({
+  fields: [
+    {
+      name: 'trace',
+      values: [summaryResponse],
+    },
+  ],
+  meta: {
+    preferredVisualisationType: 'trace',
+  },
+});
+
+const frameRestoredByAdaptiveTraces = new MutableDataFrame({
+  fields: [
+    {
+      name: 'trace',
+      values: [restoredResponse],
+    },
+  ],
+  meta: {
+    preferredVisualisationType: 'trace',
+  },
+});
+
+const restoredResponseB: TraceData & { spans: TraceSpanData[] } = {
+  ...restoredResponse,
+  traceID: '2bc49126597198db',
+  spans: restoredResponse.spans.map((span) => ({ ...span, traceID: '2bc49126597198db' })),
+};
+
+const frameRestoredByAdaptiveTracesB = new MutableDataFrame({
+  fields: [
+    {
+      name: 'trace',
+      values: [restoredResponseB],
+    },
   ],
   meta: {
     preferredVisualisationType: 'trace',

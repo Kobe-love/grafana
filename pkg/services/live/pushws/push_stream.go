@@ -2,14 +2,16 @@ package pushws
 
 import (
 	"net/http"
+	"time"
 
+	"github.com/gorilla/websocket"
+
+	liveDto "github.com/grafana/grafana-plugin-sdk-go/live"
+	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/services/live/convert"
 	"github.com/grafana/grafana/pkg/services/live/livecontext"
 	"github.com/grafana/grafana/pkg/services/live/managedstream"
 	"github.com/grafana/grafana/pkg/services/live/pushurl"
-
-	"github.com/gorilla/websocket"
-	liveDto "github.com/grafana/grafana-plugin-sdk-go/live"
 )
 
 // Handler handles WebSocket client connections that push data to Live.
@@ -46,8 +48,8 @@ func (s *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, ok := livecontext.GetContextSignedUser(r.Context())
-	if !ok {
+	user, err := identity.GetRequester(r.Context())
+	if err != nil {
 		logger.Error("No user found in context")
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
@@ -60,6 +62,8 @@ func (s *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	defer func() { _ = conn.Close() }()
 	setupWSConn(r.Context(), conn, s.config)
 
+	started := time.Now()
+
 	for {
 		_, body, err := conn.ReadMessage()
 		if err != nil {
@@ -67,7 +71,7 @@ func (s *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		stream, err := s.managedStreamRunner.GetOrCreateStream(user.OrgId, liveDto.ScopeStream, streamID)
+		stream, err := s.managedStreamRunner.GetOrCreateStream(user.GetNamespace(), liveDto.ScopeStream, streamID)
 		if err != nil {
 			logger.Error("Error getting stream", "error", err)
 			continue
@@ -78,10 +82,11 @@ func (s *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		frameFormat := pushurl.FrameFormatFromValues(urlValues)
 
 		logger.Debug("Live Push request",
-			"protocol", "http",
+			"protocol", "ws",
 			"streamId", streamID,
 			"bodyLength", len(body),
 			"frameFormat", frameFormat,
+			"duration", time.Since(started).String(),
 		)
 
 		metricFrames, err := s.converter.Convert(body, frameFormat)

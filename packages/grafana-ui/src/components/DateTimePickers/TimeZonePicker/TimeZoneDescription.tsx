@@ -1,53 +1,33 @@
-import React, { PropsWithChildren, useMemo } from 'react';
 import { css } from '@emotion/css';
-import { GrafanaTheme, TimeZoneInfo } from '@grafana/data';
-import { useTheme, stylesFactory } from '../../../themes';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useStyles2 } from '../../../themes/ThemeContext';
+
+import { type TimeZoneDisplayInfo } from './timeZoneUtils';
 
 interface Props {
-  info?: TimeZoneInfo;
+  info?: Pick<TimeZoneDisplayInfo, 'abbreviation'>;
 }
 
-export const TimeZoneDescription: React.FC<PropsWithChildren<Props>> = ({ info }) => {
-  const theme = useTheme();
-  const styles = getStyles(theme);
-  const description = useDescription(info);
+export const TimeZoneDescription = ({ info }: Props) => {
+  const styles = useStyles2(getStyles);
 
-  if (!info) {
+  if (!info || !info.abbreviation) {
     return null;
   }
 
-  return <div className={styles.description}>{description}</div>;
+  return <div className={styles.description}>{info.abbreviation}</div>;
 };
 
-const useDescription = (info?: TimeZoneInfo): string => {
-  return useMemo(() => {
-    const parts: string[] = [];
-
-    if (!info) {
-      return '';
-    }
-
-    if (info.countries.length > 0) {
-      const country = info.countries[0];
-      parts.push(country.name);
-    }
-
-    if (info.abbreviation) {
-      parts.push(info.abbreviation);
-    }
-
-    return parts.join(', ');
-  }, [info]);
-};
-
-const getStyles = stylesFactory((theme: GrafanaTheme) => {
+const getStyles = (theme: GrafanaTheme2) => {
   return {
-    description: css`
-      font-weight: normal;
-      font-size: ${theme.typography.size.sm};
-      color: ${theme.colors.textWeak};
-      white-space: normal;
-      text-overflow: ellipsis;
-    `,
+    description: css({
+      fontWeight: 'normal',
+      fontSize: theme.typography.size.sm,
+      color: theme.colors.text.secondary,
+      whiteSpace: 'normal',
+      textOverflow: 'ellipsis',
+    }),
   };
-});
+};

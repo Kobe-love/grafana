@@ -1,251 +1,201 @@
-// Copyright 2014 The Gogs Authors. All rights reserved.
-// Use of this source code is governed by a MIT-style
-// license that can be found in the LICENSE file.
-
-// Code from https://github.com/gogits/gogs/blob/v0.7.0/modules/avatar/avatar.go
-
 package avatar
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"sync"
+	"strings"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2/expirable"
+
 	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/models"
+	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/web"
-	gocache "github.com/patrickmn/go-cache"
 )
 
-const (
-	gravatarSource = "https://secure.gravatar.com/avatar/"
-)
-
-// Avatar represents the avatar object.
 type Avatar struct {
-	hash      string
-	reqParams string
-	data      *bytes.Buffer
-	notFound  bool
-	timestamp time.Time
-}
-
-var alog = log.New("avatar")
-
-func New(hash string) *Avatar {
-	return &Avatar{
-		hash: hash,
-		reqParams: url.Values{
-			"d":    {"retro"},
-			"size": {"200"},
-			"r":    {"pg"}}.Encode(),
-	}
-}
-
-func (a *Avatar) Expired() bool {
-	return time.Since(a.timestamp) > (time.Minute * 10)
+	data     []byte
+	isCustom bool
 }
 
 func (a *Avatar) Encode(wr io.Writer) error {
-	_, err := wr.Write(a.data.Bytes())
+	_, err := wr.Write(a.data)
 	return err
 }
 
-func (a *Avatar) Update() (err error) {
-	select {
-	case <-time.After(time.Second * 3):
-		err = fmt.Errorf("get gravatar image %s timeout", a.hash)
-	case err = <-thunder.GoFetch(gravatarSource+a.hash+"?"+a.reqParams, a):
-	}
-	return err
+func (a *Avatar) GetIsCustom() bool {
+	return a.isCustom
 }
 
-type CacheServer struct {
-	cfg      *setting.Cfg
-	notFound *Avatar
-	cache    *gocache.Cache
+type AvatarCacheServer struct {
+	cfg             *setting.Cfg
+	notFound        *Avatar
+	cache           *lru.LRU[string, *Avatar]
+	logger          log.Logger
+	gravatarBaseURL string
+	client          *http.Client
 }
 
-var validMD5 = regexp.MustCompile("^[a-fA-F0-9]{32}$")
+var (
+	looksLikeGravatarHash = regexp.MustCompile("^(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{64})$")
 
-func (a *CacheServer) Handler(ctx *models.ReqContext) {
+	// Parameters needed to fetch Gravatar with a retro fallback
+	gravatarFetchParams = url.Values{"d": {"retro"}, "size": {"200"}, "r": {"pg"}}.Encode()
+
+	// Parameters needed to see if a Gravatar is custom
+	gravatarCustomParams = url.Values{"d": {"404"}}.Encode()
+)
+
+func (a *AvatarCacheServer) Handler(ctx *contextmodel.ReqContext) {
 	hash := web.Params(ctx.Req)[":hash"]
 
-	if len(hash) != 32 || !validMD5.MatchString(hash) {
+	if !looksLikeGravatarHash.MatchString(hash) {
 		ctx.JsonApiErr(404, "Avatar not found", nil)
 		return
 	}
 
-	var avatar *Avatar
-	obj, exists := a.cache.Get(hash)
-	if exists {
-		avatar = obj.(*Avatar)
-	} else {
-		avatar = New(hash)
-	}
-
-	if avatar.Expired() {
-		// The cache item is either expired or newly created, update it from the server
-		if err := avatar.Update(); err != nil {
-			ctx.Logger.Debug("avatar update", "err", err)
-			avatar = a.notFound
-		}
-	}
-
-	if avatar.notFound {
-		avatar = a.notFound
-	} else if !exists {
-		if err := a.cache.Add(hash, avatar, gocache.DefaultExpiration); err != nil {
-			ctx.Logger.Debug("add avatar to cache", "err", err)
-		}
-	}
+	avatar := a.GetAvatarForHash(ctx.Req.Context(), hash)
 
 	ctx.Resp.Header().Set("Content-Type", "image/jpeg")
 
 	if !a.cfg.EnableGzip {
-		ctx.Resp.Header().Set("Content-Length", strconv.Itoa(len(avatar.data.Bytes())))
+		ctx.Resp.Header().Set("Content-Length", strconv.Itoa(len(avatar.data)))
 	}
 
 	ctx.Resp.Header().Set("Cache-Control", "private, max-age=3600")
 
 	if err := avatar.Encode(ctx.Resp); err != nil {
 		ctx.Logger.Warn("avatar encode error:", "err", err)
-		ctx.Resp.WriteHeader(500)
+		ctx.Resp.WriteHeader(http.StatusInternalServerError)
 	}
 }
 
-func NewCacheServer(cfg *setting.Cfg) *CacheServer {
-	return &CacheServer{
-		cfg:      cfg,
-		notFound: newNotFound(cfg),
-		cache:    gocache.New(time.Hour, time.Hour*2),
+func (a *AvatarCacheServer) GetAvatarForHash(ctx context.Context, hash string) *Avatar {
+	if a.cfg.DisableGravatar {
+		a.logger.Warn("'GetGravatarForHash' called despite gravatars being disabled; returning default profile image")
+		return a.notFound
 	}
+	return a.getAvatarForHash(ctx, hash)
 }
 
-func newNotFound(cfg *setting.Cfg) *Avatar {
-	avatar := &Avatar{notFound: true}
+func (a *AvatarCacheServer) getAvatarForHash(ctx context.Context, hash string) *Avatar {
+	// This also handles expiration, so if the cache is hit but expired, it will return exists=false with the data.
+	avatar, exists := a.cache.Get(hash)
+	if exists && avatar != nil {
+		return avatar
+	}
 
-	// load user_profile png into buffer
-	// It's safe to ignore gosec warning G304 since the variable part of the file path comes from a configuration
-	// variable.
-	// nolint:gosec
-	path := filepath.Join(cfg.StaticRootPath, "img", "user_profile.png")
-	// It's safe to ignore gosec warning G304 since the variable part of the file path comes from a configuration
-	// variable.
-	// nolint:gosec
-	if data, err := ioutil.ReadFile(path); err != nil {
-		alog.Error("Failed to read user_profile.png", "path", path)
-	} else {
-		avatar.data = bytes.NewBuffer(data)
+	avatar, err := a.getAvatarRemote(ctx, hash)
+	if err != nil {
+		// For any temporary or permanent errors, fall back to the not found image but don't cache it.
+		// This avoids poisoning the cache for the full TTL on transient failures.
+		a.logger.Debug("get avatar", "err", err)
+		return a.notFound
+	}
+
+	if evicted := a.cache.Add(hash, avatar); evicted {
+		a.logger.Debug("add avatar to cache", "hash", hash, "evicted", evicted)
 	}
 
 	return avatar
 }
 
-// thunder downloader
-var thunder = &Thunder{QueueSize: 10}
+func (a *AvatarCacheServer) getAvatarRemote(ctx context.Context, hash string) (*Avatar, error) {
+	fullURL := a.gravatarBaseURL + "/" + hash + "?" + gravatarFetchParams
 
-type Thunder struct {
-	QueueSize int // download queue size
-	q         chan *thunderTask
-	once      sync.Once
-}
-
-func (t *Thunder) init() {
-	if t.QueueSize < 1 {
-		t.QueueSize = 1
-	}
-	t.q = make(chan *thunderTask, t.QueueSize)
-	for i := 0; i < t.QueueSize; i++ {
-		go func() {
-			for {
-				task := <-t.q
-				task.Fetch()
-			}
-		}()
-	}
-}
-
-func (t *Thunder) Fetch(url string, avatar *Avatar) error {
-	t.once.Do(t.init)
-	task := &thunderTask{
-		Url:    url,
-		Avatar: avatar,
-	}
-	task.Add(1)
-	t.q <- task
-	task.Wait()
-	return task.err
-}
-
-func (t *Thunder) GoFetch(url string, avatar *Avatar) chan error {
-	c := make(chan error)
-	go func() {
-		c <- t.Fetch(url, avatar)
-	}()
-	return c
-}
-
-// thunder download
-type thunderTask struct {
-	Url    string
-	Avatar *Avatar
-	sync.WaitGroup
-	err error
-}
-
-func (a *thunderTask) Fetch() {
-	a.err = a.fetch()
-	a.Done()
-}
-
-var client = &http.Client{
-	Timeout:   time.Second * 2,
-	Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
-}
-
-func (a *thunderTask) fetch() error {
-	a.Avatar.timestamp = time.Now()
-
-	alog.Debug("avatar.fetch(fetch new avatar)", "url", a.Url)
-	req, err := http.NewRequest("GET", a.Url, nil)
+	avatarData, err := a.performGet(ctx, fullURL)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to get avatar: %w", err)
 	}
+
+	isCustom := a.isAvatarCustomRemote(ctx, hash)
+
+	return &Avatar{
+		data:     avatarData,
+		isCustom: isCustom,
+	}, nil
+}
+
+func (a *AvatarCacheServer) isAvatarCustomRemote(ctx context.Context, hash string) bool {
+	fullURL := a.gravatarBaseURL + "/" + hash + "?" + gravatarCustomParams
+
+	_, err := a.performGet(ctx, fullURL)
+	return err == nil
+}
+
+func ProvideAvatarCacheServer(cfg *setting.Cfg) *AvatarCacheServer {
+	logger := log.New("avatar")
+	return &AvatarCacheServer{
+		cfg:             cfg,
+		notFound:        newNotFound(cfg, logger),
+		cache:           lru.NewLRU[string, *Avatar](2000, nil, time.Hour),
+		logger:          logger,
+		gravatarBaseURL: strings.TrimSuffix(cfg.GravatarURL, "/"),
+		client: &http.Client{
+			Timeout:   time.Second * 2,
+			Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+		},
+	}
+}
+
+func newNotFound(cfg *setting.Cfg, logger log.Logger) *Avatar {
+	avatar := &Avatar{}
+
+	// It's safe to ignore gosec warning G304 since the variable part of the file path comes from
+	// a configuration variable.
+	path := filepath.Join(cfg.StaticRootPath, "img", "user_profile.png")
+	if data, err := os.ReadFile(path); err != nil { //nolint:gosec
+		logger.Error("Failed to read user_profile.png", "path", path)
+	} else {
+		avatar.data = data
+	}
+
+	return avatar
+}
+
+func (a *AvatarCacheServer) performGet(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/jpeg,image/png,*/*;q=0.8")
 	req.Header.Set("Accept-Encoding", "deflate,sdch")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/33.0.1750.154 Safari/537.36")
-	resp, err := client.Do(req)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+
+	a.logger.Debug("Fetching avatar url with parameters", "url", url)
+
+	resp, err := a.client.Do(req)
 	if err != nil {
-		a.Avatar.notFound = true
-		return fmt.Errorf("gravatar unreachable: %w", err)
+		return nil, fmt.Errorf("gravatar unreachable: %w", err)
 	}
+
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			alog.Warn("Failed to close response body", "err", err)
-		}
+		_ = resp.Body.Close()
 	}()
 
-	if resp.StatusCode != 200 {
-		a.Avatar.notFound = true
-		return fmt.Errorf("status code: %d", resp.StatusCode)
+	limitedBody := io.LimitReader(resp.Body, 1<<20) // 1MB
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 	}
 
-	a.Avatar.data = &bytes.Buffer{}
-	writer := bufio.NewWriter(a.Avatar.data)
+	if resp.ContentLength > 0 {
+		data := make([]byte, resp.ContentLength)
+		_, err = io.ReadFull(limitedBody, data)
+		return data, err
+	}
 
-	_, err = io.Copy(writer, resp.Body)
-	return err
+	return io.ReadAll(limitedBody)
 }

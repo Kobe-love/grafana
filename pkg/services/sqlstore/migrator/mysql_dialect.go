@@ -1,26 +1,30 @@
 package migrator
 
 import (
+	"context"
+	"database/sql"
+	"embed"
 	"errors"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
 	"github.com/VividCortex/mysqlerr"
 	"github.com/go-sql-driver/mysql"
-	"github.com/grafana/grafana/pkg/util/errutil"
-	"xorm.io/xorm"
+
+	"github.com/grafana/grafana/pkg/infra/log"
+	"github.com/grafana/grafana/pkg/util/xorm"
 )
 
 type MySQLDialect struct {
 	BaseDialect
 }
 
-func NewMysqlDialect(engine *xorm.Engine) Dialect {
+func NewMysqlDialect() Dialect {
 	d := MySQLDialect{}
-	d.BaseDialect.dialect = &d
-	d.BaseDialect.engine = engine
-	d.BaseDialect.driverName = MySQL
+	d.dialect = &d
+	d.driverName = MySQL
 	return &d
 }
 
@@ -36,11 +40,22 @@ func (db *MySQLDialect) AutoIncrStr() string {
 	return "AUTO_INCREMENT"
 }
 
+func (db *MySQLDialect) BooleanValue(value bool) interface{} {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func (db *MySQLDialect) BooleanStr(value bool) string {
 	if value {
 		return "1"
 	}
 	return "0"
+}
+
+func (db *MySQLDialect) BatchSize() int {
+	return 1000
 }
 
 func (db *MySQLDialect) SQLType(c *Column) string {
@@ -66,6 +81,9 @@ func (db *MySQLDialect) SQLType(c *Column) string {
 		c.Length = 64
 	case DB_NVarchar:
 		res = DB_Varchar
+	case DB_Uuid:
+		res = DB_Char
+		c.Length = 36
 	default:
 		res = c.Type
 	}
@@ -86,14 +104,18 @@ func (db *MySQLDialect) SQLType(c *Column) string {
 
 	switch c.Type {
 	case DB_Char, DB_Varchar, DB_NVarchar, DB_TinyText, DB_Text, DB_MediumText, DB_LongText:
-		res += " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+		if c.IsLatin {
+			res += " CHARACTER SET latin1 COLLATE latin1_bin"
+		} else {
+			res += " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+		}
 	}
 
 	return res
 }
 
 func (db *MySQLDialect) UpdateTableSQL(tableName string, columns []*Column) string {
-	var statements = []string{}
+	statements := make([]string, 0, 1+len(columns))
 
 	statements = append(statements, "DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 
@@ -104,37 +126,45 @@ func (db *MySQLDialect) UpdateTableSQL(tableName string, columns []*Column) stri
 	return "ALTER TABLE " + db.Quote(tableName) + " " + strings.Join(statements, ", ") + ";"
 }
 
-func (db *MySQLDialect) IndexCheckSQL(tableName, indexName string) (string, []interface{}) {
-	args := []interface{}{tableName, indexName}
+func (db *MySQLDialect) IndexCheckSQL(tableName, indexName string) (string, []any) {
+	args := []any{tableName, indexName}
 	sql := "SELECT 1 FROM " + db.Quote("INFORMATION_SCHEMA") + "." + db.Quote("STATISTICS") + " WHERE " + db.Quote("TABLE_SCHEMA") + " = DATABASE() AND " + db.Quote("TABLE_NAME") + "=? AND " + db.Quote("INDEX_NAME") + "=?"
 	return sql, args
 }
 
-func (db *MySQLDialect) ColumnCheckSQL(tableName, columnName string) (string, []interface{}) {
-	args := []interface{}{tableName, columnName}
+func (db *MySQLDialect) ColumnCheckSQL(tableName, columnName string) (string, []any) {
+	args := []any{tableName, columnName}
 	sql := "SELECT 1 FROM " + db.Quote("INFORMATION_SCHEMA") + "." + db.Quote("COLUMNS") + " WHERE " + db.Quote("TABLE_SCHEMA") + " = DATABASE() AND " + db.Quote("TABLE_NAME") + "=? AND " + db.Quote("COLUMN_NAME") + "=?"
 	return sql, args
 }
 
-func (db *MySQLDialect) CleanDB() error {
-	tables, err := db.engine.DBMetas()
+func (db *MySQLDialect) RenameColumn(table Table, column *Column, newName string) string {
+	quote := db.dialect.Quote
+	return fmt.Sprintf(
+		"ALTER TABLE %s CHANGE %s %s %s",
+		quote(table.Name), quote(column.Name), quote(newName), db.SQLType(column),
+	)
+}
+
+func (db *MySQLDialect) CleanDB(engine *xorm.Engine) error {
+	tables, err := engine.DBMetas()
 	if err != nil {
 		return err
 	}
-	sess := db.engine.NewSession()
+	sess := engine.NewSession()
 	defer sess.Close()
 
 	for _, table := range tables {
 		switch table.Name {
 		default:
 			if _, err := sess.Exec("set foreign_key_checks = 0"); err != nil {
-				return errutil.Wrap("failed to disable foreign key checks", err)
+				return fmt.Errorf("%v: %w", "failed to disable foreign key checks", err)
 			}
 			if _, err := sess.Exec("drop table " + table.Name + " ;"); err != nil {
-				return errutil.Wrapf(err, "failed to delete table %q", table.Name)
+				return fmt.Errorf("failed to delete table %q: %w", table.Name, err)
 			}
 			if _, err := sess.Exec("set foreign_key_checks = 1"); err != nil {
-				return errutil.Wrap("failed to disable foreign key checks", err)
+				return fmt.Errorf("%v: %w", "failed to disable foreign key checks", err)
 			}
 		}
 	}
@@ -144,12 +174,12 @@ func (db *MySQLDialect) CleanDB() error {
 
 // TruncateDBTables truncates all the tables.
 // A special case is the dashboard_acl table where we keep the default permissions.
-func (db *MySQLDialect) TruncateDBTables() error {
-	tables, err := db.engine.DBMetas()
+func (db *MySQLDialect) TruncateDBTables(engine *xorm.Engine) error {
+	tables, err := engine.Dialect().GetTables()
 	if err != nil {
 		return err
 	}
-	sess := db.engine.NewSession()
+	sess := engine.NewSession()
 	defer sess.Close()
 
 	for _, table := range tables {
@@ -159,14 +189,14 @@ func (db *MySQLDialect) TruncateDBTables() error {
 		case "dashboard_acl":
 			// keep default dashboard permissions
 			if _, err := sess.Exec(fmt.Sprintf("DELETE FROM %v WHERE dashboard_id != -1 AND org_id != -1;", db.Quote(table.Name))); err != nil {
-				return errutil.Wrapf(err, "failed to truncate table %q", table.Name)
+				return fmt.Errorf("failed to truncate table %q: %w", table.Name, err)
 			}
 			if _, err := sess.Exec(fmt.Sprintf("ALTER TABLE %v AUTO_INCREMENT = 3;", db.Quote(table.Name))); err != nil {
-				return errutil.Wrapf(err, "failed to reset table %q", table.Name)
+				return fmt.Errorf("failed to reset table %q: %w", table.Name, err)
 			}
 		default:
 			if _, err := sess.Exec(fmt.Sprintf("TRUNCATE TABLE %v;", db.Quote(table.Name))); err != nil {
-				return errutil.Wrapf(err, "failed to truncate table %q", table.Name)
+				return fmt.Errorf("failed to truncate table %q: %w", table.Name, err)
 			}
 		}
 	}
@@ -175,8 +205,7 @@ func (db *MySQLDialect) TruncateDBTables() error {
 }
 
 func (db *MySQLDialect) isThisError(err error, errcode uint16) bool {
-	var driverErr *mysql.MySQLError
-	if errors.As(err, &driverErr) {
+	if driverErr, ok := errors.AsType[*mysql.MySQLError](err); ok {
 		if driverErr.Number == errcode {
 			return true
 		}
@@ -190,8 +219,7 @@ func (db *MySQLDialect) IsUniqueConstraintViolation(err error) bool {
 }
 
 func (db *MySQLDialect) ErrorMessage(err error) string {
-	var driverErr *mysql.MySQLError
-	if errors.As(err, &driverErr) {
+	if driverErr, ok := errors.AsType[*mysql.MySQLError](err); ok {
 		return driverErr.Message
 	}
 	return ""
@@ -201,8 +229,16 @@ func (db *MySQLDialect) IsDeadlock(err error) bool {
 	return db.isThisError(err, mysqlerr.ER_LOCK_DEADLOCK)
 }
 
-// UpsertSQL returns the upsert sql statement for PostgreSQL dialect
+// UpsertSQL returns the upsert sql statement for MySQL dialect
 func (db *MySQLDialect) UpsertSQL(tableName string, keyCols, updateCols []string) string {
+	q, _ := db.UpsertMultipleSQL(tableName, keyCols, updateCols, 1)
+	return q
+}
+
+func (db *MySQLDialect) UpsertMultipleSQL(tableName string, keyCols, updateCols []string, count int) (string, error) {
+	if count < 1 {
+		return "", fmt.Errorf("upsert statement must have count >= 1. Got %v", count)
+	}
 	columnsStr := strings.Builder{}
 	colPlaceHoldersStr := strings.Builder{}
 	setStr := strings.Builder{}
@@ -217,11 +253,162 @@ func (db *MySQLDialect) UpsertSQL(tableName string, keyCols, updateCols []string
 		setStr.WriteString(fmt.Sprintf("%s=VALUES(%s)%s", db.Quote(c), db.Quote(c), separator))
 	}
 
-	s := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s) ON DUPLICATE KEY UPDATE %s`,
+	valuesStr := strings.Builder{}
+	separator = ", "
+	colPlaceHolders := colPlaceHoldersStr.String()
+	for i := range count {
+		if i == count-1 {
+			separator = ""
+		}
+		valuesStr.WriteString(fmt.Sprintf("(%s)%s", colPlaceHolders, separator))
+	}
+
+	s := fmt.Sprintf(`INSERT INTO %s (%s) VALUES %s ON DUPLICATE KEY UPDATE %s`,
 		tableName,
 		columnsStr.String(),
-		colPlaceHoldersStr.String(),
+		valuesStr.String(),
 		setStr.String(),
 	)
-	return s
+	return s, nil
+}
+
+func (db *MySQLDialect) SupportsAdvisoryLocks() bool {
+	return true
+}
+
+func (db *MySQLDialect) Lock(cfg LockCfg) error {
+	query := "SELECT GET_LOCK(?, ?)"
+	var success sql.NullBool
+
+	// trying to obtain the lock with the specific name
+	// the lock is exclusive per session and is released explicitly by executing RELEASE_LOCK() or implicitly when the session terminates
+	// it returns 1 if the lock was obtained successfully,
+	// 0 if the attempt timed out (for example, because another client has previously locked the name),
+	// or NULL if an error occurred
+	// starting from MySQL 5.7 it is even possible for a given session to acquire multiple locks for the same name
+	// however other sessions cannot acquire a lock with that name until the acquiring session releases all its locks for the name.
+	_, err := cfg.Session.SQL(query, cfg.Key, cfg.Timeout).Get(&success)
+	if err != nil {
+		return err
+	}
+	if !success.Valid || !success.Bool {
+		return ErrLockDB
+	}
+	return nil
+}
+
+func (db *MySQLDialect) Unlock(cfg LockCfg) error {
+	query := "SELECT RELEASE_LOCK(?)"
+	var success sql.NullBool
+
+	// trying to release the lock with the specific name
+	// it returns 1 if the lock was released,
+	// 0 if the lock was not established by this thread (in which case the lock is not released),
+	// and NULL if the named lock did not exist (it was never obtained by a call to GET_LOCK() or if it has previously been released)
+	_, err := cfg.Session.SQL(query, cfg.Key).Get(&success)
+	if err != nil {
+		return err
+	}
+	if !success.Valid || !success.Bool {
+		return ErrReleaseLockDB
+	}
+	return nil
+}
+
+func (db *MySQLDialect) GetDBName(dsn string) (string, error) {
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "", err
+	}
+
+	return cfg.DBName, nil
+}
+
+//go:embed snapshot/*.sql
+var sqlFiles embed.FS
+
+func (db *MySQLDialect) CreateDatabaseFromSnapshot(ctx context.Context, engine *xorm.Engine, migrationLogTableName string, logger log.Logger) error {
+	// Entire schema is generated only when called with "migration_log" table.
+	// Normally if schema creates other "*_migration_log" tables, we don't get here. However if new migration table is introduced by later migration,
+	// CreateDatabaseFromSnapshot may be called for given table, but if it wasn't part of original schema, we can't do anything here.
+	if migrationLogTableName != "migration_log" {
+		return nil
+	}
+
+	entries, err := sqlFiles.ReadDir("snapshot")
+	if err != nil {
+		return err
+	}
+
+	logger.Info("creating database schema from snapshot")
+
+	for _, entry := range entries {
+		logger.Debug("using snapshot file", "file", entry.Name())
+		data, err := sqlFiles.ReadFile(path.Join("snapshot", entry.Name()))
+		if err != nil {
+			return err
+		}
+
+		statements := extractStatements(string(data))
+		if err := db.executeStatements(ctx, engine, statements); err != nil {
+			return err
+		}
+	}
+
+	logger.Info("successfully created database schema from snapshot")
+	return nil
+}
+
+func extractStatements(schema string) []string {
+	lines := strings.Split(schema, "\n")
+
+	statements := make([]string, 0, len(lines))
+
+	sb := strings.Builder{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "--") {
+			continue
+		}
+
+		if line == "" {
+			continue
+		}
+
+		endOfStatement := false
+		if strings.HasSuffix(line, ";") {
+			endOfStatement = true
+			line = strings.TrimSuffix(line, ";")
+		}
+
+		if sb.Len() > 0 {
+			sb.WriteRune('\n')
+		}
+		sb.WriteString(line)
+		if endOfStatement && sb.Len() > 0 {
+			statements = append(statements, sb.String())
+			sb.Reset()
+		}
+	}
+
+	if sb.Len() > 0 {
+		statements = append(statements, sb.String())
+	}
+	return statements
+}
+
+func (s *MySQLDialect) executeStatements(ctx context.Context, engine *xorm.Engine, statements []string) error {
+	// mysqldump statements rely on connection-scoped session state, so they must all use the same connection.
+	conn, err := engine.DB().Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection for snapshot restore: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	for _, statement := range statements {
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("statement %s failed with error: %w", statement, err)
+		}
+	}
+	return nil
 }

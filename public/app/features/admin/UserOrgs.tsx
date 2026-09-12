@@ -1,25 +1,18 @@
-import React, { PureComponent, ReactElement } from 'react';
 import { css, cx } from '@emotion/css';
-import {
-  Button,
-  ConfirmButton,
-  Field,
-  HorizontalGroup,
-  Icon,
-  Modal,
-  stylesFactory,
-  Themeable,
-  Tooltip,
-  useStyles2,
-  useTheme,
-  withTheme,
-} from '@grafana/ui';
-import { GrafanaTheme, GrafanaTheme2 } from '@grafana/data';
-import { AccessControlAction, Organization, OrgRole, UserDTO, UserOrg } from 'app/types';
-import { OrgPicker, OrgSelectItem } from 'app/core/components/Select/OrgPicker';
-import { OrgRolePicker } from './OrgRolePicker';
-import { contextSrv } from 'app/core/core';
+import { memo, type ReactElement, useEffect, useRef, useState } from 'react';
+
+import { type GrafanaTheme2, OrgRole } from '@grafana/data';
+import { Trans, t } from '@grafana/i18n';
+import { Button, ConfirmButton, Field, Icon, Modal, Tooltip, useStyles2, Stack, TextLink } from '@grafana/ui';
 import { UserRolePicker } from 'app/core/components/RolePicker/UserRolePicker';
+import { fetchRoleOptions, updateUserRoles } from 'app/core/components/RolePicker/api';
+import { OrgPicker, type OrgSelectItem } from 'app/core/components/Select/OrgPicker';
+import { contextSrv } from 'app/core/services/context_srv';
+import { AccessControlAction, type Role } from 'app/types/accessControl';
+import { type Organization } from 'app/types/organization';
+import { type UserOrg, type UserDTO } from 'app/types/user';
+
+import { OrgRolePicker } from './OrgRolePicker';
 
 interface Props {
   orgs: UserOrg[];
@@ -31,97 +24,92 @@ interface Props {
   onOrgAdd: (orgId: number, role: OrgRole) => void;
 }
 
-interface State {
-  showAddOrgModal: boolean;
-}
+export const UserOrgs = memo(({ user, orgs, isExternalUser, onOrgRoleChange, onOrgRemove, onOrgAdd }: Props) => {
+  const [showAddOrgModal, setShowAddOrgModal] = useState(false);
+  const addToOrgButtonRef = useRef<HTMLButtonElement>(null);
 
-export class UserOrgs extends PureComponent<Props, State> {
-  addToOrgButtonRef = React.createRef<HTMLButtonElement>();
-  state = {
-    showAddOrgModal: false,
+  const showOrgAddModal = () => {
+    setShowAddOrgModal(true);
   };
 
-  showOrgAddModal = () => {
-    this.setState({ showAddOrgModal: true });
+  const dismissOrgAddModal = () => {
+    setShowAddOrgModal(false);
+    addToOrgButtonRef.current?.focus();
   };
 
-  dismissOrgAddModal = () => {
-    this.setState({ showAddOrgModal: false }, () => {
-      this.addToOrgButtonRef.current?.focus();
-    });
-  };
+  const canAddToOrg = contextSrv.hasPermission(AccessControlAction.OrgUsersAdd) && !isExternalUser;
 
-  render() {
-    const { user, orgs, isExternalUser, onOrgRoleChange, onOrgRemove, onOrgAdd } = this.props;
-    const { showAddOrgModal } = this.state;
-    const addToOrgContainerClass = css`
-      margin-top: 0.8rem;
-    `;
-    const canAddToOrg = contextSrv.hasPermission(AccessControlAction.OrgUsersAdd);
-    return (
-      <>
-        <h3 className="page-heading">Organizations</h3>
-        <div className="gf-form-group">
-          <div className="gf-form">
-            <table className="filter-table form-inline">
-              <tbody>
-                {orgs.map((org, index) => (
-                  <OrgRow
-                    key={`${org.orgId}-${index}`}
-                    isExternalUser={isExternalUser}
-                    user={user}
-                    org={org}
-                    onOrgRoleChange={onOrgRoleChange}
-                    onOrgRemove={onOrgRemove}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className={addToOrgContainerClass}>
-            {canAddToOrg && (
-              <Button variant="secondary" onClick={this.showOrgAddModal} ref={this.addToOrgButtonRef}>
-                Add user to organization
-              </Button>
-            )}
-          </div>
-          <AddToOrgModal isOpen={showAddOrgModal} onOrgAdd={onOrgAdd} onDismiss={this.dismissOrgAddModal} />
+  return (
+    <div>
+      <h3 className="page-heading">
+        <Trans i18nKey="admin.user-orgs.title">Organizations</Trans>
+      </h3>
+      <Stack gap={1.5} direction="column">
+        <table className="filter-table form-inline">
+          <tbody>
+            {orgs.map((org, index) => (
+              <OrgRow
+                key={`${org.orgId}-${index}`}
+                isExternalUser={isExternalUser}
+                user={user}
+                org={org}
+                onOrgRoleChange={onOrgRoleChange}
+                onOrgRemove={onOrgRemove}
+              />
+            ))}
+          </tbody>
+        </table>
+
+        <div>
+          {canAddToOrg && (
+            <Button variant="secondary" onClick={showOrgAddModal} ref={addToOrgButtonRef}>
+              <Trans i18nKey="admin.user-orgs.add-button">Add user to organization</Trans>
+            </Button>
+          )}
         </div>
-      </>
-    );
-  }
-}
-
-const getOrgRowStyles = stylesFactory((theme: GrafanaTheme) => {
-  return {
-    removeButton: css`
-      margin-right: 0.6rem;
-      text-decoration: underline;
-      color: ${theme.palette.blue95};
-    `,
-    label: css`
-      font-weight: 500;
-    `,
-    disabledTooltip: css`
-      display: flex;
-    `,
-    tooltipItem: css`
-      margin-left: 5px;
-    `,
-    tooltipItemLink: css`
-      color: ${theme.palette.blue95};
-    `,
-    rolePickerWrapper: css`
-      display: flex;
-    `,
-    rolePicker: css`
-      flex: auto;
-      margin-right: ${theme.spacing.sm};
-    `,
-  };
+        <AddToOrgModal
+          user={user}
+          userOrgs={orgs}
+          isOpen={showAddOrgModal}
+          onOrgAdd={onOrgAdd}
+          onDismiss={dismissOrgAddModal}
+        />
+      </Stack>
+    </div>
+  );
 });
+UserOrgs.displayName = 'UserOrgs';
 
-interface OrgRowProps extends Themeable {
+const getOrgRowStyles = (theme: GrafanaTheme2) => {
+  return {
+    removeButton: css({
+      marginRight: '0.6rem',
+      textDecoration: 'underline',
+      color: theme.v1.palette.blue95,
+    }),
+    label: css({
+      fontWeight: 500,
+    }),
+    disabledTooltip: css({
+      display: 'flex',
+    }),
+    tooltipItem: css({
+      marginLeft: '5px',
+    }),
+    tooltipItemLink: css({
+      color: theme.v1.palette.blue95,
+    }),
+    rolePickerWrapper: css({
+      display: 'flex',
+    }),
+    rolePicker: css({
+      flex: 'auto',
+      marginRight: theme.spacing(1),
+    }),
+  };
+};
+
+interface OrgRowProps {
   user?: UserDTO;
   org: UserOrg;
   isExternalUser?: boolean;
@@ -129,199 +117,239 @@ interface OrgRowProps extends Themeable {
   onOrgRoleChange: (orgId: number, newRole: OrgRole) => void;
 }
 
-class UnThemedOrgRow extends PureComponent<OrgRowProps> {
-  state = {
-    currentRole: this.props.org.role,
-    isChangingRole: false,
+const OrgRow = memo(({ user, org, isExternalUser, onOrgRemove, onOrgRoleChange }: OrgRowProps) => {
+  const [currentRole, setCurrentRole] = useState(org.role);
+  const [isChangingRole, setIsChangingRole] = useState(false);
+  const [roleOptions, setRoleOptions] = useState<Role[]>([]);
+  const styles = useStyles2(getOrgRowStyles);
+
+  useEffect(() => {
+    if (contextSrv.licensedAccessControlEnabled()) {
+      if (contextSrv.hasPermission(AccessControlAction.ActionRolesList)) {
+        fetchRoleOptions(org.orgId)
+          .then((roles) => setRoleOptions(roles))
+          .catch((e) => console.error(e));
+      }
+    }
+  }, [org.orgId]);
+
+  const handleOrgRemove = async () => {
+    onOrgRemove(org.orgId);
   };
 
-  onOrgRemove = () => {
-    const { org } = this.props;
-    this.props.onOrgRemove(org.orgId);
+  const handleChangeRoleClick = () => {
+    setIsChangingRole(true);
+    setCurrentRole(org.role);
   };
 
-  onChangeRoleClick = () => {
-    const { org } = this.props;
-    this.setState({ isChangingRole: true, currentRole: org.role });
+  const handleOrgRoleChange = (newRole: OrgRole) => {
+    setCurrentRole(newRole);
   };
 
-  onOrgRoleChange = (newRole: OrgRole) => {
-    this.setState({ currentRole: newRole });
+  const handleOrgRoleSave = () => {
+    onOrgRoleChange(org.orgId, currentRole);
   };
 
-  onOrgRoleSave = () => {
-    this.props.onOrgRoleChange(this.props.org.orgId, this.state.currentRole);
+  const handleCancelClick = () => {
+    setIsChangingRole(false);
   };
 
-  onCancelClick = () => {
-    this.setState({ isChangingRole: false });
+  const handleBasicRoleChange = (newRole: OrgRole) => {
+    onOrgRoleChange(org.orgId, newRole);
   };
 
-  onBuiltinRoleChange = (newRole: OrgRole) => {
-    this.props.onOrgRoleChange(this.props.org.orgId, newRole);
-  };
+  const authSource = user?.authLabels?.length && user?.authLabels[0];
+  const lockMessage = authSource ? `Synced via ${authSource}` : '';
+  const labelClass = cx('width-16', styles.label);
+  const canChangeRole = contextSrv.hasPermission(AccessControlAction.OrgUsersWrite);
+  const canRemoveFromOrg = contextSrv.hasPermission(AccessControlAction.OrgUsersRemove) && !isExternalUser;
+  const rolePickerDisabled = isExternalUser || !canChangeRole;
 
-  render() {
-    const { user, org, isExternalUser, theme } = this.props;
-    const { currentRole, isChangingRole } = this.state;
-    const styles = getOrgRowStyles(theme);
-    const labelClass = cx('width-16', styles.label);
-    const canChangeRole = contextSrv.hasPermission(AccessControlAction.OrgUsersRoleUpdate);
-    const canRemoveFromOrg = contextSrv.hasPermission(AccessControlAction.OrgUsersRemove);
-    const rolePickerDisabled = isExternalUser || !canChangeRole;
-
-    const inputId = `${org.name}-input`;
-    return (
-      <tr>
-        <td className={labelClass}>
-          <label htmlFor={inputId}>{org.name}</label>
-        </td>
-        {contextSrv.accessControlEnabled() ? (
-          <td>
-            <div className={styles.rolePickerWrapper}>
-              <div className={styles.rolePicker}>
-                <UserRolePicker
-                  userId={user?.id || 0}
-                  orgId={org.orgId}
-                  builtInRole={org.role}
-                  onBuiltinRoleChange={this.onBuiltinRoleChange}
-                  builtinRolesDisabled={rolePickerDisabled}
-                />
-              </div>
-              {isExternalUser && <ExternalUserTooltip />}
+  const inputId = `${org.name}-input`;
+  return (
+    <tr>
+      <td className={labelClass}>
+        <label htmlFor={inputId}>{org.name}</label>
+      </td>
+      {contextSrv.licensedAccessControlEnabled() ? (
+        <td>
+          <div className={styles.rolePickerWrapper}>
+            <div className={styles.rolePicker}>
+              <UserRolePicker
+                userId={user?.id || 0}
+                orgId={org.orgId}
+                basicRole={org.role}
+                roleOptions={roleOptions}
+                onBasicRoleChange={handleBasicRoleChange}
+                basicRoleDisabled={rolePickerDisabled}
+                basicRoleDisabledMessage="This user's role is not editable because it is synchronized from your auth provider.
+                  Refer to the Grafana authentication docs for details."
+              />
             </div>
-          </td>
-        ) : (
-          <>
-            {isChangingRole ? (
-              <td>
-                <OrgRolePicker inputId={inputId} value={currentRole} onChange={this.onOrgRoleChange} autoFocus />
-              </td>
-            ) : (
-              <td className="width-25">{org.role}</td>
-            )}
-            <td colSpan={1}>
-              <div className="pull-right">
-                {canChangeRole && (
-                  <ChangeOrgButton
-                    isExternalUser={isExternalUser}
-                    onChangeRoleClick={this.onChangeRoleClick}
-                    onCancelClick={this.onCancelClick}
-                    onOrgRoleSave={this.onOrgRoleSave}
-                  />
-                )}
-              </div>
-            </td>
-          </>
-        )}
-        <td colSpan={1}>
-          <div className="pull-right">
-            {canRemoveFromOrg && (
-              <ConfirmButton
-                confirmText="Confirm removal"
-                confirmVariant="destructive"
-                onCancel={this.onCancelClick}
-                onConfirm={this.onOrgRemove}
-                autoFocus
-              >
-                Remove from organization
-              </ConfirmButton>
-            )}
+            {isExternalUser && <ExternalUserTooltip lockMessage={lockMessage} />}
           </div>
         </td>
-      </tr>
-    );
-  }
-}
+      ) : (
+        <>
+          {isChangingRole ? (
+            <td>
+              <OrgRolePicker inputId={inputId} value={currentRole} onChange={handleOrgRoleChange} autoFocus />
+            </td>
+          ) : (
+            <td className="width-25">{org.role}</td>
+          )}
+          <td colSpan={1}>
+            {canChangeRole && (
+              <ChangeOrgButton
+                lockMessage={lockMessage}
+                isExternalUser={isExternalUser}
+                onChangeRoleClick={handleChangeRoleClick}
+                onCancelClick={handleCancelClick}
+                onOrgRoleSave={handleOrgRoleSave}
+              />
+            )}
+          </td>
+        </>
+      )}
+      <td colSpan={1}>
+        {canRemoveFromOrg && (
+          <ConfirmButton
+            confirmText={t('admin.un-themed-org-row.confirmText-confirm-removal', 'Confirm removal')}
+            confirmVariant="destructive"
+            onCancel={handleCancelClick}
+            onConfirm={handleOrgRemove}
+          >
+            {t('admin.user-orgs.remove-button', 'Remove from organization')}
+          </ConfirmButton>
+        )}
+      </td>
+    </tr>
+  );
+});
+OrgRow.displayName = 'OrgRow';
 
-const OrgRow = withTheme(UnThemedOrgRow);
-
-const getAddToOrgModalStyles = stylesFactory(() => ({
-  modal: css`
-    width: 500px;
-  `,
-  buttonRow: css`
-    text-align: center;
-  `,
-  modalContent: css`
-    overflow: visible;
-  `,
-}));
+const getAddToOrgModalStyles = () => ({
+  modal: css({
+    width: '500px',
+  }),
+  buttonRow: css({
+    textAlign: 'center',
+  }),
+  modalContent: css({
+    overflow: 'visible',
+  }),
+});
 
 interface AddToOrgModalProps {
   isOpen: boolean;
-
+  user?: UserDTO;
+  userOrgs: UserOrg[];
   onOrgAdd(orgId: number, role: string): void;
 
   onDismiss?(): void;
 }
 
-interface AddToOrgModalState {
-  selectedOrg: Organization | null;
-  role: OrgRole;
-}
+const AddToOrgModal = memo(({ isOpen, user, userOrgs, onOrgAdd, onDismiss }: AddToOrgModalProps) => {
+  const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
+  const [role, setRole] = useState<OrgRole>(OrgRole.Viewer);
+  const [roleOptions, setRoleOptions] = useState<Role[]>([]);
+  const [pendingOrgId, setPendingOrgId] = useState<number | null>(null);
+  const [pendingUserId, setPendingUserId] = useState<number | null>(null);
+  const [pendingRoles, setPendingRoles] = useState<Role[]>([]);
+  const styles = useStyles2(getAddToOrgModalStyles);
 
-export class AddToOrgModal extends PureComponent<AddToOrgModalProps, AddToOrgModalState> {
-  state: AddToOrgModalState = {
-    selectedOrg: null,
-    role: OrgRole.Admin,
-  };
-
-  onOrgSelect = (org: OrgSelectItem) => {
-    this.setState({ selectedOrg: org.value! });
-  };
-
-  onOrgRoleChange = (newRole: OrgRole) => {
-    this.setState({
-      role: newRole,
-    });
-  };
-
-  onAddUserToOrg = () => {
-    const { selectedOrg, role } = this.state;
-    this.props.onOrgAdd(selectedOrg!.id, role);
-  };
-
-  onCancel = () => {
-    if (this.props.onDismiss) {
-      this.props.onDismiss();
+  const onOrgSelect = (org: OrgSelectItem) => {
+    const userOrg = userOrgs.find((userOrg) => userOrg.orgId === org.value?.id);
+    setSelectedOrg(org.value!);
+    setRole(userOrg?.role || OrgRole.Viewer);
+    if (contextSrv.licensedAccessControlEnabled()) {
+      if (contextSrv.hasPermission(AccessControlAction.ActionRolesList)) {
+        fetchRoleOptions(org.value?.id)
+          .then((roles) => setRoleOptions(roles))
+          .catch((e) => console.error(e));
+      }
     }
   };
 
-  render() {
-    const { isOpen } = this.props;
-    const { role } = this.state;
-    const styles = getAddToOrgModalStyles();
-    return (
-      <Modal
-        className={styles.modal}
-        contentClassName={styles.modalContent}
-        title="Add to an organization"
-        isOpen={isOpen}
-        onDismiss={this.onCancel}
-      >
-        <Field label="Organization">
-          <OrgPicker inputId="new-org-input" onSelected={this.onOrgSelect} autoFocus />
-        </Field>
-        <Field label="Role">
-          <OrgRolePicker inputId="new-org-role-input" value={role} onChange={this.onOrgRoleChange} />
-        </Field>
-        <Modal.ButtonRow>
-          <HorizontalGroup spacing="md" justify="center">
-            <Button variant="secondary" fill="outline" onClick={this.onCancel}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={this.onAddUserToOrg}>
-              Add to organization
-            </Button>
-          </HorizontalGroup>
-        </Modal.ButtonRow>
-      </Modal>
-    );
-  }
-}
+  const onOrgRoleChange = (newRole: OrgRole) => {
+    setRole(newRole);
+  };
+
+  const onAddUserToOrg = async () => {
+    onOrgAdd(selectedOrg!.id, role);
+    // add the stored userRoles also
+    if (contextSrv.licensedAccessControlEnabled()) {
+      if (contextSrv.hasPermission(AccessControlAction.ActionUserRolesAdd)) {
+        if (pendingUserId) {
+          await updateUserRoles(pendingRoles, pendingUserId, pendingOrgId!);
+          // clear pending state
+          setPendingOrgId(null);
+          setPendingRoles([]);
+          setPendingUserId(null);
+        }
+      }
+    }
+  };
+
+  const onCancel = () => {
+    // clear selectedOrg when modal is canceled
+    setSelectedOrg(null);
+    setPendingRoles([]);
+    setPendingOrgId(null);
+    setPendingUserId(null);
+    if (onDismiss) {
+      onDismiss();
+    }
+  };
+
+  const onRoleUpdate = async (roles: Role[], userId: number, orgId: number | undefined) => {
+    // keep the new role assignments for user
+    setPendingRoles(roles);
+    setPendingOrgId(orgId!);
+    setPendingUserId(userId);
+  };
+
+  return (
+    <Modal
+      className={styles.modal}
+      contentClassName={styles.modalContent}
+      title={t('admin.add-to-org-modal.title-add-to-an-organization', 'Add to an organization')}
+      isOpen={isOpen}
+      onDismiss={onCancel}
+    >
+      <Field label={t('admin.add-to-org-modal.label-organization', 'Organization')}>
+        <OrgPicker inputId="new-org-input" onSelected={onOrgSelect} excludeOrgs={userOrgs} autoFocus />
+      </Field>
+      <Field label={t('admin.add-to-org-modal.label-role', 'Role')} disabled={selectedOrg === null}>
+        <UserRolePicker
+          userId={user?.id || 0}
+          orgId={selectedOrg?.id}
+          basicRole={role}
+          onBasicRoleChange={onOrgRoleChange}
+          basicRoleDisabled={false}
+          roleOptions={roleOptions}
+          apply={true}
+          onApplyRoles={onRoleUpdate}
+          pendingRoles={pendingRoles}
+        />
+      </Field>
+      <Modal.ButtonRow>
+        <Stack gap={2} justifyContent="center">
+          <Button variant="secondary" fill="outline" onClick={onCancel}>
+            <Trans i18nKey="admin.user-orgs-modal.cancel-button">Cancel</Trans>
+          </Button>
+          <Button variant="primary" disabled={selectedOrg === null} onClick={onAddUserToOrg}>
+            <Trans i18nKey="admin.user-orgs-modal.add-button">Add to organization</Trans>
+          </Button>
+        </Stack>
+      </Modal.ButtonRow>
+    </Modal>
+  );
+});
+AddToOrgModal.displayName = 'AddToOrgModal';
 
 interface ChangeOrgButtonProps {
+  lockMessage?: string;
   isExternalUser?: boolean;
   onChangeRoleClick: () => void;
   onCancelClick: () => void;
@@ -329,15 +357,24 @@ interface ChangeOrgButtonProps {
 }
 
 const getChangeOrgButtonTheme = (theme: GrafanaTheme2) => ({
-  disabledTooltip: css`
-    display: flex;
-  `,
-  tooltipItemLink: css`
-    color: ${theme.v1.palette.blue95};
-  `,
+  disabledTooltip: css({
+    display: 'flex',
+  }),
+  tooltipItemLink: css({
+    color: theme.v1.palette.blue95,
+  }),
+  lockMessageClass: css({
+    fontStyle: 'italic',
+    marginLeft: '1.8rem',
+    marginRight: '0.6rem',
+  }),
+  icon: css({
+    lineHeight: 2,
+  }),
 });
 
-export function ChangeOrgButton({
+function ChangeOrgButton({
+  lockMessage,
   onChangeRoleClick,
   isExternalUser,
   onOrgRoleSave,
@@ -346,62 +383,67 @@ export function ChangeOrgButton({
   const styles = useStyles2(getChangeOrgButtonTheme);
   return (
     <div className={styles.disabledTooltip}>
-      <ConfirmButton
-        confirmText="Save"
-        onClick={onChangeRoleClick}
-        onCancel={onCancelClick}
-        onConfirm={onOrgRoleSave}
-        disabled={isExternalUser}
-      >
-        Change role
-      </ConfirmButton>
-      {isExternalUser && (
-        <Tooltip
-          placement="right-end"
-          content={
-            <div>
-              This user&apos;s role is not editable because it is synchronized from your auth provider. Refer to
-              the&nbsp;
-              <a
-                className={styles.tooltipItemLink}
-                href={'https://grafana.com/docs/grafana/latest/auth'}
-                rel="noreferrer"
-                target="_blank"
-              >
-                Grafana authentication docs
-              </a>
-              &nbsp;for details.
+      {isExternalUser ? (
+        <>
+          <span className={styles.lockMessageClass}>{lockMessage}</span>
+          <Tooltip
+            placement="right-end"
+            interactive={true}
+            content={
+              <div>
+                <Trans i18nKey="admin.user-orgs.role-not-editable">
+                  This user&apos;s role is not editable because it is synchronized from your auth provider. Refer to
+                  the&nbsp;
+                  <TextLink href={'https://grafana.com/docs/grafana/latest/auth'} external>
+                    Grafana authentication docs
+                  </TextLink>
+                  &nbsp;for details.
+                </Trans>
+              </div>
+            }
+          >
+            <div className={styles.icon}>
+              <Icon name="question-circle" />
             </div>
-          }
+          </Tooltip>
+        </>
+      ) : (
+        <ConfirmButton
+          confirmText={t('admin.change-org-button.confirmText-save', 'Save')}
+          onClick={onChangeRoleClick}
+          onCancel={onCancelClick}
+          onConfirm={onOrgRoleSave}
+          disabled={isExternalUser}
         >
-          <Icon name="question-circle" />
-        </Tooltip>
+          {t('admin.user-orgs.change-role-button', 'Change role')}
+        </ConfirmButton>
       )}
     </div>
   );
 }
+interface ExternalUserTooltipProps {
+  lockMessage?: string;
+}
 
-const ExternalUserTooltip: React.FC = () => {
-  const theme = useTheme();
-  const styles = getTooltipStyles(theme);
+export const ExternalUserTooltip = ({ lockMessage }: ExternalUserTooltipProps) => {
+  const styles = useStyles2(getTooltipStyles);
 
   return (
     <div className={styles.disabledTooltip}>
+      <span className={styles.lockMessageClass}>{lockMessage}</span>
       <Tooltip
         placement="right-end"
+        interactive={true}
         content={
           <div>
-            This user&apos;s built-in role is not editable because it is synchronized from your auth provider. Refer to
-            the&nbsp;
-            <a
-              className={styles.tooltipItemLink}
-              href={'https://grafana.com/docs/grafana/latest/auth'}
-              rel="noreferrer noopener"
-              target="_blank"
-            >
-              Grafana authentication docs
-            </a>
-            &nbsp;for details.
+            <Trans i18nKey="admin.user-orgs.external-user-tooltip">
+              This user&apos;s built-in role is not editable because it is synchronized from your auth provider. Refer
+              to the&nbsp;
+              <TextLink href={'https://grafana.com/docs/grafana/latest/auth'} external>
+                Grafana authentication docs
+              </TextLink>
+              &nbsp;for details.
+            </Trans>
           </div>
         }
       >
@@ -411,11 +453,13 @@ const ExternalUserTooltip: React.FC = () => {
   );
 };
 
-const getTooltipStyles = stylesFactory((theme: GrafanaTheme) => ({
-  disabledTooltip: css`
-    display: flex;
-  `,
-  tooltipItemLink: css`
-    color: ${theme.palette.blue95};
-  `,
-}));
+const getTooltipStyles = (theme: GrafanaTheme2) => ({
+  disabledTooltip: css({
+    display: 'flex',
+  }),
+  lockMessageClass: css({
+    fontStyle: 'italic',
+    marginLeft: '1.8rem',
+    marginRight: '0.6rem',
+  }),
+});

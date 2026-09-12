@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -52,6 +53,8 @@ type StaticOptions struct {
 	AddHeaders func(ctx *web.Context)
 	// FileSystem is the interface for supporting any implementation of file system.
 	FileSystem http.FileSystem
+	// Exclude paths from being served
+	Exclude []string
 }
 
 // FIXME: to be deleted.
@@ -121,6 +124,10 @@ func staticHandler(ctx *web.Context, log log.Logger, opt StaticOptions) bool {
 	}
 
 	file := ctx.Req.URL.Path
+	if slices.Contains(opt.Exclude, file) {
+		return false
+	}
+
 	// if we have a prefix, filter requests by stripping the prefix
 	if opt.Prefix != "" {
 		if !strings.HasPrefix(file, opt.Prefix) {
@@ -151,16 +158,17 @@ func staticHandler(ctx *web.Context, log log.Logger, opt StaticOptions) bool {
 	if fi.IsDir() {
 		// Redirect if missing trailing slash.
 		if !strings.HasSuffix(ctx.Req.URL.Path, "/") {
-			path := fmt.Sprintf("%s/", ctx.Req.URL.Path)
-			if !strings.HasPrefix(path, "/") {
+			redirectPath := path.Clean(ctx.Req.URL.Path)
+			redirectPath = fmt.Sprintf("%s/", redirectPath)
+			if !strings.HasPrefix(redirectPath, "/") {
 				// Disambiguate that it's a path relative to this server
-				path = fmt.Sprintf("/%s", path)
+				redirectPath = fmt.Sprintf("/%s", redirectPath)
 			} else {
 				// A string starting with // or /\ is interpreted by browsers as a URL, and not a server relative path
 				rePrefix := regexp.MustCompile(`^(?:/\\|/+)`)
-				path = rePrefix.ReplaceAllString(path, "/")
+				redirectPath = rePrefix.ReplaceAllString(redirectPath, "/")
 			}
-			http.Redirect(ctx.Resp, ctx.Req, path, http.StatusFound)
+			http.Redirect(ctx.Resp, ctx.Req, redirectPath, http.StatusFound)
 			return true
 		}
 

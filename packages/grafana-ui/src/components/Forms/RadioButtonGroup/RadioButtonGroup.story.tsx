@@ -1,17 +1,20 @@
-import React, { useState } from 'react';
-import mdx from './RadioButtonGroup.mdx';
-import { RadioButtonGroup } from './RadioButtonGroup';
-import { Story } from '@storybook/react';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+import { useState } from 'react';
 
-export default {
-  title: 'Forms/RadioButtonGroup',
+import { Field } from '../Field';
+
+import { RadioButtonGroup } from './RadioButtonGroup';
+import mdx from './RadioButtonGroup.mdx';
+
+const meta: Meta = {
+  title: 'Inputs/RadioButtonGroup',
   component: RadioButtonGroup,
   parameters: {
     docs: {
       page: mdx,
     },
     controls: {
-      exclude: ['className', 'options', 'value', 'onChange'],
+      exclude: ['className', 'options', 'value', 'onChange', 'onClick', 'id'],
     },
   },
   argTypes: {
@@ -20,11 +23,11 @@ export default {
       control: { type: 'select' },
       options: ['', 'graphite', 'prometheus', 'elastic'],
     },
-    size: { control: { type: 'select' }, options: ['xs', 'sm', 'md', 'lg'] },
+    size: { control: { type: 'select' }, options: ['sm', 'md'] },
   },
 };
 
-export const RadioButtons: Story = (args) => {
+export const RadioButtons: StoryFn = (args) => {
   const [selected, setSelected] = useState('elastic');
 
   const options = [
@@ -34,44 +37,52 @@ export const RadioButtons: Story = (args) => {
   ];
 
   const optionsWithOnlyIcons = [
-    { description: 'Prometheus', value: 'prometheus', icon: 'gf-interpolation-linear' },
-    { description: 'Graphite', value: 'graphite', icon: 'gf-interpolation-smooth' },
-    { description: 'Elastic', value: 'elastic', icon: 'gf-interpolation-step-after' },
+    { ariaLabel: 'Prometheus', description: 'Prometheus', value: 'prometheus', icon: 'gf-interpolation-linear' },
+    { ariaLabel: 'Graphite', description: 'Graphite', value: 'graphite', icon: 'gf-interpolation-smooth' },
+    { ariaLabel: 'Elastic', description: 'Elastic', value: 'elastic', icon: 'gf-interpolation-step-after' },
   ];
 
   return (
     <div style={{ width: '100%' }}>
       <div style={{ marginBottom: '32px' }}>
-        <h5>Full width</h5>
-        <RadioButtonGroup
-          options={options}
-          disabled={args.disabled}
-          disabledOptions={args.disabledOptions}
-          value={selected}
-          onChange={(v) => setSelected(v!)}
-          size={args.size}
-          fullWidth={args.fullWidth}
-        />
+        <Field label="Full width">
+          <RadioButtonGroup
+            options={options}
+            disabled={args.disabled}
+            disabledOptions={args.disabledOptions}
+            value={selected}
+            onChange={(v) => setSelected(v!)}
+            size={args.size}
+            fullWidth={args.fullWidth}
+            invalid={args.invalid}
+          />
+        </Field>
       </div>
       <div style={{ marginBottom: '32px' }}>
-        <h5>Auto width</h5>
-        <RadioButtonGroup
-          options={options}
-          disabled={args.disabled}
-          disabledOptions={args.disabledOptions}
-          value={selected}
-          onChange={(v) => setSelected(v!)}
-          size={args.size}
-        />
+        <Field label="Auto width">
+          <RadioButtonGroup
+            options={options}
+            disabled={args.disabled}
+            disabledOptions={args.disabledOptions}
+            value={selected}
+            onChange={(v) => setSelected(v!)}
+            size={args.size}
+            invalid={args.invalid}
+          />
+        </Field>
       </div>
       <div style={{ marginBottom: '32px' }}>
-        <h5>With only icons and descriptions</h5>
-        <RadioButtonGroup
-          options={optionsWithOnlyIcons}
-          value={selected}
-          onChange={(v) => setSelected(v!)}
-          size={args.size}
-        />
+        <Field label="With only icons and descriptions">
+          <RadioButtonGroup
+            options={optionsWithOnlyIcons}
+            value={selected}
+            disabled={args.disabled}
+            disabledOptions={args.disabledOptions}
+            onChange={(v) => setSelected(v!)}
+            size={args.size}
+            invalid={args.invalid}
+          />
+        </Field>
       </div>
     </div>
   );
@@ -81,4 +92,7 @@ RadioButtons.args = {
   disabledOptions: '',
   size: 'md',
   fullWidth: true,
+  invalid: false,
 };
+
+export default meta;

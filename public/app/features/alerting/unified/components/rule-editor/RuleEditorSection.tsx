@@ -1,63 +1,91 @@
-import { css } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
-import { FieldSet, useStyles2 } from '@grafana/ui';
-import React, { FC } from 'react';
+import { css, cx } from '@emotion/css';
+import * as React from 'react';
+import { type ReactElement } from 'react';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { t } from '@grafana/i18n';
+import { FieldSet, InlineSwitch, Stack, Text, useStyles2 } from '@grafana/ui';
+import { AccentBoxBadge } from 'app/core/components/AccentBoxBadge/AccentBoxBadge';
 
 export interface RuleEditorSectionProps {
   title: string;
   stepNo: number;
-  description?: string;
+  description?: string | ReactElement;
+  fullWidth?: boolean;
+  switchMode?: {
+    isAdvancedMode: boolean;
+    setAdvancedMode: (isAdvanced: boolean) => void;
+  };
 }
 
-export const RuleEditorSection: FC<RuleEditorSectionProps> = ({ title, stepNo, children, description }) => {
+export const RuleEditorSection = ({
+  title,
+  stepNo,
+  children,
+  fullWidth = false,
+  description,
+  switchMode,
+}: React.PropsWithChildren<RuleEditorSectionProps>) => {
   const styles = useStyles2(getStyles);
 
+  const AlertRuleSelectors = selectors.components.AlertRules;
   return (
-    <div className={styles.parent}>
-      <div>
-        <span className={styles.stepNo}>{stepNo}</span>
-      </div>
-      <div className={styles.content}>
-        <FieldSet label={title} className={styles.fieldset}>
-          {description && <p className={styles.description}>{description}</p>}
-          {children}
-        </FieldSet>
-      </div>
+    <div className={styles.parent} data-testid={AlertRuleSelectors.step(stepNo.toString())}>
+      <FieldSet
+        className={cx(fullWidth && styles.fullWidth)}
+        label={
+          <Stack direction="row" alignItems="center" justifyContent="space-between">
+            <Stack direction="row" alignItems="flex-start" gap={1.5}>
+              <AccentBoxBadge>{stepNo}</AccentBoxBadge>
+              <Stack direction="column" gap={0.5}>
+                <Text variant="h4">{title}</Text>
+                {description}
+              </Stack>
+            </Stack>
+            {switchMode && (
+              <Text variant="bodySmall">
+                <InlineSwitch
+                  data-testid={AlertRuleSelectors.stepAdvancedModeSwitch(stepNo.toString())}
+                  value={switchMode.isAdvancedMode}
+                  onChange={(event) => {
+                    switchMode.setAdvancedMode(event.currentTarget.checked);
+                  }}
+                  label={t('alerting.rule-editor-section.label-advanced-options', 'Advanced options')}
+                  showLabel
+                  transparent
+                  className={styles.reverse}
+                />
+              </Text>
+            )}
+          </Stack>
+        }
+      >
+        <div className={styles.sectionContent}>{children}</div>
+      </FieldSet>
     </div>
   );
 };
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  fieldset: css`
-    legend {
-      font-size: 16px;
-      padding-top: ${theme.spacing(0.5)};
-    }
-  `,
-  parent: css`
-    display: flex;
-    flex-direction: row;
-    max-width: ${theme.breakpoints.values.xl};
-    & + & {
-      margin-top: ${theme.spacing(4)};
-    }
-  `,
-  description: css`
-    margin-top: -${theme.spacing(2)};
-  `,
-  stepNo: css`
-    display: inline-block;
-    width: ${theme.spacing(4)};
-    height: ${theme.spacing(4)};
-    line-height: ${theme.spacing(4)};
-    border-radius: ${theme.spacing(4)};
-    text-align: center;
-    color: ${theme.colors.text.maxContrast};
-    background-color: ${theme.colors.background.canvas};
-    font-size: ${theme.typography.size.lg};
-    margin-right: ${theme.spacing(2)};
-  `,
-  content: css`
-    flex: 1;
-  `,
+  parent: css({
+    display: 'flex',
+    flexDirection: 'row',
+  }),
+  fullWidth: css({
+    width: '100%',
+    flexGrow: 1,
+  }),
+  reverse: css({
+    flexDirection: 'row-reverse',
+    gap: theme.spacing(1),
+  }),
+  sectionContent: css({
+    display: 'flex',
+    flexDirection: 'column',
+    gap: theme.spacing(1),
+    borderBottom: `1px solid ${theme.colors.border.weak}`,
+    paddingBottom: theme.spacing(3),
+    marginLeft: theme.spacing(6),
+  }),
 });

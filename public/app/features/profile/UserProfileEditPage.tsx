@@ -1,28 +1,28 @@
-import React from 'react';
-import { connect, ConnectedProps } from 'react-redux';
+import { connect, type ConnectedProps } from 'react-redux';
 import { useMount } from 'react-use';
-import { NavModel } from '@grafana/data';
-import { VerticalGroup } from '@grafana/ui';
 
-import { getNavModel } from 'app/core/selectors/navModel';
-import { StoreState } from 'app/types';
-import Page from 'app/core/components/Page/Page';
-import { changeUserOrg, initUserProfilePage, revokeUserSession, updateUserProfile } from './state/actions';
-import UserProfileEditForm from './UserProfileEditForm';
-import SharedPreferences from 'app/core/components/SharedPreferences/SharedPreferences';
-import { UserTeams } from './UserTeams';
+import { PluginExtensionPoints } from '@grafana/data';
+import { Trans } from '@grafana/i18n';
+import { usePluginComponents } from '@grafana/runtime';
+import { Stack, Text } from '@grafana/ui';
+import { Page } from 'app/core/components/Page/Page';
+import { type StoreState } from 'app/types/store';
+
+import { SharedPreferences } from '../../core/components/SharedPreferences/SharedPreferences';
+
 import UserOrganizations from './UserOrganizations';
+import UserProfileEditForm from './UserProfileEditForm';
+import { UserProfileEditTabs } from './UserProfileEditTabs';
 import UserSessions from './UserSessions';
+import { UserTeams } from './UserTeams';
+import { changeUserOrg, initUserProfilePage, revokeUserSession, updateUserProfile } from './state/actions';
 
-export interface OwnProps {
-  navModel: NavModel;
-}
+export interface OwnProps {}
 
 function mapStateToProps(state: StoreState) {
   const userState = state.user;
   const { user, teams, orgs, sessions, teamsAreLoading, orgsAreLoading, sessionsAreLoading, isUpdating } = userState;
   return {
-    navModel: getNavModel(state.navIndex, 'profile-settings'),
     orgsAreLoading,
     sessionsAreLoading,
     teamsAreLoading,
@@ -46,7 +46,6 @@ const connector = connect(mapStateToProps, mapDispatchToProps);
 export type Props = OwnProps & ConnectedProps<typeof connector>;
 
 export function UserProfileEditPage({
-  navModel,
   orgsAreLoading,
   sessionsAreLoading,
   teamsAreLoading,
@@ -62,16 +61,61 @@ export function UserProfileEditPage({
 }: Props) {
   useMount(() => initUserProfilePage());
 
+  const { components, isLoading } = usePluginComponents({
+    extensionPointId: PluginExtensionPoints.UserProfileTab,
+  });
+  const userResourceUri = user?.uid ? `user-${user.uid}` : 'user';
   return (
-    <Page navModel={navModel}>
-      <Page.Contents isLoading={!user}>
-        <VerticalGroup spacing="md">
-          <UserProfileEditForm updateProfile={updateUserProfile} isSavingUser={isUpdating} user={user} />
-          <SharedPreferences resourceUri="user" />
-          <UserTeams isLoading={teamsAreLoading} teams={teams} />
-          <UserOrganizations isLoading={orgsAreLoading} setUserOrg={changeUserOrg} orgs={orgs} user={user} />
-          <UserSessions isLoading={sessionsAreLoading} revokeUserSession={revokeUserSession} sessions={sessions} />
-        </VerticalGroup>
+    <Page navId="profile/settings">
+      <Page.Contents isLoading={!user || isLoading}>
+        <UserProfileEditTabs components={components}>
+          <Stack direction="column" gap={6} data-testid="user-profile-edit-page">
+            <UserProfileEditForm updateProfile={updateUserProfile} isSavingUser={isUpdating} user={user} />
+
+            <SharedPreferences
+              resourceUri={userResourceUri}
+              preferenceType="user"
+              legend={
+                <Text element="h2" variant="h2">
+                  <Trans i18nKey="shared-preferences.title">Preferences</Trans>
+                </Text>
+              }
+            />
+
+            <UserTeams
+              isLoading={teamsAreLoading}
+              teams={teams}
+              heading={
+                <Text element="h2" variant="h2">
+                  <Trans i18nKey="profile.user-teams.teams">Teams</Trans>
+                </Text>
+              }
+            />
+
+            <UserOrganizations
+              isLoading={orgsAreLoading}
+              setUserOrg={changeUserOrg}
+              orgs={orgs}
+              user={user}
+              heading={
+                <Text variant="h2" element="h2">
+                  <Trans i18nKey="user-orgs.title">Organizations</Trans>
+                </Text>
+              }
+            />
+
+            <UserSessions
+              isLoading={sessionsAreLoading}
+              revokeUserSession={revokeUserSession}
+              sessions={sessions}
+              heading={
+                <Text variant="h2" element="h2">
+                  <Trans i18nKey="profile.user-sessions.sessions">Sessions</Trans>
+                </Text>
+              }
+            />
+          </Stack>
+        </UserProfileEditTabs>
       </Page.Contents>
     </Page>
   );

@@ -1,40 +1,53 @@
 //DOCS: https://prometheus.io/docs/alerting/latest/configuration/
+import { type ObjectMeta } from '@grafana/api-clients/rtkq/notifications.alerting/v1beta1';
+import { type DataSourceJsonData, type WithAccessControlMetadata } from '@grafana/data';
 
-import { DataSourceJsonData } from '@grafana/data';
+export const ROUTES_META_SYMBOL = Symbol('routes_metadata');
+
+interface ExtraConfiguration {
+  identifier: string;
+  source?: string;
+  createdAt?: string;
+}
 
 export type AlertManagerCortexConfig = {
   template_files: Record<string, string>;
   alertmanager_config: AlertmanagerConfig;
+  /** { [name]: provenance } */
+  template_file_provenances?: Record<string, string>;
+  last_applied?: string;
+  id?: number;
+  extra_config?: ExtraConfiguration[];
 };
 
-export type TLSConfig = {
-  ca_file: string;
-  cert_file: string;
-  key_file: string;
+type TLSConfig = {
+  ca_file?: string;
+  cert_file?: string;
+  key_file?: string;
   server_name?: string;
   insecure_skip_verify?: boolean;
 };
 
-export type HTTPConfigCommon = {
-  proxy_url?: string;
+type HTTPConfigCommon = {
+  proxy_url?: string | null;
   tls_config?: TLSConfig;
 };
 
-export type HTTPConfigBasicAuth = {
-  basic_auth: {
+type HTTPConfigBasicAuth = {
+  basic_auth?: {
     username: string;
-  } & ({ password: string } | { password_file: string });
+  } & ({ password?: string } | { password_file?: string });
 };
 
-export type HTTPConfigBearerToken = {
-  bearer_token: string;
+type HTTPConfigBearerToken = {
+  bearer_token?: string;
 };
 
-export type HTTPConfigBearerTokenFile = {
-  bearer_token_file: string;
+type HTTPConfigBearerTokenFile = {
+  bearer_token_file?: string;
 };
 
-export type HTTPConfig = HTTPConfigCommon & (HTTPConfigBasicAuth | HTTPConfigBearerToken | HTTPConfigBearerTokenFile);
+type HTTPConfig = HTTPConfigCommon & (HTTPConfigBasicAuth | HTTPConfigBearerToken | HTTPConfigBearerTokenFile);
 
 export type EmailConfig = {
   to: string;
@@ -54,7 +67,7 @@ export type EmailConfig = {
   headers?: Record<string, string>;
 };
 
-export type WebhookConfig = {
+type WebhookConfig = {
   url: string;
 
   send_resolved?: boolean;
@@ -62,37 +75,65 @@ export type WebhookConfig = {
   max_alerts?: number;
 };
 
+type GrafanaManagedReceiverConfigSettings<T = any> = Record<string, T>;
+export type GrafanaManagedReceiverSecureFields = Record<string, boolean>;
+
 export type GrafanaManagedReceiverConfig = {
   uid?: string;
-  disableResolveMessage: boolean;
-  secureFields?: Record<string, boolean>;
-  secureSettings?: Record<string, any>;
-  settings: Record<string, any>;
+  disableResolveMessage?: boolean;
+  /**
+   * Secure fields keys values should be true if they are already configured in the database
+   * To reset the secure field, omit the key from the object when updating the receiver
+   */
+  secureFields?: GrafanaManagedReceiverSecureFields;
+  /** If retrieved from k8s API, SecureSettings property name is different */
+  // SecureSettings?: GrafanaManagedReceiverConfigSettings<boolean>;
+  settings: GrafanaManagedReceiverConfigSettings;
   type: string;
-  name: string;
+  /**
+   * Version of the integration (e.g. "v0" for Mimir legacy, "v1" for Grafana)
+   */
+  version?: string;
+  /**
+   * Name of the _receiver_, which in most cases will be the
+   * same as the contact point's name. This should not be used, and is optional because the
+   * kubernetes API does not return it for us (and we don't want to/shouldn't use it)
+   *
+   * @deprecated Do not rely on this property - it won't be present in kuberenetes API responses
+   * and should be the same as the contact point name anyway
+   */
+  name?: string;
   updated?: string;
   created?: string;
+  provenance?: string;
 };
 
-export type Receiver = {
+export interface GrafanaManagedContactPoint {
+  name: string;
+  /** If parsed from k8s API, we'll have an ID property */
+  id?: string;
+  metadata?: ObjectMeta;
+  provenance?: string;
+  grafana_managed_receiver_configs?: GrafanaManagedReceiverConfig[];
+}
+
+export interface AlertmanagerReceiver {
   name: string;
 
   email_configs?: EmailConfig[];
-  pagerduty_configs?: any[];
-  pushover_configs?: any[];
-  slack_configs?: any[];
-  opsgenie_configs?: any[];
   webhook_configs?: WebhookConfig[];
-  victorops_configs?: any[];
-  wechat_configs?: any[];
-  grafana_managed_receiver_configs?: GrafanaManagedReceiverConfig[];
-  [key: string]: any;
-};
 
-type ObjectMatcher = [name: string, operator: MatcherOperator, value: string];
+  // this is supposedly to support any *_configs
+  [key: `${string}_configs`]: any[] | undefined;
+}
+
+export type Receiver = GrafanaManagedContactPoint | AlertmanagerReceiver;
+
+export type ObjectMatcher = [name: string, operator: MatcherOperator, value: string];
 
 export type Route = {
-  receiver?: string;
+  name?: string;
+  receiver?: string | null;
   group_by?: string[];
   continue?: boolean;
   object_matchers?: ObjectMatcher[];
@@ -105,14 +146,31 @@ export type Route = {
   group_interval?: string;
   repeat_interval?: string;
   routes?: Route[];
+  /** Times when the route should be muted. */
   mute_time_intervals?: string[];
+  /** Times when the route should be active. This is the opposite of `mute_time_intervals` */
+  active_time_intervals?: string[];
+  /** only the root policy might have a provenance field defined */
+  provenance?: string;
+  /** this is used to add additional metadata to the routes without interfering with original route definition (symbols aren't iterable)  */
+  [ROUTES_META_SYMBOL]?: {
+    provenance?: string;
+    resourceVersion?: string;
+    name?: string;
+    metadata?: ObjectMeta;
+  };
 };
 
-export type InhibitRule = {
-  target_match: Record<string, string>;
-  target_match_re: Record<string, string>;
-  source_match: Record<string, string>;
-  source_match_re: Record<string, string>;
+export interface RouteWithID extends Route {
+  id: string;
+  routes?: RouteWithID[];
+}
+
+type InhibitRule = {
+  target_match?: Record<string, string>;
+  target_match_re?: Record<string, string>;
+  source_match?: Record<string, string>;
+  source_match_re?: Record<string, string>;
   equal?: string[];
 };
 
@@ -143,6 +201,10 @@ export type AlertmanagerConfig = {
   inhibit_rules?: InhibitRule[];
   receivers?: Receiver[];
   mute_time_intervals?: MuteTimeInterval[];
+  time_intervals?: MuteTimeInterval[];
+  /** { [name]: provenance } */
+  muteTimeProvenances?: Record<string, string>;
+  last_applied?: boolean;
 };
 
 export type Matcher = {
@@ -171,7 +233,26 @@ export enum MatcherOperator {
   notRegex = '!~',
 }
 
-export type Silence = {
+/**
+ * Rule metadata on Grafana silence GET responses when `ruleMetadata=true`.
+ * The whole object is omitted when the silence has no `__alert_rule_uid__` matcher.
+ * When present, `rule_uid` is always set from that matcher; `rule_title` and `folder_uid`
+ * are only set when the rule exists and the caller can read its folder.
+ */
+interface SilenceRuleMetadata {
+  rule_uid?: string;
+  rule_title?: string;
+  folder_uid?: string;
+}
+
+export type TestTemplateAlert = Pick<
+  AlertmanagerAlert,
+  'annotations' | 'labels' | 'startsAt' | 'endsAt' | 'generatorURL' | 'fingerprint'
+> & {
+  status: 'firing' | 'resolved';
+};
+
+export interface Silence extends WithAccessControlMetadata {
   id: string;
   matchers?: Matcher[];
   startsAt: string;
@@ -182,7 +263,8 @@ export type Silence = {
   status: {
     state: SilenceState;
   };
-};
+  metadata?: SilenceRuleMetadata;
+}
 
 export type SilenceCreatePayload = {
   id?: string;
@@ -200,11 +282,7 @@ export type AlertmanagerAlert = {
   generatorURL?: string;
   labels: { [key: string]: string };
   annotations: { [key: string]: string };
-  receivers: [
-    {
-      name: string;
-    }
-  ];
+  receivers: Array<{ name: string }>;
   fingerprint: string;
   status: {
     state: AlertState;
@@ -236,44 +314,37 @@ export interface AlertmanagerStatus {
   };
 }
 
-export type TestReceiversAlert = Pick<AlertmanagerAlert, 'annotations' | 'labels'>;
-
-export interface TestReceiversPayload {
-  receivers?: Receiver[];
-  alert?: TestReceiversAlert;
-}
-
-interface TestReceiversResultGrafanaReceiverConfig {
-  name: string;
-  uid?: string;
-  error?: string;
-  status: 'failed';
-}
-
-interface TestReceiversResultReceiver {
-  name: string;
-  grafana_managed_receiver_configs: TestReceiversResultGrafanaReceiverConfig[];
-}
-export interface TestReceiversResult {
-  notified_at: string;
-  receivers: TestReceiversResultReceiver[];
-}
-
-export interface ExternalAlertmanagers {
+export interface ExternalAlertmanagersConnectionStatus {
   activeAlertManagers: AlertmanagerUrl[];
   droppedAlertManagers: AlertmanagerUrl[];
 }
 
-export interface AlertmanagerUrl {
+interface AlertmanagerUrl {
   url: string;
 }
 
-export interface ExternalAlertmanagersResponse {
-  data: ExternalAlertmanagers;
-  status: 'string';
+export interface ExternalAlertmanagersStatusResponse {
+  data: ExternalAlertmanagersConnectionStatus;
 }
+
+export enum AlertmanagerChoice {
+  Internal = 'internal',
+  External = 'external',
+  All = 'all',
+}
+
+export interface GrafanaAlertingConfiguration {
+  alertmanagersChoice: AlertmanagerChoice;
+  // Snake_case mirrors the wire format from /api/v1/ngalert/admin_config.
+  external_alertmanager_uid?: string;
+}
+
+// POST /api/v1/ngalert/admin_config accepts partial updates.
+export type PostableGrafanaAlertingConfiguration = Partial<GrafanaAlertingConfiguration>;
+
 export enum AlertManagerImplementation {
   cortex = 'cortex',
+  mimir = 'mimir',
   prometheus = 'prometheus',
 }
 
@@ -288,11 +359,17 @@ export interface TimeInterval {
   days_of_month?: string[];
   months?: string[];
   years?: string[];
+  /** IANA TZ identifier like "Europe/Brussels", also supports "Local" or "UTC" */
+  location?: string;
 }
 
 export type MuteTimeInterval = {
   name: string;
   time_intervals: TimeInterval[];
+  provisioned?: boolean;
 };
 
-export type AlertManagerDataSourceJsonData = DataSourceJsonData & { implementation?: AlertManagerImplementation };
+export interface AlertManagerDataSourceJsonData extends DataSourceJsonData {
+  implementation?: AlertManagerImplementation;
+  handleGrafanaManagedAlerts?: boolean;
+}

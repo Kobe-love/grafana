@@ -1,21 +1,25 @@
-import { MapLayerRegistryItem, MapLayerOptions } from '@grafana/data';
-import Map from 'ol/Map';
-import OSM from 'ol/source/OSM';
 import TileLayer from 'ol/layer/Tile';
+import OSM from 'ol/source/OSM';
+
+import { type MapLayerRegistryItem } from '@grafana/data';
 
 export const standard: MapLayerRegistryItem = {
   id: 'osm-standard',
-  name: 'Open Street Map',
+  name: 'OpenStreetMap',
+  description: 'Add map from a collaborative free geographic world database',
   isBaseMap: true,
+  requiresAttribution: true,
 
   /**
    * Function that configures transformation and returns a transformer
    * @param options
    */
-  create: async (map: Map, options: MapLayerOptions) => ({
+  create: async (_map, options) => ({
     init: () => {
+      const noRepeat = options.noRepeat ?? false;
+
       return new TileLayer({
-        source: new OSM(),
+        source: new OSM({ wrapX: !noRepeat }),
       });
     },
   }),

@@ -1,19 +1,7 @@
-import { GrafanaTheme, GrafanaThemeType } from '../types/theme';
-
 /**
- * @deprecated use theme.visualization.getColorByName
+ * @deprecated
+ * This is defined on the theme object now. Use `theme.visualization.palette` instead.
  */
-export function getColorForTheme(color: string, theme: GrafanaTheme): string {
-  return theme.visualization.getColorByName(color);
-}
-
-/**
- * @deprecated use getColorForTheme
- */
-export function getColorFromHexRgbOrName(color: string, type?: GrafanaThemeType): string {
-  return 'gray';
-}
-
 export const classicColors = [
   '#7EB26D', // 0: pale green
   '#EAB839', // 1: mustard

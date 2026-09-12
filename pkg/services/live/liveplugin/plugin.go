@@ -4,13 +4,15 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/grafana/grafana/pkg/models"
-	"github.com/grafana/grafana/pkg/plugins/plugincontext"
+	"github.com/centrifugal/centrifuge"
+
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
+
+	"github.com/grafana/grafana/pkg/apimachinery/identity"
+	"github.com/grafana/grafana/pkg/services/datasources"
 	"github.com/grafana/grafana/pkg/services/live/orgchannel"
 	"github.com/grafana/grafana/pkg/services/live/pipeline"
-
-	"github.com/centrifugal/centrifuge"
-	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana/pkg/services/pluginsintegration/plugincontext"
 )
 
 type ChannelLocalPublisher struct {
@@ -24,11 +26,11 @@ func NewChannelLocalPublisher(node *centrifuge.Node, pipeline *pipeline.Pipeline
 
 func (p *ChannelLocalPublisher) PublishLocal(channel string, data []byte) error {
 	if p.pipeline != nil {
-		orgID, channelID, err := orgchannel.StripOrgID(channel)
+		ns, channelID, err := orgchannel.StripK8sNamespace(channel)
 		if err != nil {
 			return err
 		}
-		ok, err := p.pipeline.ProcessInput(context.Background(), orgID, channelID, data)
+		ok, err := p.pipeline.ProcessInput(context.Background(), ns.Value, channelID, data)
 		if err != nil {
 			return err
 		}
@@ -60,15 +62,25 @@ func (p *NumLocalSubscribersGetter) GetNumLocalSubscribers(channelID string) (in
 }
 
 type ContextGetter struct {
-	PluginContextProvider *plugincontext.Provider
+	pluginContextProvider *plugincontext.Provider
+	dataSourceCache       datasources.CacheService
 }
 
-func NewContextGetter(pluginContextProvider *plugincontext.Provider) *ContextGetter {
+func NewContextGetter(pluginContextProvider *plugincontext.Provider, dataSourceCache datasources.CacheService) *ContextGetter {
 	return &ContextGetter{
-		PluginContextProvider: pluginContextProvider,
+		pluginContextProvider: pluginContextProvider,
+		dataSourceCache:       dataSourceCache,
 	}
 }
 
-func (g *ContextGetter) GetPluginContext(ctx context.Context, user *models.SignedInUser, pluginID string, datasourceUID string, skipCache bool) (backend.PluginContext, bool, error) {
-	return g.PluginContextProvider.Get(ctx, pluginID, datasourceUID, user, skipCache)
+func (g *ContextGetter) GetPluginContext(ctx context.Context, user identity.Requester, pluginID string, datasourceUID string, skipCache bool) (backend.PluginContext, error) {
+	if datasourceUID == "" {
+		return g.pluginContextProvider.Get(ctx, pluginID, user, user.GetOrgID())
+	}
+
+	ds, err := g.dataSourceCache.GetDatasourceByUID(ctx, datasourceUID, user, skipCache)
+	if err != nil {
+		return backend.PluginContext{}, fmt.Errorf("%v: %w", "Failed to get datasource", err)
+	}
+	return g.pluginContextProvider.GetWithDataSource(ctx, pluginID, user, ds)
 }

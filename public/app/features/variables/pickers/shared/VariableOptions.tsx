@@ -1,11 +1,16 @@
-import React, { PureComponent } from 'react';
-import { Tooltip } from '@grafana/ui';
-import { selectors } from '@grafana/e2e-selectors';
-
-import { VariableOption } from '../../types';
 import { css, cx } from '@emotion/css';
+import { memo, type MouseEvent, type HTMLProps } from 'react';
 
-export interface Props extends React.HTMLProps<HTMLUListElement> {
+import { type GrafanaTheme2, type VariableOption } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { Trans, t } from '@grafana/i18n';
+import { Tooltip, clearButtonStyles, useStyles2, useTheme2 } from '@grafana/ui';
+import checkboxPng from 'img/checkbox.png';
+import checkboxWhitePng from 'img/checkbox_white.png';
+
+import { ALL_VARIABLE_VALUE } from '../../constants';
+
+export interface Props extends Omit<HTMLProps<HTMLUListElement>, 'onToggle'> {
   multi: boolean;
   values: VariableOption[];
   selectedValues: VariableOption[];
@@ -18,92 +23,194 @@ export interface Props extends React.HTMLProps<HTMLUListElement> {
   id: string;
 }
 
-export class VariableOptions extends PureComponent<Props> {
-  onToggle = (option: VariableOption) => (event: React.MouseEvent<HTMLAnchorElement>) => {
-    const clearOthers = event.shiftKey || event.ctrlKey || event.metaKey;
-    this.handleEvent(event);
-    this.props.onToggle(option, clearOthers);
-  };
+export const VariableOptions = memo(
+  ({ multi, values, highlightIndex, selectedValues, onToggle, onToggleAll, ...restProps }: Props) => {
+    const theme = useTheme2();
+    const styles = useStyles2(getStyles);
+    const buttonReset = clearButtonStyles(theme);
 
-  onToggleAll = (event: React.MouseEvent<HTMLAnchorElement>) => {
-    this.handleEvent(event);
-    this.props.onToggleAll();
-  };
+    const handleEvent = (event: MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
 
-  handleEvent(event: React.MouseEvent<HTMLAnchorElement>) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
+    const handleToggle = (option: VariableOption) => (event: MouseEvent<HTMLButtonElement>) => {
+      const clearOthers = event.shiftKey || event.ctrlKey || event.metaKey;
+      handleEvent(event);
+      onToggle(option, clearOthers);
+    };
 
-  render() {
-    // Don't want to pass faulty rest props to the div
-    const { multi, values, highlightIndex, selectedValues, onToggle, onToggleAll, ...restProps } = this.props;
+    const handleToggleAll = (event: MouseEvent<HTMLButtonElement>) => {
+      handleEvent(event);
+      onToggleAll();
+    };
+
+    const isAllOptionConfigured = values.some((option) => option.value === ALL_VARIABLE_VALUE);
+
+    const renderMultiToggle = () => {
+      if (!multi) {
+        return null;
+      }
+
+      const tooltipContent = () => <Trans i18nKey="variable.picker.option-tooltip">Clear selections</Trans>;
+      return (
+        <Tooltip content={tooltipContent} placement={'top'}>
+          <button
+            className={cx(
+              buttonReset,
+              styles.variableOption,
+              styles.variableOptionColumnHeader,
+              styles.noStyledButton,
+              { [styles.noPaddingBotton]: isAllOptionConfigured }
+            )}
+            role="checkbox"
+            aria-checked={selectedValues.length > 1 ? 'mixed' : 'false'}
+            onClick={handleToggleAll}
+            aria-label={t('variables.variable-options.aria-label-toggle-all-values', 'Toggle all values')}
+            data-placement="top"
+          >
+            <span
+              className={cx(styles.variableOptionIcon, {
+                [styles.variableOptionIconManySelected]: selectedValues.length > 1,
+              })}
+            ></span>
+            <Trans i18nKey="variable.picker.option-selected-values" values={{ numSelected: selectedValues.length }}>
+              Selected ({'{{numSelected}}'})
+            </Trans>
+          </button>
+        </Tooltip>
+      );
+    };
 
     return (
-      <div className={`${multi ? 'variable-value-dropdown multi' : 'variable-value-dropdown single'}`}>
-        <div className="variable-options-wrapper">
+      <div className={styles.variableValueDropdown}>
+        <div className={styles.variableOptionsWrapper}>
           <ul
-            className={listStyles}
-            aria-label={selectors.pages.Dashboard.SubMenu.submenuItemValueDropDownDropDown}
+            className={styles.variableOptionsColumn}
+            data-testid={selectors.pages.Dashboard.SubMenu.submenuItemValueDropDownDropDown}
             {...restProps}
           >
-            {this.renderMultiToggle()}
-            {values.map((option, index) => this.renderOption(option, index))}
+            {renderMultiToggle()}
+            {values.map((option, index) => {
+              const isAllOption = option.value === ALL_VARIABLE_VALUE;
+
+              return (
+                <li key={`${option.value}`}>
+                  <button
+                    data-testid={selectors.components.Variables.variableOption}
+                    role="checkbox"
+                    type="button"
+                    aria-checked={option.selected}
+                    className={cx(
+                      buttonReset,
+                      styles.variableOption,
+                      {
+                        [styles.highlighted]: index === highlightIndex,
+                        [styles.variableAllOption]: isAllOption,
+                      },
+                      styles.noStyledButton
+                    )}
+                    onClick={handleToggle(option)}
+                  >
+                    <span
+                      className={cx(styles.variableOptionIcon, {
+                        [styles.variableOptionIconSelected]: option.selected,
+                        [styles.hideVariableOptionIcon]: !multi,
+                      })}
+                    ></span>
+                    <span
+                      data-testid={selectors.pages.Dashboard.SubMenu.submenuItemValueDropDownOptionTexts(
+                        `${option.text}`
+                      )}
+                    >
+                      {isAllOption ? t('variable.picker.option-all', 'All') : option.text}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       </div>
     );
   }
-
-  renderOption(option: VariableOption, index: number) {
-    const { highlightIndex } = this.props;
-    const selectClass = option.selected ? 'variable-option pointer selected' : 'variable-option pointer';
-    const highlightClass = index === highlightIndex ? `${selectClass} highlighted` : selectClass;
-
-    return (
-      <li key={`${option.value}`}>
-        <a role="checkbox" aria-checked={option.selected} className={highlightClass} onClick={this.onToggle(option)}>
-          <span className="variable-option-icon"></span>
-          <span data-testid={selectors.pages.Dashboard.SubMenu.submenuItemValueDropDownOptionTexts(`${option.text}`)}>
-            {option.text}
-          </span>
-        </a>
-      </li>
-    );
-  }
-
-  renderMultiToggle() {
-    const { multi, selectedValues } = this.props;
-
-    if (!multi) {
-      return null;
-    }
-
-    return (
-      <Tooltip content={'Clear selections'} placement={'top'}>
-        <a
-          className={`${
-            selectedValues.length > 1
-              ? 'variable-options-column-header many-selected'
-              : 'variable-options-column-header'
-          }`}
-          role="checkbox"
-          aria-checked={selectedValues.length > 1 ? 'mixed' : 'false'}
-          onClick={this.onToggleAll}
-          aria-label="Toggle all values"
-          data-placement="top"
-        >
-          <span className="variable-option-icon"></span>
-          Selected ({selectedValues.length})
-        </a>
-      </Tooltip>
-    );
-  }
-}
-
-const listStyles = cx(
-  'variable-options-column',
-  css`
-    list-style-type: none;
-  `
 );
+VariableOptions.displayName = 'VariableOptions';
+
+const getStyles = (theme: GrafanaTheme2) => {
+  const checkboxImageUrl = theme.isDark ? checkboxPng : checkboxWhitePng;
+
+  return {
+    hideVariableOptionIcon: css({
+      display: 'none',
+    }),
+    highlighted: css({
+      backgroundColor: theme.colors.action.hover,
+    }),
+    noStyledButton: css({
+      width: '100%',
+      textAlign: 'left',
+    }),
+    variableOption: css({
+      display: 'block',
+      padding: '2px 27px 0 8px',
+      position: 'relative',
+      whiteSpace: 'nowrap',
+      minWidth: '115px',
+      ['&:hover']: {
+        backgroundColor: theme.colors.action.hover,
+      },
+    }),
+    variableOptionColumnHeader: css({
+      paddingTop: '5px',
+      paddingBottom: '5px',
+      marginBottom: '5px',
+    }),
+    variableOptionIcon: css({
+      display: 'inline-block',
+      width: '24px',
+      height: '18px',
+      position: 'relative',
+      top: '4px',
+      background: `url(${checkboxImageUrl}) left top no-repeat`,
+    }),
+    variableOptionIconManySelected: css({
+      background: `url(${checkboxImageUrl}) 0px -36px no-repeat`,
+    }),
+    variableOptionIconSelected: css({
+      background: `url(${checkboxImageUrl}) 0px -18px no-repeat`,
+    }),
+    variableValueDropdown: css({
+      backgroundColor: theme.colors.background.primary,
+      border: `1px solid ${theme.colors.border.weak}`,
+      borderRadius: theme.shape.borderRadius(2),
+      boxShadow: theme.shadows.z2,
+      position: 'absolute',
+      top: theme.spacing(theme.components.height.md),
+      maxHeight: '400px',
+      minHeight: '150px',
+      minWidth: '150px',
+      overflowY: 'auto',
+      overflowX: 'hidden',
+      zIndex: theme.zIndex.typeahead,
+    }),
+    variableOptionsColumn: css({
+      maxHeight: '350px',
+      display: 'table-cell',
+      lineHeight: '26px',
+      listStyleType: 'none',
+    }),
+    variableOptionsWrapper: css({
+      display: 'table',
+      width: '100%',
+    }),
+    variableAllOption: css({
+      borderBottom: `1px solid ${theme.colors.border.weak}`,
+      paddingBottom: theme.spacing(1),
+    }),
+
+    noPaddingBotton: css({
+      paddingBottom: 0,
+    }),
+  };
+};

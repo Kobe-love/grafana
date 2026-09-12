@@ -1,19 +1,21 @@
 {
+  "extends": "../../scripts/tsconfig.base.json",
   "compilerOptions": {
-    "declarationDir": "dist",
-    "outDir": "compiled",
+    "declaration": true,
+    "jsx": "react-jsx",
+    "declarationDir": "./dist/types",
+    "emitDeclarationOnly": true,
+    "isolatedModules": true,
     "rootDirs": ["."],
-    "paths": {
-      "@grafana/data": ["."]
-    }
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true
   },
-  "exclude": ["dist", "node_modules"],
-  "extends": "@grafana/tsconfig",
+  "exclude": ["dist/**/*"],
   "include": [
     "src/**/*.ts*",
     "typings/jest",
     "../../public/app/types/jquery/*.ts",
     "../../public/app/types/*.d.ts",
-    "../../public/app/types/sanitize-url.d.ts"
+    "../grafana-ui/src/types/react-table-config.d.ts"
   ]
 }

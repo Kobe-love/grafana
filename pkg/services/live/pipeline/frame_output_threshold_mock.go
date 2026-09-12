@@ -8,6 +8,7 @@ import (
 	reflect "reflect"
 
 	gomock "github.com/golang/mock/gomock"
+
 	data "github.com/grafana/grafana-plugin-sdk-go/data"
 )
 
@@ -35,7 +36,7 @@ func (m *MockFrameGetSetter) EXPECT() *MockFrameGetSetterMockRecorder {
 }
 
 // Get mocks base method.
-func (m *MockFrameGetSetter) Get(arg0 int64, arg1 string) (*data.Frame, bool, error) {
+func (m *MockFrameGetSetter) Get(arg0 string, arg1 string) (*data.Frame, bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Get", arg0, arg1)
 	ret0, _ := ret[0].(*data.Frame)
@@ -45,13 +46,13 @@ func (m *MockFrameGetSetter) Get(arg0 int64, arg1 string) (*data.Frame, bool, er
 }
 
 // Get indicates an expected call of Get.
-func (mr *MockFrameGetSetterMockRecorder) Get(arg0, arg1 interface{}) *gomock.Call {
+func (mr *MockFrameGetSetterMockRecorder) Get(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockFrameGetSetter)(nil).Get), arg0, arg1)
 }
 
 // Set mocks base method.
-func (m *MockFrameGetSetter) Set(arg0 int64, arg1 string, arg2 *data.Frame) error {
+func (m *MockFrameGetSetter) Set(arg0 string, arg1 string, arg2 *data.Frame) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Set", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
@@ -59,7 +60,7 @@ func (m *MockFrameGetSetter) Set(arg0 int64, arg1 string, arg2 *data.Frame) erro
 }
 
 // Set indicates an expected call of Set.
-func (mr *MockFrameGetSetterMockRecorder) Set(arg0, arg1, arg2 interface{}) *gomock.Call {
+func (mr *MockFrameGetSetterMockRecorder) Set(arg0, arg1, arg2 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Set", reflect.TypeOf((*MockFrameGetSetter)(nil).Set), arg0, arg1, arg2)
 }

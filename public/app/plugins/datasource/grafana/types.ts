@@ -1,5 +1,8 @@
-import { DataQuery } from '@grafana/data';
-import { LiveDataFilter } from '@grafana/runtime';
+import { type DataFrameJSON } from '@grafana/data';
+import { type LiveDataFilter } from '@grafana/runtime';
+import { type DataQuery } from '@grafana/schema';
+import { type TimeRegionConfig } from 'app/core/utils/timeRegions';
+import { type SearchQuery } from 'app/features/search/service/types';
 
 //----------------------------------------------
 // Query
@@ -8,11 +11,12 @@ import { LiveDataFilter } from '@grafana/runtime';
 export enum GrafanaQueryType {
   LiveMeasurements = 'measurements',
   Annotations = 'annotations',
+  Snapshot = 'snapshot',
+  TimeRegions = 'timeRegions',
 
   // backend
   RandomWalk = 'randomWalk',
   List = 'list',
-  Read = 'read',
 }
 
 export interface GrafanaQuery extends DataQuery {
@@ -20,7 +24,25 @@ export interface GrafanaQuery extends DataQuery {
   channel?: string;
   filter?: LiveDataFilter;
   buffer?: number;
-  path?: string; // for list and read
+  path?: string; // for list
+  search?: SearchQuery;
+  searchNext?: SearchQuery;
+  snapshot?: DataFrameJSON[];
+  timeRegion?: TimeRegionConfig;
+  file?: GrafanaQueryFile;
+  // Random walk configuration
+  seriesCount?: number;
+  startValue?: number;
+  min?: number;
+  max?: number;
+  spread?: number;
+  noise?: number;
+  dropPercent?: number;
+}
+
+interface GrafanaQueryFile {
+  name: string;
+  size: number;
 }
 
 export const defaultQuery: GrafanaQuery = {

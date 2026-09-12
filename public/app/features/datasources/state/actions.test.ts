@@ -1,31 +1,50 @@
-import {
-  findNewName,
-  nameExits,
-  InitDataSourceSettingDependencies,
-  testDataSource,
-  TestDataSourceDependencies,
-  getDataSourceUsingUidOrId,
-} from './actions';
-import { getMockPlugin, getMockPlugins } from '../../plugins/__mocks__/pluginMocks';
 import { thunkTester } from 'test/core/thunk/thunkTester';
+
+import { type AppPluginMeta, type DataSourceSettings, type PluginMetaInfo, PluginType } from '@grafana/data';
+import { type DataSourceSrv, type FetchError } from '@grafana/runtime';
+import { appEvents } from 'app/core/app_events';
+import { type getBackendSrv } from 'app/core/services/backend_srv';
+import { type ThunkResult, type ThunkDispatch } from 'app/types/store';
+
+import * as api from '../api';
+import { DATASOURCES_ROUTES } from '../constants';
+import { getMockDataSource } from '../mocks/dataSourcesMocks';
+import { trackDataSourceCreated, trackDataSourceTested } from '../tracking';
+import { type GenericDataSourcePlugin } from '../types';
+
+import {
+  type InitDataSourceSettingDependencies,
+  testDataSource,
+  type TestDataSourceDependencies,
+  initDataSourceSettings,
+  loadDataSource,
+  addDataSource,
+} from './actions';
 import {
   initDataSourceSettingsSucceeded,
   initDataSourceSettingsFailed,
   testDataSourceStarting,
   testDataSourceSucceeded,
   testDataSourceFailed,
+  dataSourceLoaded,
 } from './reducers';
-import { initDataSourceSettings } from '../state/actions';
-import { ThunkResult, ThunkDispatch } from 'app/types';
-import { GenericDataSourcePlugin } from '../settings/PluginSettings';
-import { getBackendSrv } from 'app/core/services/backend_srv';
-import { BackendSrvRequest, FetchResponse } from '@grafana/runtime';
-import { of } from 'rxjs';
 
+jest.mock('../api');
 jest.mock('app/core/services/backend_srv');
+jest.mock('app/core/app_events', () => ({
+  ...jest.requireActual('app/core/app_events'),
+  appEvents: {
+    publish: jest.fn(),
+  },
+}));
 jest.mock('@grafana/runtime', () => ({
-  ...((jest.requireActual('@grafana/runtime') as unknown) as object),
-  getBackendSrv: jest.fn(),
+  ...jest.requireActual('@grafana/runtime'),
+  getDataSourceSrv: jest.fn().mockReturnValue({ reload: jest.fn() }),
+  getBackendSrv: jest.fn().mockReturnValue({ get: jest.fn() }),
+}));
+jest.mock('../tracking', () => ({
+  trackDataSourceCreated: jest.fn(),
+  trackDataSourceTested: jest.fn(),
 }));
 
 const getBackendSrvMock = () =>
@@ -37,7 +56,7 @@ const getBackendSrvMock = () =>
       }),
     }),
     withNoBackendCache: jest.fn().mockImplementationOnce((cb) => cb()),
-  } as any);
+  }) as unknown as ReturnType<typeof getBackendSrv>;
 
 const failDataSourceTest = async (error: object) => {
   const dependencies: TestDataSourceDependencies = {
@@ -47,8 +66,10 @@ const failDataSourceTest = async (error: object) => {
           testDatasource: jest.fn().mockImplementation(() => {
             throw error;
           }),
+          meta: { id: 'azure-monitor' },
+          uid: 'azM0nit0R',
         }),
-      } as any),
+      }) as Pick<DataSourceSrv, 'get'>,
     getBackendSrv: getBackendSrvMock,
   };
   const state = {
@@ -59,123 +80,66 @@ const failDataSourceTest = async (error: object) => {
   };
   const dispatchedActions = await thunkTester(state)
     .givenThunk(testDataSource)
-    .whenThunkIsDispatched('Azure Monitor', dependencies);
+    .whenThunkIsDispatched('Azure Monitor', DATASOURCES_ROUTES.Edit, dependencies);
 
   return dispatchedActions;
 };
 
-describe('getDataSourceUsingUidOrId', () => {
-  const uidResponse = {
-    ok: true,
-    data: {
-      id: 111,
-      uid: 'abcdefg',
-    },
-  };
+describe('loadDataSource()', () => {
+  it('should resolve to a data-source if a UID was used for fetching', async () => {
+    const dataSourceMock = getMockDataSource();
+    const dispatch = jest.fn();
+    const getState = jest.fn();
 
-  const idResponse = {
-    ok: true,
-    data: {
-      id: 222,
-      uid: 'xyz',
-    },
-  };
+    (api.getDataSourceByUid as jest.Mock).mockResolvedValueOnce(dataSourceMock);
 
-  it('should return UID response data', async () => {
-    (getBackendSrv as jest.Mock).mockReturnValueOnce({
-      fetch: (options: BackendSrvRequest) => {
-        return of(uidResponse as FetchResponse);
-      },
-    });
+    const dataSource = await loadDataSource(dataSourceMock.uid)(dispatch, getState, undefined);
 
-    expect(await getDataSourceUsingUidOrId('abcdefg')).toBe(uidResponse.data);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith(dataSourceLoaded(dataSource));
+    expect(dataSource).toBe(dataSourceMock);
   });
 
-  it('should return ID response data', async () => {
-    const uidResponse = {
-      ok: false,
-    };
+  it('should resolve to an empty data-source if an ID (deprecated) was used for fetching', async () => {
+    const id = 123;
+    const uid = 'uid';
+    const dataSourceMock = getMockDataSource({ id, uid });
+    const dispatch = jest.fn();
+    const getState = jest.fn();
 
-    (getBackendSrv as jest.Mock)
-      .mockReturnValueOnce({
-        fetch: (options: BackendSrvRequest) => {
-          return of(uidResponse as FetchResponse);
-        },
-      })
-      .mockReturnValueOnce({
-        fetch: (options: BackendSrvRequest) => {
-          return of(idResponse as FetchResponse);
-        },
-      });
-
-    expect(await getDataSourceUsingUidOrId(222)).toBe(idResponse.data);
-  });
-
-  it('should return empty response data', async () => {
+    const win: typeof globalThis = window;
     // @ts-ignore
-    delete window.location;
-    window.location = {} as Location;
+    delete win.location;
+    win.location = {} as Location;
 
-    const uidResponse = {
-      ok: false,
-    };
+    (api.getDataSourceByUid as jest.Mock).mockResolvedValueOnce(dataSourceMock);
 
-    (getBackendSrv as jest.Mock)
-      .mockReturnValueOnce({
-        fetch: (options: BackendSrvRequest) => {
-          return of(uidResponse as FetchResponse);
-        },
-      })
-      .mockReturnValueOnce({
-        fetch: (options: BackendSrvRequest) => {
-          return of(idResponse as FetchResponse);
-        },
-      });
+    // Fetch the datasource by ID
+    const dataSource = await loadDataSource(id.toString())(dispatch, getState, undefined);
 
-    expect(await getDataSourceUsingUidOrId('222')).toStrictEqual({});
-    expect(window.location.href).toBe('/datasources/edit/xyz');
-  });
-});
-
-describe('Name exists', () => {
-  const plugins = getMockPlugins(5);
-
-  it('should be true', () => {
-    const name = 'pretty cool plugin-1';
-
-    expect(nameExits(plugins, name)).toEqual(true);
+    expect(dataSource).toEqual({});
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith(dataSourceLoaded({} as DataSourceSettings));
   });
 
-  it('should be false', () => {
-    const name = 'pretty cool plugin-6';
+  it('should redirect to a URL which uses the UID if an ID (deprecated) was used for fetching', async () => {
+    const id = 123;
+    const uid = 'uid';
+    const dataSourceMock = getMockDataSource({ id, uid });
+    const dispatch = jest.fn();
+    const getState = jest.fn();
 
-    expect(nameExits(plugins, name));
-  });
-});
+    const win: typeof globalThis = window;
+    // @ts-ignore
+    delete win.location;
+    win.location = {} as Location;
 
-describe('Find new name', () => {
-  it('should create a new name', () => {
-    const plugins = getMockPlugins(5);
-    const name = 'pretty cool plugin-1';
+    (api.getDataSourceByUid as jest.Mock).mockResolvedValueOnce(dataSourceMock);
 
-    expect(findNewName(plugins, name)).toEqual('pretty cool plugin-6');
-  });
+    // Fetch the datasource by ID
+    await loadDataSource(id.toString())(dispatch, getState, undefined);
 
-  it('should create new name without suffix', () => {
-    const plugin = getMockPlugin();
-    plugin.name = 'prometheus';
-    const plugins = [plugin];
-    const name = 'prometheus';
-
-    expect(findNewName(plugins, name)).toEqual('prometheus-1');
-  });
-
-  it('should handle names that end with -', () => {
-    const plugin = getMockPlugin();
-    const plugins = [plugin];
-    const name = 'pretty cool plugin-';
-
-    expect(findNewName(plugins, name)).toEqual('pretty cool plugin-');
+    expect(window.location.href).toBe(`/datasources/edit/${uid}`);
   });
 });
 
@@ -184,7 +148,7 @@ describe('initDataSourceSettings', () => {
     it('then initDataSourceSettingsFailed should be dispatched', async () => {
       const dispatchedActions = await thunkTester({}).givenThunk(initDataSourceSettings).whenThunkIsDispatched('');
 
-      expect(dispatchedActions).toEqual([initDataSourceSettingsFailed(new Error('Invalid ID'))]);
+      expect(dispatchedActions).toEqual([initDataSourceSettingsFailed(new Error('Invalid UID'))]);
     });
   });
 
@@ -263,24 +227,34 @@ describe('testDataSource', () => {
           ({
             get: jest.fn().mockReturnValue({
               testDatasource: jest.fn().mockReturnValue({
-                status: '',
+                status: 'success',
                 message: '',
               }),
+              meta: { id: 'cloudwatch' },
+              uid: 'CW1234',
             }),
-          } as any),
+          }) as Pick<DataSourceSrv, 'get'>,
         getBackendSrv: getBackendSrvMock,
       };
       const state = {
         testingStatus: {
-          status: '',
+          status: 'success',
           message: '',
+          details: {},
         },
       };
       const dispatchedActions = await thunkTester(state)
         .givenThunk(testDataSource)
-        .whenThunkIsDispatched('Azure Monitor', dependencies);
+        .whenThunkIsDispatched('CloudWatch', DATASOURCES_ROUTES.Edit, dependencies);
 
       expect(dispatchedActions).toEqual([testDataSourceStarting(), testDataSourceSucceeded(state.testingStatus)]);
+      expect(trackDataSourceTested).toHaveBeenCalledWith({
+        plugin_id: 'cloudwatch',
+        datasource_uid: 'CW1234',
+        grafana_version: '1.0',
+        success: true,
+        path: '/datasources/edit/CloudWatch',
+      });
     });
 
     it('then testDataSourceFailed should be dispatched', async () => {
@@ -291,8 +265,10 @@ describe('testDataSource', () => {
               testDatasource: jest.fn().mockImplementation(() => {
                 throw new Error('Error testing datasource');
               }),
+              meta: { id: 'azure-monitor' },
+              uid: 'azM0nit0R',
             }),
-          } as any),
+          }) as Pick<DataSourceSrv, 'get'>,
         getBackendSrv: getBackendSrvMock,
       };
       const result = {
@@ -306,20 +282,31 @@ describe('testDataSource', () => {
       };
       const dispatchedActions = await thunkTester(state)
         .givenThunk(testDataSource)
-        .whenThunkIsDispatched('Azure Monitor', dependencies);
+        .whenThunkIsDispatched('Azure Monitor', DATASOURCES_ROUTES.Edit, dependencies);
 
       expect(dispatchedActions).toEqual([testDataSourceStarting(), testDataSourceFailed(result)]);
+      expect(trackDataSourceTested).toHaveBeenCalledWith({
+        plugin_id: 'azure-monitor',
+        datasource_uid: 'azM0nit0R',
+        grafana_version: '1.0',
+        success: false,
+        path: '/datasources/edit/Azure Monitor',
+      });
     });
 
     it('then testDataSourceFailed should be dispatched with response error message', async () => {
       const result = {
-        message: 'Error testing datasource',
+        message: 'Response error message',
       };
-      const dispatchedActions = await failDataSourceTest({
-        message: 'Error testing datasource',
+      const error: FetchError = {
+        config: {
+          url: '',
+        },
         data: { message: 'Response error message' },
+        status: 400,
         statusText: 'Bad Request',
-      });
+      };
+      const dispatchedActions = await failDataSourceTest(error);
       expect(dispatchedActions).toEqual([testDataSourceStarting(), testDataSourceFailed(result)]);
     });
 
@@ -327,10 +314,15 @@ describe('testDataSource', () => {
       const result = {
         message: 'Response error message',
       };
-      const dispatchedActions = await failDataSourceTest({
+      const error: FetchError = {
+        config: {
+          url: '',
+        },
         data: { message: 'Response error message' },
+        status: 400,
         statusText: 'Bad Request',
-      });
+      };
+      const dispatchedActions = await failDataSourceTest(error);
       expect(dispatchedActions).toEqual([testDataSourceStarting(), testDataSourceFailed(result)]);
     });
 
@@ -338,8 +330,135 @@ describe('testDataSource', () => {
       const result = {
         message: 'HTTP error Bad Request',
       };
-      const dispatchedActions = await failDataSourceTest({ data: {}, statusText: 'Bad Request' });
+      const error: FetchError = {
+        config: {
+          url: '',
+        },
+        data: {},
+        statusText: 'Bad Request',
+        status: 400,
+      };
+      const dispatchedActions = await failDataSourceTest(error);
       expect(dispatchedActions).toEqual([testDataSourceStarting(), testDataSourceFailed(result)]);
+    });
+
+    it('publishes an app event when the test succeeds', async () => {
+      const dependencies: TestDataSourceDependencies = {
+        getDatasourceSrv: () => ({
+          get: jest.fn().mockReturnValue({
+            testDatasource: jest.fn().mockReturnValue({
+              status: 'success',
+              message: '',
+            }),
+            meta: { id: 'cloudwatch' },
+            uid: 'CW1234',
+          }),
+        }),
+        getBackendSrv: getBackendSrvMock,
+      };
+      await thunkTester({})
+        .givenThunk(testDataSource)
+        .whenThunkIsDispatched('CloudWatch', DATASOURCES_ROUTES.Edit, dependencies);
+      expect(appEvents.publish).toHaveBeenCalledWith({ type: 'datasource-test-succeeded' });
+    });
+
+    it('publishes an app event when the test fails', async () => {
+      const error: FetchError = {
+        config: {
+          url: '',
+        },
+        data: {},
+        statusText: 'Bad Request',
+        status: 400,
+      };
+      await failDataSourceTest(error);
+      expect(appEvents.publish).toHaveBeenCalledWith({ type: 'datasource-test-failed' });
+    });
+
+    it('tracks the specific plugin id for Prometheus-based datasources on success', async () => {
+      // Prometheus subclasses (e.g. Amazon Managed Prometheus, Azure Prometheus) override
+      // this.type = 'prometheus' in their constructor, so dsApi.type is always 'prometheus'.
+      // We must use dsApi.meta.id to get the actual plugin identifier.
+      const dependencies: TestDataSourceDependencies = {
+        getDatasourceSrv: () =>
+          ({
+            get: jest.fn().mockReturnValue({
+              testDatasource: jest.fn().mockReturnValue({
+                status: 'success',
+                message: '',
+              }),
+              type: 'prometheus', // simulates the class-level override
+              meta: { id: 'grafana-amazon-prometheus-datasource' },
+              uid: 'amp-uid-1',
+            }),
+          }) as Pick<DataSourceSrv, 'get'>,
+        getBackendSrv: getBackendSrvMock,
+      };
+      await thunkTester({})
+        .givenThunk(testDataSource)
+        .whenThunkIsDispatched('Amazon Prometheus', DATASOURCES_ROUTES.Edit, dependencies);
+
+      expect(trackDataSourceTested).toHaveBeenCalledWith(
+        expect.objectContaining({
+          plugin_id: 'grafana-amazon-prometheus-datasource',
+          datasource_uid: 'amp-uid-1',
+          success: true,
+        })
+      );
+    });
+
+    it('tracks the specific plugin id for Prometheus-based datasources on failure', async () => {
+      const dependencies: TestDataSourceDependencies = {
+        getDatasourceSrv: () =>
+          ({
+            get: jest.fn().mockReturnValue({
+              testDatasource: jest.fn().mockImplementation(() => {
+                throw new Error('connection refused');
+              }),
+              type: 'prometheus', // simulates the class-level override
+              meta: { id: 'grafana-azure-prometheus-datasource' },
+              uid: 'azprom-uid-1',
+            }),
+          }) as Pick<DataSourceSrv, 'get'>,
+        getBackendSrv: getBackendSrvMock,
+      };
+      await thunkTester({})
+        .givenThunk(testDataSource)
+        .whenThunkIsDispatched('Azure Prometheus', DATASOURCES_ROUTES.Edit, dependencies);
+
+      expect(trackDataSourceTested).toHaveBeenCalledWith(
+        expect.objectContaining({
+          plugin_id: 'grafana-azure-prometheus-datasource',
+          datasource_uid: 'azprom-uid-1',
+          success: false,
+        })
+      );
+    });
+  });
+});
+
+describe('addDataSource', () => {
+  it('it creates a datasource and calls trackDataSourceCreated ', async () => {
+    const meta: AppPluginMeta = {
+      id: 'azure-monitor',
+      module: '',
+      baseUrl: 'xxx',
+      info: { version: '1.2.3' } as PluginMetaInfo,
+      type: PluginType.datasource,
+      name: 'test DS',
+    };
+    const dataSourceMock = { datasource: { uid: 'azure23' }, meta };
+    (api.createDataSource as jest.Mock).mockResolvedValueOnce(dataSourceMock);
+    (api.getDataSources as jest.Mock).mockResolvedValueOnce([]);
+
+    await thunkTester({}).givenThunk(addDataSource).whenThunkIsDispatched(meta);
+
+    expect(trackDataSourceCreated).toHaveBeenCalledWith({
+      plugin_id: 'azure-monitor',
+      plugin_version: '1.2.3',
+      datasource_uid: 'azure23',
+      grafana_version: '1.0',
+      path: window.location.pathname,
     });
   });
 });

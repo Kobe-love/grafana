@@ -1,135 +1,149 @@
-import React, { CSSProperties } from 'react';
-import { GrafanaTheme2, PanelData, VisualizationSuggestion } from '@grafana/data';
-import { PanelRenderer } from '../PanelRenderer';
 import { css, cx } from '@emotion/css';
-import { Tooltip, useStyles2 } from '@grafana/ui';
-import { VizTypeChangeDetails } from './types';
-import { selectors } from '@grafana/e2e-selectors';
 import { cloneDeep } from 'lodash';
+import { type CSSProperties, type HTMLAttributes, type ReactNode } from 'react';
 
-export interface Props {
+import { type GrafanaTheme2, type PanelData, type PanelPluginVisualizationSuggestion } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { config } from '@grafana/runtime';
+import { Tooltip, useStyles2 } from '@grafana/ui';
+
+import { PanelRenderer } from '../PanelRenderer';
+
+export interface Props extends HTMLAttributes<HTMLDivElement> {
   data: PanelData;
   width: number;
-  suggestion: VisualizationSuggestion;
-  showTitle?: boolean;
-  onChange: (details: VizTypeChangeDetails) => void;
+  suggestion: PanelPluginVisualizationSuggestion;
+  isSelected?: boolean;
 }
 
-export function VisualizationSuggestionCard({ data, suggestion, onChange, width, showTitle }: Props) {
+export function VisualizationSuggestionCard({ data, suggestion, width, className, isSelected, ...restProps }: Props) {
   const styles = useStyles2(getStyles);
   const { innerStyles, outerStyles, renderWidth, renderHeight } = getPreviewDimensionsAndStyles(width);
   const cardOptions = suggestion.cardOptions ?? {};
 
   const commonButtonProps = {
     'aria-label': suggestion.name,
-    className: styles.vizBox,
+    className: cx(className, styles.vizBox, isSelected && styles.selected),
     'data-testid': selectors.components.VisualizationPreview.card(suggestion.name),
     style: outerStyles,
-    onClick: () => {
-      onChange({
-        pluginId: suggestion.pluginId,
-        options: suggestion.options,
-        fieldConfig: suggestion.fieldConfig,
-      });
-    },
-  };
+    ...restProps,
+  } satisfies HTMLAttributes<HTMLDivElement> & { 'data-testid': string };
+
+  let content: ReactNode;
 
   if (cardOptions.imgSrc) {
-    return (
-      <Tooltip content={suggestion.description ?? suggestion.name}>
-        <button {...commonButtonProps} className={cx(styles.vizBox, styles.imgBox)}>
-          <div className={styles.name}>{suggestion.name}</div>
-          <img className={styles.img} src={cardOptions.imgSrc} alt={suggestion.name} />
-        </button>
-      </Tooltip>
+    content = (
+      <div {...commonButtonProps} className={cx(commonButtonProps.className, styles.imgBox)}>
+        <div className={styles.name}>{suggestion.name}</div>
+        <img className={styles.img} src={cardOptions.imgSrc} alt={suggestion.name} />
+      </div>
     );
-  }
+  } else {
+    let preview = suggestion;
+    if (suggestion.cardOptions?.previewModifier) {
+      preview = cloneDeep(suggestion);
+      suggestion.cardOptions.previewModifier(preview);
+    }
 
-  let preview = suggestion;
-  if (suggestion.cardOptions?.previewModifier) {
-    preview = cloneDeep(suggestion);
-    suggestion.cardOptions.previewModifier(preview);
-  }
+    const maxSeries = Math.min(cardOptions.maxSeries ?? Infinity, config.panelSeriesLimit || Infinity);
+    const maxRows = cardOptions.maxRows;
+    let previewData = Number.isFinite(maxSeries) ? { ...data, series: data.series.slice(0, maxSeries) } : data;
 
-  return (
-    <button {...commonButtonProps}>
-      <Tooltip content={suggestion.name}>
-        <div style={innerStyles} className={styles.renderContainer}>
+    if (maxRows && previewData.series.some((frame) => frame.length > maxRows)) {
+      previewData = {
+        ...previewData,
+        series: previewData.series.map((frame) =>
+          frame.length > maxRows
+            ? {
+                ...frame,
+                length: maxRows,
+                fields: frame.fields.map((field) => ({ ...field, values: field.values.slice(0, maxRows) })),
+              }
+            : frame
+        ),
+      };
+    }
+
+    content = (
+      <div {...commonButtonProps}>
+        <div style={innerStyles} className={styles.renderContainer} inert>
           <PanelRenderer
             title=""
-            data={data}
+            data={previewData}
             pluginId={suggestion.pluginId}
             width={renderWidth}
             height={renderHeight}
             options={preview.options}
             fieldConfig={preview.fieldConfig}
           />
-          <div className={styles.hoverPane} />
         </div>
-      </Tooltip>
-    </button>
-  );
+      </div>
+    );
+  }
+
+  return <Tooltip content={suggestion.description ?? suggestion.name}>{content}</Tooltip>;
 }
 
 const getStyles = (theme: GrafanaTheme2) => {
   return {
-    hoverPane: css({
-      position: 'absolute',
-      top: 0,
-      right: 0,
-      left: 0,
-      borderRadius: theme.spacing(2),
-      bottom: 0,
+    vizBox: css({
+      position: 'relative',
+      background: 'none',
+      borderRadius: theme.shape.radius.lg,
+      cursor: 'pointer',
+      border: `1px solid ${theme.colors.border.medium}`,
+
+      [theme.transitions.handleMotion('no-preference', 'reduce')]: {
+        transition: theme.transitions.create(['background', 'border-color'], {
+          duration: theme.transitions.duration.short,
+        }),
+      },
+
+      '&:hover': {
+        background: theme.colors.background.secondary,
+        borderColor: theme.colors.accent.main,
+      },
     }),
-    vizBox: css`
-      position: relative;
-      background: none;
-      border-radius: ${theme.shape.borderRadius(1)};
-      cursor: pointer;
-      border: 1px solid ${theme.colors.border.medium};
+    selected: css({
+      borderColor: theme.colors.accent.main,
+      background: theme.colors.background.secondary,
+    }),
+    imgBox: css({
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100%',
 
-      transition: ${theme.transitions.create(['background'], {
-        duration: theme.transitions.duration.short,
-      })};
+      justifySelf: 'center',
+      color: theme.colors.text.primary,
+      width: '100%',
 
-      &:hover {
-        background: ${theme.colors.background.secondary};
-      }
-    `,
-    imgBox: css`
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-
-      justify-self: center;
-      color: ${theme.colors.text.primary};
-      width: 100%;
-      display: flex;
-
-      justify-content: center;
-      align-items: center;
-      text-align: center;
-    `,
-    name: css`
-      padding-bottom: ${theme.spacing(0.5)};
-      margin-top: ${theme.spacing(-1)};
-      font-size: ${theme.typography.bodySmall.fontSize};
-      white-space: nowrap;
-      overflow: hidden;
-      color: ${theme.colors.text.secondary};
-      font-weight: ${theme.typography.fontWeightMedium};
-      text-overflow: ellipsis;
-    `,
-    img: css`
-      max-width: ${theme.spacing(8)};
-      max-height: ${theme.spacing(8)};
-    `,
-    renderContainer: css`
-      position: absolute;
-      transform-origin: left top;
-      top: 6px;
-      left: 6px;
-    `,
+      justifyContent: 'center',
+      alignItems: 'center',
+      textAlign: 'center',
+    }),
+    name: css({
+      paddingBottom: theme.spacing(0.5),
+      marginTop: theme.spacing(-1),
+      fontSize: theme.typography.bodySmall.fontSize,
+      whiteSpace: 'nowrap',
+      overflow: 'hidden',
+      color: theme.colors.text.secondary,
+      fontWeight: theme.typography.fontWeightMedium,
+      textOverflow: 'ellipsis',
+    }),
+    img: css({
+      maxWidth: theme.spacing(8),
+      maxHeight: theme.spacing(8),
+    }),
+    renderContainer: css({
+      position: 'absolute',
+      transformOrigin: 'left top',
+      top: '6px',
+      left: '6px',
+      // disable interactions in the preview card
+      pointerEvents: 'none',
+      '&& *': { scrollbarWidth: 'none' },
+    }),
   };
 };
 
@@ -142,11 +156,21 @@ interface PreviewDimensionsAndStyles {
 
 function getPreviewDimensionsAndStyles(width: number): PreviewDimensionsAndStyles {
   const aspectRatio = 16 / 10;
-  const showWidth = width;
-  const showHeight = width * (1 / aspectRatio);
   const renderWidth = 350;
   const renderHeight = renderWidth * (1 / aspectRatio);
 
+  // width is 0 on the first render (before useMeasure)
+  if (width === 0) {
+    return {
+      renderWidth,
+      renderHeight,
+      outerStyles: { width: '100%', aspectRatio: `${aspectRatio}` },
+      innerStyles: { display: 'none' },
+    };
+  }
+
+  const showWidth = width;
+  const showHeight = width * (1 / aspectRatio);
   const padding = 6;
   const widthFactor = (showWidth - padding * 2) / renderWidth;
   const heightFactor = (showHeight - padding * 2) / renderHeight;

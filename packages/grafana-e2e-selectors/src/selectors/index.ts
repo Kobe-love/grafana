@@ -1,20 +1,24 @@
-import { Pages } from './pages';
-import { Components } from './components';
-import { E2ESelectors } from '../types';
+import { resolveSelectors } from '../resolver';
+import { type E2ESelectors } from '../types';
+
+import { versionedComponents, type VersionedComponents } from './components';
+import { versionedPages, type VersionedPages } from './pages';
+
+const Pages = resolveSelectors(versionedPages);
+const Components = resolveSelectors(versionedComponents);
+const selectors = { pages: Pages, components: Components };
 
 /**
- * Exposes selectors in package for easy use in e2e tests and in production code
- *
- * @alpha
+ * Exposes Pages, Component selectors, and E2ESelectors type in package for easy use in e2e tests and in production code.
  */
-export const selectors: { pages: E2ESelectors<typeof Pages>; components: E2ESelectors<typeof Components> } = {
-  pages: Pages,
-  components: Components,
+export {
+  Pages,
+  Components,
+  selectors,
+  versionedComponents,
+  versionedPages,
+  resolveSelectors,
+  type VersionedPages,
+  type VersionedComponents,
+  type E2ESelectors,
 };
-
-/**
- * Exposes Pages, Component selectors and E2ESelectors type in package for easy use in e2e tests and in production code
- *
- * @alpha
- */
-export { Pages, Components, E2ESelectors };

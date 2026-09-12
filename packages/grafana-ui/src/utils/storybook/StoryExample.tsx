@@ -1,27 +1,26 @@
-import React, { FC } from 'react';
 import { css } from '@emotion/css';
-import { useTheme } from '../../themes/ThemeContext';
+import * as React from 'react';
+
+import { Stack } from '../../components/Layout/Stack/Stack';
+import { Text } from '../../components/Text/Text';
 
 export interface Props {
   name: string;
   children?: React.ReactNode;
 }
 
-export const StoryExample: FC<Props> = ({ name, children }) => {
-  const theme = useTheme();
-  const style = css`
-    width: 100%;
-    padding: 16px;
-  `;
-  const heading = css`
-    color: ${theme.colors.textWeak};
-    margin-bottom: 16px;
-  `;
+export const StoryExample = ({ name, children }: Props) => {
+  const style = css({
+    width: '100%',
+    padding: '16px',
+  });
 
   return (
     <div className={style}>
-      <h5 className={heading}>{name}</h5>
-      {children}
+      <Stack gap={2} direction="column">
+        <Text variant="h5">{name}</Text>
+        {children}
+      </Stack>
     </div>
   );
 };

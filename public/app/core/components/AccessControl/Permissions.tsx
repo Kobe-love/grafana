@@ -1,12 +1,18 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { css } from '@emotion/css';
 import { sortBy } from 'lodash';
+import { useEffect, useMemo, useState } from 'react';
+import * as React from 'react';
+import useAsyncFn from 'react-use/lib/useAsyncFn';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+import { Trans, t } from '@grafana/i18n';
+import { Text, Box, Button, useStyles2, LoadingPlaceholder } from '@grafana/ui';
+import { SlideDown } from 'app/core/components/Animations/SlideDown';
 import { getBackendSrv } from 'app/core/services/backend_srv';
 
-import { Button } from '@grafana/ui';
-import { SlideDown } from 'app/core/components/Animations/SlideDown';
 import { AddPermission } from './AddPermission';
 import { PermissionList } from './PermissionList';
-import { PermissionTarget, ResourcePermission, SetPermission, Description } from './types';
+import { PermissionTarget, type ResourcePermission, type SetPermission, type Description } from './types';
 
 const EMPTY_PERMISSION = '';
 
@@ -15,72 +21,83 @@ const INITIAL_DESCRIPTION: Description = {
   assignments: {
     teams: false,
     users: false,
+    serviceAccounts: false,
     builtInRoles: false,
   },
 };
 
+type ResourceId = string | number;
+type Type = 'users' | 'teams' | 'serviceAccounts' | 'builtInRoles';
+
 export type Props = {
-  title?: string;
   buttonLabel?: string;
+  emptyLabel?: string;
   addPermissionTitle?: string;
   resource: string;
-  resourceId: number;
-
-  canListUsers: boolean;
+  resourceId: ResourceId;
   canSetPermissions: boolean;
+  getWarnings?: (items: ResourcePermission[]) => ResourcePermission[];
+  epilogue?: (items: ResourcePermission[]) => React.ReactNode;
+  queryParams?: Record<string, string>;
 };
 
 export const Permissions = ({
-  title = 'Permissions',
-  buttonLabel = 'Add a permission',
+  buttonLabel = t('access-control.permissions.add-label', 'Add a permission'),
+  emptyLabel = t('access-control.permissions.no-permissions', 'There are no permissions'),
   resource,
   resourceId,
-  canListUsers,
   canSetPermissions,
   addPermissionTitle,
+  getWarnings,
+  epilogue,
+  queryParams,
 }: Props) => {
+  const styles = useStyles2(getStyles);
   const [isAdding, setIsAdding] = useState(false);
-  const [items, setItems] = useState<ResourcePermission[]>([]);
   const [desc, setDesc] = useState(INITIAL_DESCRIPTION);
 
-  const fetchItems = useCallback(() => {
-    return getPermissions(resource, resourceId).then((r) => setItems(r));
-  }, [resource, resourceId]);
+  const [permissions, fetchPermissions] = useAsyncFn(async () => {
+    let items = await getPermissions(resource, resourceId, queryParams);
+    if (getWarnings) {
+      items = getWarnings(items);
+    }
+    return items;
+  }, [resource, resourceId, queryParams, getWarnings]);
 
   useEffect(() => {
-    getDescription(resource).then((r) => {
+    getDescription(resource, queryParams).then((r) => {
       setDesc(r);
-      return fetchItems();
+      return fetchPermissions();
     });
-  }, [resource, resourceId, fetchItems]);
+  }, [resource, fetchPermissions, queryParams]);
 
   const onAdd = (state: SetPermission) => {
     let promise: Promise<void> | null = null;
-    if (state.target === PermissionTarget.User) {
-      promise = setUserPermission(resource, resourceId, state.userId!, state.permission);
+    if (state.target === PermissionTarget.User || state.target === PermissionTarget.ServiceAccount) {
+      promise = setUserPermission(resource, resourceId, state.userUid!, state.permission, queryParams);
     } else if (state.target === PermissionTarget.Team) {
-      promise = setTeamPermission(resource, resourceId, state.teamId!, state.permission);
+      promise = setTeamPermission(resource, resourceId, state.teamUid!, state.permission, queryParams);
     } else if (state.target === PermissionTarget.BuiltInRole) {
-      promise = setBuiltInRolePermission(resource, resourceId, state.builtInRole!, state.permission);
+      promise = setBuiltInRolePermission(resource, resourceId, state.builtInRole!, state.permission, queryParams);
     }
 
     if (promise !== null) {
-      promise.then(fetchItems);
+      promise.then(fetchPermissions);
     }
   };
 
   const onRemove = (item: ResourcePermission) => {
     let promise: Promise<void> | null = null;
-    if (item.userId) {
-      promise = setUserPermission(resource, resourceId, item.userId, EMPTY_PERMISSION);
-    } else if (item.teamId) {
-      promise = setTeamPermission(resource, resourceId, item.teamId, EMPTY_PERMISSION);
+    if (item.userUid) {
+      promise = setUserPermission(resource, resourceId, item.userUid, EMPTY_PERMISSION, queryParams);
+    } else if (item.teamUid) {
+      promise = setTeamPermission(resource, resourceId, item.teamUid, EMPTY_PERMISSION, queryParams);
     } else if (item.builtInRole) {
-      promise = setBuiltInRolePermission(resource, resourceId, item.builtInRole, EMPTY_PERMISSION);
+      promise = setBuiltInRolePermission(resource, resourceId, item.builtInRole, EMPTY_PERMISSION, queryParams);
     }
 
     if (promise !== null) {
-      promise.then(fetchItems);
+      promise.then(fetchPermissions);
     }
   };
 
@@ -88,10 +105,10 @@ export const Permissions = ({
     if (item.permission === permission) {
       return;
     }
-    if (item.userId) {
-      onAdd({ permission, userId: item.userId, target: PermissionTarget.User });
-    } else if (item.teamId) {
-      onAdd({ permission, teamId: item.teamId, target: PermissionTarget.Team });
+    if (item.userUid || item.isServiceAccount) {
+      onAdd({ permission, userUid: item.userUid, target: PermissionTarget.User });
+    } else if (item.teamUid) {
+      onAdd({ permission, teamUid: item.teamUid, target: PermissionTarget.Team });
     } else if (item.builtInRole) {
       onAdd({ permission, builtInRole: item.builtInRole, target: PermissionTarget.BuiltInRole });
     }
@@ -100,106 +117,184 @@ export const Permissions = ({
   const teams = useMemo(
     () =>
       sortBy(
-        items.filter((i) => i.teamId),
-        ['team']
+        (permissions.value || []).filter((i) => i.teamId),
+        ['team', 'isManaged']
       ),
-    [items]
+    [permissions.value]
   );
   const users = useMemo(
     () =>
       sortBy(
-        items.filter((i) => i.userId),
-        ['userLogin']
+        (permissions.value || []).filter((i) => i.userId && !i.isServiceAccount),
+        ['userLogin', 'isManaged']
       ),
-    [items]
+    [permissions.value]
+  );
+  const serviceAccounts = useMemo(
+    () =>
+      sortBy(
+        (permissions.value || []).filter((i) => i.userId && i.isServiceAccount),
+        ['userLogin', 'isManaged']
+      ),
+    [permissions.value]
   );
   const builtInRoles = useMemo(
     () =>
       sortBy(
-        items.filter((i) => i.builtInRole),
-        ['builtInRole']
+        (permissions.value || []).filter((i) => i.builtInRole),
+        ['builtInRole', 'isManaged']
       ),
-    [items]
+    [permissions.value]
   );
 
+  const titleRole = t('access-control.permissions.role', 'Role');
+  const titleUser = t('access-control.permissions.user', 'User');
+  const titleServiceAccount = t('access-control.permissions.serviceaccount', 'Service Account');
+  const titleTeam = t('access-control.permissions.team', 'Team');
+
+  if (permissions.loading) {
+    return <LoadingPlaceholder text={t('access-control.permissions.loading', 'Loading permissions...')} />;
+  }
+
   return (
-    <div>
-      <div className="page-action-bar">
-        <h3 className="page-sub-heading">{title}</h3>
-        <div className="page-action-bar__spacer" />
+    <>
+      <div>
+        {canSetPermissions && resource === 'folders' && (
+          <Box paddingBottom={2}>
+            <Trans i18nKey="access-control.permissions.permissions-change-warning">
+              This will change permissions for this folder and all its descendants.
+            </Trans>
+          </Box>
+        )}
+        {permissions.value?.length === 0 && (
+          <Box>
+            <Text>{emptyLabel}</Text>
+          </Box>
+        )}
+        <PermissionList
+          title={titleRole}
+          items={builtInRoles}
+          compareKey={'builtInRole'}
+          permissionLevels={desc.permissions}
+          onChange={onChange}
+          onRemove={onRemove}
+          canSet={canSetPermissions}
+        />
+        <PermissionList
+          title={titleUser}
+          items={users}
+          compareKey={'userLogin'}
+          permissionLevels={desc.permissions}
+          onChange={onChange}
+          onRemove={onRemove}
+          canSet={canSetPermissions}
+        />
+        <PermissionList
+          title={titleServiceAccount}
+          items={serviceAccounts}
+          compareKey={'userLogin'}
+          permissionLevels={desc.permissions}
+          onChange={onChange}
+          onRemove={onRemove}
+          canSet={canSetPermissions}
+        />
+        <PermissionList
+          title={titleTeam}
+          items={teams}
+          compareKey={'team'}
+          permissionLevels={desc.permissions}
+          onChange={onChange}
+          onRemove={onRemove}
+          canSet={canSetPermissions}
+        />
         {canSetPermissions && (
-          <Button variant={'primary'} key="add-permission" onClick={() => setIsAdding(true)}>
-            {buttonLabel}
-          </Button>
+          <>
+            <Button
+              className={styles.addPermissionButton}
+              variant={'primary'}
+              key="add-permission"
+              onClick={() => setIsAdding(true)}
+              icon="plus"
+            >
+              {buttonLabel}
+            </Button>
+            <SlideDown in={isAdding}>
+              <AddPermission
+                title={addPermissionTitle}
+                onAdd={onAdd}
+                permissions={desc.permissions}
+                assignments={desc.assignments}
+                onCancel={() => setIsAdding(false)}
+              />
+            </SlideDown>
+          </>
         )}
       </div>
-
-      <div>
-        <SlideDown in={isAdding}>
-          <AddPermission
-            title={addPermissionTitle}
-            onAdd={onAdd}
-            permissions={desc.permissions}
-            assignments={desc.assignments}
-            canListUsers={canListUsers}
-            onCancel={() => setIsAdding(false)}
-          />
-        </SlideDown>
-        <PermissionList
-          title="Role"
-          items={builtInRoles}
-          permissionLevels={desc.permissions}
-          onChange={onChange}
-          onRemove={onRemove}
-          canSet={canSetPermissions}
-        />
-        <PermissionList
-          title="User"
-          items={users}
-          permissionLevels={desc.permissions}
-          onChange={onChange}
-          onRemove={onRemove}
-          canSet={canSetPermissions}
-        />
-        <PermissionList
-          title="Team"
-          items={teams}
-          permissionLevels={desc.permissions}
-          onChange={onChange}
-          onRemove={onRemove}
-          canSet={canSetPermissions}
-        />
-      </div>
-    </div>
+      {epilogue && epilogue(permissions.value || [])}
+    </>
   );
 };
 
-const getDescription = async (resource: string): Promise<Description> => {
+const getDescription = async (resource: string, queryParams?: Record<string, string>): Promise<Description> => {
   try {
-    return await getBackendSrv().get(`/api/access-control/${resource}/description`);
+    return await getBackendSrv().get(`/api/access-control/${resource}/description`, queryParams);
   } catch (e) {
     console.error('failed to load resource description: ', e);
     return INITIAL_DESCRIPTION;
   }
 };
 
-const getPermissions = (resource: string, resourceId: number): Promise<ResourcePermission[]> =>
-  getBackendSrv().get(`/api/access-control/${resource}/${resourceId}`);
+const getPermissions = (
+  resource: string,
+  resourceId: ResourceId,
+  queryParams?: Record<string, string>
+): Promise<ResourcePermission[]> => getBackendSrv().get(`/api/access-control/${resource}/${resourceId}`, queryParams);
 
-const setUserPermission = (resource: string, resourceId: number, userId: number, permission: string) =>
-  setPermission(resource, resourceId, 'users', userId, permission);
+const setUserPermission = (
+  resource: string,
+  resourceId: ResourceId,
+  userUid: string,
+  permission: string,
+  queryParams?: Record<string, string>
+) => setPermission(resource, resourceId, 'users', userUid, permission, queryParams);
 
-const setTeamPermission = (resource: string, resourceId: number, teamId: number, permission: string) =>
-  setPermission(resource, resourceId, 'teams', teamId, permission);
+const setTeamPermission = (
+  resource: string,
+  resourceId: ResourceId,
+  teamUid: string,
+  permission: string,
+  queryParams?: Record<string, string>
+) => setPermission(resource, resourceId, 'teams', teamUid, permission, queryParams);
 
-const setBuiltInRolePermission = (resource: string, resourceId: number, builtInRole: string, permission: string) =>
-  setPermission(resource, resourceId, 'builtInRoles', builtInRole, permission);
+const setBuiltInRolePermission = (
+  resource: string,
+  resourceId: ResourceId,
+  builtInRole: string,
+  permission: string,
+  queryParams?: Record<string, string>
+) => setPermission(resource, resourceId, 'builtInRoles', builtInRole, permission, queryParams);
 
 const setPermission = (
   resource: string,
-  resourceId: number,
-  type: 'users' | 'teams' | 'builtInRoles',
+  resourceId: ResourceId,
+  type: Type,
   typeId: number | string,
-  permission: string
+  permission: string,
+  queryParams?: Record<string, string>
 ): Promise<void> =>
-  getBackendSrv().post(`/api/access-control/${resource}/${resourceId}/${type}/${typeId}/`, { permission });
+  getBackendSrv().post(
+    `/api/access-control/${resource}/${resourceId}/${type}/${typeId}`,
+    { permission },
+    { params: queryParams }
+  );
+
+const getStyles = (theme: GrafanaTheme2) => ({
+  breakdown: css({
+    ...theme.typography.bodySmall,
+    color: theme.colors.text.secondary,
+    marginBottom: theme.spacing(2),
+  }),
+  addPermissionButton: css({
+    marginBottom: theme.spacing(2),
+  }),
+});

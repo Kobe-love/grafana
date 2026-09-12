@@ -1,20 +1,35 @@
-import { DataSourceInstanceSettings } from '@grafana/data';
+import { cloneDeep } from 'lodash';
+
+import { type DataSourceInstanceListItem, type DataSourceVariableModel } from '@grafana/data';
+import { getMockPlugins } from '@grafana/data/test';
 
 import { reducerTester } from '../../../../test/core/redux/reducerTester';
-import { createDataSourceOptions, dataSourceVariableReducer } from './reducer';
-import { DataSourceVariableModel } from '../types';
-import { getVariableTestContext } from '../state/helpers';
-import { cloneDeep } from 'lodash';
-import { createDataSourceVariableAdapter } from './adapter';
-import { toVariablePayload, VariablesState } from '../state/types';
-import { getMockPlugins } from '../../plugins/__mocks__/pluginMocks';
 import { getDataSourceInstanceSetting } from '../shared/testing/helpers';
+import { getVariableTestContext } from '../state/helpers';
+import { type VariablesState } from '../state/types';
+import { toVariablePayload } from '../utils';
+
+import { createDataSourceVariableAdapter } from './adapter';
+import { createDataSourceOptions, dataSourceVariableReducer } from './reducer';
+
+function toListItems(plugins: ReturnType<typeof getMockPlugins>): DataSourceInstanceListItem[] {
+  return plugins.map((p) => {
+    const settings = getDataSourceInstanceSetting(p.name, p);
+    return {
+      uid: settings.uid,
+      type: settings.type,
+      name: settings.name,
+      meta: settings.meta,
+      isDefault: settings.isDefault ?? false,
+    };
+  });
+}
 
 describe('dataSourceVariableReducer', () => {
   const adapter = createDataSourceVariableAdapter();
   describe('when createDataSourceOptions is dispatched', () => {
     const plugins = getMockPlugins(3);
-    const sources: DataSourceInstanceSettings[] = plugins.map((p) => getDataSourceInstanceSetting(p.name, p));
+    const sources = toListItems(plugins);
 
     it.each`
       query                 | regex                           | includeAll | expected
@@ -37,10 +52,10 @@ describe('dataSourceVariableReducer', () => {
           .whenActionIsDispatched(createDataSourceOptions(payload))
           .thenStateShouldEqual({
             ...initialState,
-            ['0']: ({
+            ['0']: {
               ...initialState['0'],
               options: expected,
-            } as unknown) as DataSourceVariableModel,
+            } as unknown as DataSourceVariableModel,
           });
       }
     );
@@ -48,8 +63,7 @@ describe('dataSourceVariableReducer', () => {
 
   describe('when createDataSourceOptions is dispatched and item is default data source', () => {
     it('then the state should include an extra default option', () => {
-      const plugins = getMockPlugins(3);
-      const sources: DataSourceInstanceSettings[] = plugins.map((p) => getDataSourceInstanceSetting(p.name, p));
+      const sources = toListItems(getMockPlugins(3));
       sources[1].isDefault = true;
 
       const { initialState } = getVariableTestContext<DataSourceVariableModel>(adapter, {
@@ -63,21 +77,20 @@ describe('dataSourceVariableReducer', () => {
         .whenActionIsDispatched(createDataSourceOptions(payload))
         .thenStateShouldEqual({
           ...initialState,
-          ['0']: ({
+          ['0']: {
             ...initialState['0'],
             options: [
               { text: 'pretty cool plugin-1', value: 'pretty cool plugin-1', selected: false },
               { text: 'default', value: 'default', selected: false },
             ],
-          } as unknown) as DataSourceVariableModel,
+          } as unknown as DataSourceVariableModel,
         });
     });
   });
 
   describe('when createDataSourceOptions is dispatched with default in the regex and item is default data source', () => {
     it('then the state should include an extra default option', () => {
-      const plugins = getMockPlugins(3);
-      const sources: DataSourceInstanceSettings[] = plugins.map((p) => getDataSourceInstanceSetting(p.name, p));
+      const sources = toListItems(getMockPlugins(3));
       sources[1].isDefault = true;
 
       const { initialState } = getVariableTestContext<DataSourceVariableModel>(adapter, {
@@ -91,18 +104,17 @@ describe('dataSourceVariableReducer', () => {
         .whenActionIsDispatched(createDataSourceOptions(payload))
         .thenStateShouldEqual({
           ...initialState,
-          ['0']: ({
+          ['0']: {
             ...initialState['0'],
             options: [{ text: 'default', value: 'default', selected: false }],
-          } as unknown) as DataSourceVariableModel,
+          } as unknown as DataSourceVariableModel,
         });
     });
   });
 
   describe('when createDataSourceOptions is dispatched without default in the regex and item is default data source', () => {
     it('then the state not should include an extra default option', () => {
-      const plugins = getMockPlugins(3);
-      const sources: DataSourceInstanceSettings[] = plugins.map((p) => getDataSourceInstanceSetting(p.name, p));
+      const sources = toListItems(getMockPlugins(3));
       sources[1].isDefault = true;
 
       const { initialState } = getVariableTestContext<DataSourceVariableModel>(adapter, {
@@ -116,18 +128,17 @@ describe('dataSourceVariableReducer', () => {
         .whenActionIsDispatched(createDataSourceOptions(payload))
         .thenStateShouldEqual({
           ...initialState,
-          ['0']: ({
+          ['0']: {
             ...initialState['0'],
             options: [{ text: 'pretty cool plugin-1', value: 'pretty cool plugin-1', selected: false }],
-          } as unknown) as DataSourceVariableModel,
+          } as unknown as DataSourceVariableModel,
         });
     });
   });
 
   describe('when createDataSourceOptions is dispatched without the regex and item is default data source', () => {
     it('then the state should include an extra default option', () => {
-      const plugins = getMockPlugins(3);
-      const sources: DataSourceInstanceSettings[] = plugins.map((p) => getDataSourceInstanceSetting(p.name, p));
+      const sources = toListItems(getMockPlugins(3));
       sources[1].isDefault = true;
 
       const { initialState } = getVariableTestContext<DataSourceVariableModel>(adapter, {
@@ -141,13 +152,13 @@ describe('dataSourceVariableReducer', () => {
         .whenActionIsDispatched(createDataSourceOptions(payload))
         .thenStateShouldEqual({
           ...initialState,
-          ['0']: ({
+          ['0']: {
             ...initialState['0'],
             options: [
               { text: 'pretty cool plugin-1', value: 'pretty cool plugin-1', selected: false },
               { text: 'default', value: 'default', selected: false },
             ],
-          } as unknown) as DataSourceVariableModel,
+          } as unknown as DataSourceVariableModel,
         });
     });
   });

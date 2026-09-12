@@ -1,116 +1,159 @@
-import React from 'react';
 import { css, cx } from '@emotion/css';
-import { GrafanaTheme } from '@grafana/data';
-import { stylesFactory } from '../../themes/stylesFactory';
-import { useTheme } from '../../themes/ThemeContext';
-import { IconName, IconType, IconSize } from '../../types/icon';
+import { useCallback, useState, useRef, memo, forwardRef } from 'react';
 import SVG from 'react-inlinesvg';
-import { cacheInitialized, initIconCache, iconRoot } from './iconBundle';
 
-const alwaysMonoIcons: IconName[] = ['grafana', 'favorite', 'heart-break', 'heart', 'panel-add', 'library-panel'];
+import { type GrafanaTheme2, isIconName } from '@grafana/data';
 
-export interface IconProps extends React.HTMLAttributes<HTMLDivElement> {
+import { useStyles2 } from '../../themes/ThemeContext';
+import { type IconName, type IconType, type IconSize } from '../../types/icon';
+import { spin } from '../../utils/keyframes';
+
+import { getIconPath, getSvgSize } from './utils';
+
+export interface IconProps extends Omit<React.SVGProps<SVGElement>, 'onLoad' | 'onError' | 'ref'> {
   name: IconName;
   size?: IconSize;
   type?: IconType;
+  /**
+   * Give your icon a semantic meaning. The icon will be hidden from screen readers, unless this prop or an aria-label is provided.
+   */
   title?: string;
 }
 
-const getIconStyles = stylesFactory((theme: GrafanaTheme) => {
+const getIconStyles = (theme: GrafanaTheme2) => {
   return {
-    container: css`
-      label: Icon;
-      display: inline-block;
-    `,
-    icon: css`
-      vertical-align: middle;
-      display: inline-block;
-      margin-bottom: ${theme.spacing.xxs};
-      fill: currentColor;
-    `,
-    orange: css`
-      fill: ${theme.palette.orange};
-    `,
+    icon: css({
+      display: 'inline-block',
+      fill: 'currentColor',
+      flexShrink: 0,
+      label: 'Icon',
+      // line-height: 0; is needed for correct icon alignment in Safari
+      lineHeight: 0,
+      verticalAlign: 'middle',
+    }),
+    orange: css({
+      fill: theme.v1.palette.orange,
+    }),
+    spin: css({
+      [theme.transitions.handleMotion('no-preference', 'reduce')]: {
+        animation: `${spin} 2s infinite linear`,
+      },
+    }),
   };
-});
+};
 
-function getIconSubDir(name: IconName, type: string): string {
-  return name?.startsWith('gf-')
-    ? 'custom'
-    : alwaysMonoIcons.includes(name)
-    ? 'mono'
-    : type === 'default'
-    ? 'unicons'
-    : 'mono';
+// The SVG can become 'stuck' if it's changed quickly before the previous icon finished loading.
+// See https://github.com/gilbarbara/react-inlinesvg/issues/247
+// By using the svgPath as the key, we ensure that the component is re-mounted and the new icon is loaded correctly.
+function useIconWorkaround(name: IconName) {
+  // Buffer name changes while the icon is loading until it stops loading, then apply the most recent name change.
+  // We use refs for state and a forceUpdate state to avoid needing to use the buffered name in the happy path
+  // of when the icon changes when its not currently loading.
+  // We want to avoid needless state updates to keep track of the lifecycle.
+
+  const [, setForceUpdate] = useState(0);
+  const isLoadingRef = useRef(false);
+  const currentNameRef = useRef(name);
+  const bufferedNameRef = useRef<IconName | null>(null);
+
+  // Decide which name to render THIS render
+  let nameToUse = name;
+
+  if (isLoadingRef.current && name !== currentNameRef.current) {
+    // Currently loading and name changed - buffer it, keep using current
+    nameToUse = currentNameRef.current;
+    bufferedNameRef.current = name;
+  } else if (!isLoadingRef.current && name !== currentNameRef.current) {
+    // Not loading - use new name immediately (happy path)
+    currentNameRef.current = name;
+    bufferedNameRef.current = null;
+    isLoadingRef.current = true; // Mark as loading when we accept a new name
+  }
+
+  const handleLoad = useCallback(() => {
+    isLoadingRef.current = false;
+
+    // Apply buffered name if one exists
+    if (bufferedNameRef.current) {
+      currentNameRef.current = bufferedNameRef.current;
+      bufferedNameRef.current = null;
+      setForceUpdate((n) => n + 1); // Trigger re-render with buffered name
+    }
+  }, []);
+
+  return { nameToUse, handleLoad };
 }
 
-export const Icon = React.forwardRef<HTMLDivElement, IconProps>(
-  ({ size = 'md', type = 'default', name, className, style, title = '', ...divElementProps }, ref) => {
-    const theme = useTheme();
+/**
+ * Grafana's icon wrapper component.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/iconography-icon--docs
+ */
+export const Icon = memo(
+  forwardRef<SVGElement, IconProps>(
+    ({ size = 'md', type = 'default', name: nameProp, className, style, title = '', ...rest }, ref) => {
+      const styles = useStyles2(getIconStyles);
+      const { nameToUse: name, handleLoad } = useIconWorkaround(nameProp);
 
-    /* Temporary solution to display also font awesome icons */
-    if (name?.startsWith('fa fa-')) {
-      return <i className={getFontAwesomeIconStyles(name, className)} {...divElementProps} style={style} />;
-    }
+      if (!isIconName(name)) {
+        console.warn('Icon component passed an invalid icon name', name);
+      }
 
-    if (name === 'panel-add') {
-      size = 'xl';
-    }
+      // handle the deprecated 'fa fa-spinner'
+      const iconName: IconName = name === 'fa fa-spinner' ? 'spinner' : name;
 
-    if (!cacheInitialized) {
-      initIconCache();
-    }
+      const svgSize = getSvgSize(size);
+      const svgHgt = svgSize;
+      const svgWid = name.startsWith('gf-bar-align') ? 16 : name.startsWith('gf-interp') ? 30 : svgSize;
+      const svgPath = getIconPath(iconName, type);
 
-    const styles = getIconStyles(theme);
-    const svgSize = getSvgSize(size);
-    const svgHgt = svgSize;
-    const svgWid = name?.startsWith('gf-bar-align') ? 16 : name?.startsWith('gf-interp') ? 30 : svgSize;
-    const subDir = getIconSubDir(name, type);
-    const svgPath = `${iconRoot}${subDir}/${name}.svg`;
+      const composedClassName = cx(
+        styles.icon,
+        className,
+        type === 'mono' ? { [styles.orange]: name === 'favorite' } : '',
+        {
+          [styles.spin]: iconName === 'spinner',
+        }
+      );
 
-    return (
-      <div className={styles.container} {...divElementProps} ref={ref}>
+      return (
         <SVG
+          data-testid={`icon-${iconName}`}
+          aria-hidden={
+            rest.tabIndex === undefined &&
+            !title &&
+            !rest['aria-label'] &&
+            !rest['aria-labelledby'] &&
+            !rest['aria-describedby']
+          }
+          onLoad={handleLoad}
+          onError={handleLoad}
+          innerRef={ref}
           src={svgPath}
           width={svgWid}
           height={svgHgt}
           title={title}
-          className={cx(styles.icon, className, type === 'mono' ? { [styles.orange]: name === 'favorite' } : '')}
+          className={composedClassName}
           style={style}
+          // render an empty element with the correct dimensions while loading
+          // this prevents content layout shift whilst the icon asynchronously loads
+          // which happens even if the icon is in the cache(!)
+          loader={
+            <svg
+              className={cx(
+                css({
+                  width: svgWid,
+                  height: svgHgt,
+                }),
+                composedClassName
+              )}
+            />
+          }
+          {...rest}
         />
-      </div>
-    );
-  }
+      );
+    }
+  )
 );
 
 Icon.displayName = 'Icon';
-
-function getFontAwesomeIconStyles(iconName: string, className?: string): string {
-  return cx(
-    iconName,
-    {
-      'fa-spin': iconName === 'fa fa-spinner',
-    },
-    className
-  );
-}
-
-/* Transform string with px to number and add 2 pxs as path in svg is 2px smaller */
-export const getSvgSize = (size: IconSize) => {
-  switch (size) {
-    case 'xs':
-      return 12;
-    case 'sm':
-      return 14;
-    case 'md':
-      return 16;
-    case 'lg':
-      return 18;
-    case 'xl':
-      return 24;
-    case 'xxl':
-      return 36;
-    case 'xxxl':
-      return 48;
-  }
-};

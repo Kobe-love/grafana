@@ -1,14 +1,15 @@
 import { cloneDeep } from 'lodash';
 
-import { TextBoxVariableModel } from '../types';
-import { initialTextBoxVariableModelState, textBoxVariableReducer } from './reducer';
+import { type TextBoxVariableModel } from '@grafana/data';
+
 import { dispatch } from '../../../store/store';
+import { type VariableAdapter } from '../adapters';
 import { setOptionAsCurrent } from '../state/actions';
-import { VariableAdapter } from '../adapters';
+import { toKeyedVariableIdentifier } from '../utils';
+
 import { TextBoxVariablePicker } from './TextBoxVariablePicker';
-import { TextBoxVariableEditor } from './TextBoxVariableEditor';
 import { setTextBoxVariableOptionsFromUrl, updateTextBoxVariableOptions } from './actions';
-import { toVariableIdentifier } from '../state/types';
+import { initialTextBoxVariableModelState, textBoxVariableReducer } from './reducer';
 
 export const createTextBoxVariableAdapter = (): VariableAdapter<TextBoxVariableModel> => {
   return {
@@ -18,21 +19,20 @@ export const createTextBoxVariableAdapter = (): VariableAdapter<TextBoxVariableM
     initialState: initialTextBoxVariableModelState,
     reducer: textBoxVariableReducer,
     picker: TextBoxVariablePicker,
-    editor: TextBoxVariableEditor,
     dependsOn: (variable, variableToTest) => {
       return false;
     },
     setValue: async (variable, option, emitChanges = false) => {
-      await dispatch(setOptionAsCurrent(toVariableIdentifier(variable), option, emitChanges));
+      await dispatch(setOptionAsCurrent(toKeyedVariableIdentifier(variable), option, emitChanges));
     },
     setValueFromUrl: async (variable, urlValue) => {
-      await dispatch(setTextBoxVariableOptionsFromUrl(toVariableIdentifier(variable), urlValue));
+      await dispatch(setTextBoxVariableOptionsFromUrl(toKeyedVariableIdentifier(variable), urlValue));
     },
     updateOptions: async (variable) => {
-      await dispatch(updateTextBoxVariableOptions(toVariableIdentifier(variable)));
+      await dispatch(updateTextBoxVariableOptions(toKeyedVariableIdentifier(variable)));
     },
     getSaveModel: (variable, saveCurrentAsDefault) => {
-      const { index, id, state, global, originalQuery, ...rest } = cloneDeep(variable);
+      const { index, id, state, global, originalQuery, rootStateKey, ...rest } = cloneDeep(variable);
 
       if (variable.query !== originalQuery && !saveCurrentAsDefault) {
         const origQuery = originalQuery ?? '';

@@ -1,9 +1,11 @@
-import React, { ReactNode } from 'react';
-import { stylesFactory, useTheme2 } from '../../themes';
-import { GrafanaTheme2 } from '@grafana/data';
 import { css, cx } from '@emotion/css';
+import { forwardRef, type ReactNode } from 'react';
 
-export interface Props {
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useStyles2 } from '../../themes/ThemeContext';
+
+export interface Props extends Omit<React.HTMLAttributes<HTMLDivElement>, 'children'> {
   /** Children should be a single <Tab /> or an array of <Tab /> */
   children: ReactNode;
   className?: string;
@@ -11,30 +13,38 @@ export interface Props {
   hideBorder?: boolean;
 }
 
-const getTabsBarStyles = stylesFactory((theme: GrafanaTheme2, hideBorder = false) => {
-  return {
-    tabsWrapper:
-      !hideBorder &&
-      css`
-        border-bottom: 1px solid ${theme.colors.border.weak};
-      `,
-    tabs: css`
-      position: relative;
-      display: flex;
-      height: 41px;
-    `,
-  };
-});
+/**
+ * A composition component for rendering a TabBar with Tabs for navigation.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/navigation-tabs--docs
+ */
+export const TabsBar = forwardRef<HTMLDivElement, Props>(
+  ({ children, className, hideBorder = false, ...rest }, ref) => {
+    const styles = useStyles2(getStyles);
 
-export const TabsBar = React.forwardRef<HTMLDivElement, Props>(({ children, className, hideBorder }, ref) => {
-  const theme = useTheme2();
-  const tabsStyles = getTabsBarStyles(theme, hideBorder);
+    return (
+      <div className={cx(styles.tabsWrapper, hideBorder && styles.noBorder, className)} ref={ref} {...rest}>
+        <div className={styles.tabs} role="tablist">
+          {children}
+        </div>
+      </div>
+    );
+  }
+);
 
-  return (
-    <div className={cx(tabsStyles.tabsWrapper, className)} ref={ref}>
-      <ul className={tabsStyles.tabs}>{children}</ul>
-    </div>
-  );
+const getStyles = (theme: GrafanaTheme2) => ({
+  tabsWrapper: css({
+    borderBottom: `1px solid ${theme.colors.border.weak}`,
+    overflowX: 'auto',
+  }),
+  noBorder: css({
+    borderBottom: 0,
+  }),
+  tabs: css({
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+  }),
 });
 
 TabsBar.displayName = 'TabsBar';

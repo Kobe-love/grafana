@@ -1,9 +1,39 @@
-import { DataQueryResponse, dateMath } from '@grafana/data';
+import {
+  type DataQueryRequest,
+  type DataQueryResponse,
+  type DataSourceInstanceSettings,
+  dateMath,
+  FieldType,
+} from '@grafana/data';
+import { config } from '@grafana/runtime';
+import { getDataSourceInstanceSettings } from '@grafana/runtime/unstable';
+
+import { type CloudWatchQuery } from '../types';
+
 import { addDataLinksToLogsResponse } from './datalinks';
-import { setDataSourceSrv } from '@grafana/runtime';
+
+jest.mock('@grafana/runtime/unstable', () => ({
+  ...jest.requireActual('@grafana/runtime/unstable'),
+  getDataSourceInstanceSettings: jest.fn(),
+}));
 
 describe('addDataLinksToLogsResponse', () => {
-  it('should add data links to response', async () => {
+  // @ts-ignore ignore feature toggle type error
+  const originalFeatureToggleValue = config.featureToggles.cloudWatchLogsInsightsDataLinks;
+
+  afterEach(() => {
+    // @ts-ignore ignore feature toggle type error
+    config.featureToggles.cloudWatchLogsInsightsDataLinks = originalFeatureToggleValue;
+  });
+
+  const time = {
+    from: dateMath.toDateTime('2016-12-31T15:00:00Z', { roundUp: false })!,
+    to: dateMath.toDateTime('2016-12-31T16:00:00Z', { roundUp: false })!,
+  };
+  it('should add data links to response from log group names', async () => {
+    // @ts-ignore ignore feature toggle type error
+    config.featureToggles.cloudWatchLogsInsightsDataLinks = true;
+
     const mockResponse: DataQueryResponse = {
       data: [
         {
@@ -11,10 +41,12 @@ describe('addDataLinksToLogsResponse', () => {
             {
               name: '@message',
               config: {},
+              values: ['log message one', 'log message two'],
             },
             {
               name: '@xrayTraceId',
               config: {},
+              values: ['id1', 'id2'],
             },
           ],
           refId: 'A',
@@ -22,35 +54,28 @@ describe('addDataLinksToLogsResponse', () => {
       ],
     };
 
-    const mockOptions: any = {
+    const mockOptions = {
       targets: [
         {
           refId: 'A',
           expression: 'stats count(@message) by bin(1h)',
           logGroupNames: ['fake-log-group-one', 'fake-log-group-two'],
+          logGroups: [{}], // empty log groups should be ignored and fall back to logGroupNames
           region: 'us-east-1',
         },
       ],
-    };
+      range: { ...time, raw: time },
+    } as DataQueryRequest<CloudWatchQuery>;
 
-    const time = {
-      from: dateMath.parse('2016-12-31 15:00:00Z', false)!,
-      to: dateMath.parse('2016-12-31 16:00:00Z', false)!,
-    };
-
-    setDataSourceSrv({
-      async get() {
-        return {
-          name: 'Xray',
-        };
-      },
-    } as any);
+    jest
+      .mocked(getDataSourceInstanceSettings)
+      .mockResolvedValue({ name: 'Xray' } as unknown as DataSourceInstanceSettings);
 
     await addDataLinksToLogsResponse(
       mockResponse,
       mockOptions,
-      { ...time, raw: time },
       (s) => s ?? '',
+      (v) => [v],
       (r) => r,
       'xrayUid'
     );
@@ -60,15 +85,6 @@ describe('addDataLinksToLogsResponse', () => {
           fields: [
             {
               name: '@message',
-              config: {
-                links: [
-                  {
-                    url:
-                      "https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logs-insights:queryDetail=~(end~'2016-12-31T16*3a00*3a00.000Z~start~'2016-12-31T15*3a00*3a00.000Z~timeType~'ABSOLUTE~tz~'UTC~editorString~'stats*20count*28*40message*29*20by*20bin*281h*29~isLiveTail~false~source~(~'fake-log-group-one~'fake-log-group-two))",
-                    title: 'View in CloudWatch console',
-                  },
-                ],
-              },
             },
             {
               name: '@xrayTraceId',
@@ -86,10 +102,249 @@ describe('addDataLinksToLogsResponse', () => {
                 ],
               },
             },
+            {
+              name: '',
+              type: FieldType.string,
+              values: ['View this query in CloudWatch console', 'View this query in CloudWatch console'],
+              config: {
+                links: [
+                  {
+                    url: "https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logs-insights:queryDetail=~(end~'2016-12-31T16*3a00*3a00.000Z~start~'2016-12-31T15*3a00*3a00.000Z~timeType~'ABSOLUTE~tz~'UTC~editorString~'stats*20count*28*40message*29*20by*20bin*281h*29~isLiveTail~false~source~(~'fake-log-group-one~'fake-log-group-two))",
+                    title: 'View in CloudWatch console',
+                  },
+                ],
+              },
+            },
           ],
           refId: 'A',
         },
       ],
     });
+  });
+
+  it('should add a data link field to response from log groups, trimming :*', async () => {
+    // @ts-ignore ignore feature toggle type error
+    config.featureToggles.cloudWatchLogsInsightsDataLinks = true;
+
+    const mockResponse: DataQueryResponse = {
+      data: [
+        {
+          fields: [
+            {
+              name: '@message',
+              config: {},
+            },
+          ],
+          refId: 'A',
+        },
+      ],
+    };
+
+    const mockOptions = {
+      targets: [
+        {
+          refId: 'A',
+          expression: 'stats count(@message) by bin(1h)',
+          logGroupNames: [''],
+          logGroups: [
+            { arn: 'arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/test:*' },
+            { arn: 'arn:aws:logs:us-east-2:222222222222:log-group:/ecs/prometheus:*' },
+          ],
+          region: 'us-east-1',
+        } as CloudWatchQuery,
+      ],
+      range: { ...time, raw: time },
+    } as DataQueryRequest<CloudWatchQuery>;
+
+    await addDataLinksToLogsResponse(
+      mockResponse,
+      mockOptions,
+      (s) => s ?? '',
+      (v) => [v],
+      (r) => r
+    );
+    expect(mockResponse).toMatchObject({
+      data: [
+        {
+          fields: [
+            {
+              name: '@message',
+            },
+            {
+              name: '',
+              type: FieldType.string,
+              values: [],
+              config: {
+                links: [
+                  {
+                    url: "https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logs-insights:queryDetail=~(end~'2016-12-31T16*3a00*3a00.000Z~start~'2016-12-31T15*3a00*3a00.000Z~timeType~'ABSOLUTE~tz~'UTC~editorString~'stats*20count*28*40message*29*20by*20bin*281h*29~isLiveTail~false~source~(~'arn*3aaws*3alogs*3aus-east-1*3a111111111111*3alog-group*3a*2faws*2flambda*2ftest~'arn*3aaws*3alogs*3aus-east-2*3a222222222222*3alog-group*3a*2fecs*2fprometheus))",
+                    title: 'View in CloudWatch console',
+                  },
+                ],
+              },
+            },
+          ],
+          refId: 'A',
+        },
+      ],
+    });
+  });
+
+  it('should add data links to response from log groups, even without trimming :*', async () => {
+    // @ts-ignore ignore feature toggle type error
+    config.featureToggles.cloudWatchLogsInsightsDataLinks = true;
+
+    const mockResponse: DataQueryResponse = {
+      data: [
+        {
+          fields: [
+            {
+              name: '@message',
+              config: {},
+            },
+          ],
+          refId: 'A',
+        },
+      ],
+    };
+
+    const mockOptions = {
+      targets: [
+        {
+          refId: 'A',
+          expression: 'stats count(@message) by bin(1h)',
+          logGroupNames: [''],
+          logGroups: [{ arn: 'arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/test' }],
+          region: 'us-east-1',
+        } as CloudWatchQuery,
+      ],
+      range: { ...time, raw: time },
+    } as DataQueryRequest<CloudWatchQuery>;
+
+    await addDataLinksToLogsResponse(
+      mockResponse,
+      mockOptions,
+      (s) => s ?? '',
+      (v) => [v],
+      (r) => r
+    );
+    expect(mockResponse).toMatchObject({
+      data: [
+        {
+          fields: [
+            {
+              name: '@message',
+            },
+            {
+              name: '',
+              type: FieldType.string,
+              values: [],
+              config: {
+                links: [
+                  {
+                    url: "https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logs-insights:queryDetail=~(end~'2016-12-31T16*3a00*3a00.000Z~start~'2016-12-31T15*3a00*3a00.000Z~timeType~'ABSOLUTE~tz~'UTC~editorString~'stats*20count*28*40message*29*20by*20bin*281h*29~isLiveTail~false~source~(~'arn*3aaws*3alogs*3aus-east-1*3a111111111111*3alog-group*3a*2faws*2flambda*2ftest))",
+                    title: 'View in CloudWatch console',
+                  },
+                ],
+              },
+            },
+          ],
+          refId: 'A',
+        },
+      ],
+    });
+  });
+
+  it('should not add xray data link when the linked data source is missing', async () => {
+    // @ts-ignore ignore feature toggle type error
+    config.featureToggles.cloudWatchLogsInsightsDataLinks = false;
+
+    const mockResponse: DataQueryResponse = {
+      data: [
+        {
+          fields: [
+            {
+              name: '@xrayTraceId',
+              config: {},
+              values: ['id1', 'id2'],
+            },
+          ],
+          refId: 'A',
+        },
+      ],
+    };
+
+    const mockOptions = {
+      targets: [
+        {
+          refId: 'A',
+          expression: 'stats count(@message) by bin(1h)',
+          logGroupNames: ['fake-log-group-one'],
+          logGroups: [{}],
+          region: 'us-east-1',
+        },
+      ],
+      range: { ...time, raw: time },
+    } as DataQueryRequest<CloudWatchQuery>;
+
+    jest.mocked(getDataSourceInstanceSettings).mockResolvedValue(undefined);
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+
+    await addDataLinksToLogsResponse(
+      mockResponse,
+      mockOptions,
+      (s) => s ?? '',
+      (v) => [v],
+      (r) => r,
+      'xrayUid'
+    );
+
+    expect(mockResponse.data[0].fields[0].config.links).toBeUndefined();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('should not add CloudWatch console link when feature toggle is disabled', async () => {
+    // @ts-ignore ignore feature toggle type error
+    config.featureToggles.cloudWatchLogsInsightsDataLinks = false;
+
+    const mockResponse: DataQueryResponse = {
+      data: [
+        {
+          fields: [
+            {
+              name: '@message',
+              config: {},
+              values: ['log message one', 'log message two'],
+            },
+          ],
+          refId: 'A',
+        },
+      ],
+    };
+
+    const mockOptions = {
+      targets: [
+        {
+          refId: 'A',
+          expression: 'stats count(@message) by bin(1h)',
+          logGroupNames: ['fake-log-group-one'],
+          logGroups: [{}],
+          region: 'us-east-1',
+        },
+      ],
+      range: { ...time, raw: time },
+    } as DataQueryRequest<CloudWatchQuery>;
+
+    await addDataLinksToLogsResponse(
+      mockResponse,
+      mockOptions,
+      (s) => s ?? '',
+      (v) => [v],
+      (r) => r
+    );
+
+    expect(mockResponse.data[0].fields).toHaveLength(1);
+    expect(mockResponse.data[0].fields[0].name).toBe('@message');
   });
 });

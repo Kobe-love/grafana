@@ -1,24 +1,12 @@
-import React, { useMemo } from 'react';
-import { LineStyle } from '@grafana/schema';
-import { FieldOverrideEditorProps, SelectableValue } from '@grafana/data';
-import { HorizontalGroup, IconButton, RadioButtonGroup, Select } from '@grafana/ui';
+import { useId, useMemo } from 'react';
 
-type LineFill = 'solid' | 'dash' | 'dot';
+import { type StandardEditorProps, type SelectableValue } from '@grafana/data';
+import { t } from '@grafana/i18n';
+import { config } from '@grafana/runtime';
+import { type LineStyle } from '@grafana/schema';
+import { Field, IconButton, RadioButtonGroup, Select, Stack } from '@grafana/ui';
 
-const lineFillOptions: Array<SelectableValue<LineFill>> = [
-  {
-    label: 'Solid',
-    value: 'solid',
-  },
-  {
-    label: 'Dash',
-    value: 'dash',
-  },
-  {
-    label: 'Dots',
-    value: 'dot',
-  },
-];
+type LineFill = 'solid' | 'dash' | 'dot' | 'accessible';
 
 const dashOptions: Array<SelectableValue<string>> = [
   '10, 10', // default
@@ -51,7 +39,31 @@ const dotOptions: Array<SelectableValue<string>> = [
   value: txt,
 }));
 
-export const LineStyleEditor: React.FC<FieldOverrideEditorProps<LineStyle, any>> = ({ value, onChange }) => {
+type Props = StandardEditorProps<LineStyle, unknown>;
+
+export const LineStyleEditor = ({ value, onChange }: Props) => {
+  const dashPatternId = useId();
+  const lineFillOptions: Array<SelectableValue<LineFill>> = [
+    {
+      label: t('timeseries.line-style-editor.line-fill-options.label-solid', 'Solid'),
+      value: 'solid',
+    },
+    {
+      label: t('timeseries.line-style-editor.line-fill-options.label-dash', 'Dash'),
+      value: 'dash',
+    },
+    {
+      label: t('timeseries.line-style-editor.line-fill-options.label-dots', 'Dots'),
+      value: 'dot',
+    },
+  ];
+
+  if (config.featureToggles.enableColorblindSafePanelOptions) {
+    lineFillOptions.push({
+      label: t('timeseries.line-style-editor.line-fill-options.label-accessible', 'Accessible'),
+      value: 'accessible',
+    });
+  }
   const options = useMemo(() => (value?.fill === 'dash' ? dashOptions : dotOptions), [value]);
   const current = useMemo(() => {
     if (!value?.dash?.length) {
@@ -68,8 +80,11 @@ export const LineStyleEditor: React.FC<FieldOverrideEditorProps<LineStyle, any>>
     return val;
   }, [value, options]);
 
+  // Only dash and dots use LineStyle.dash definitions
+  const hasDashPattern = value?.fill && value?.fill !== 'solid' && value?.fill !== 'accessible';
+
   return (
-    <HorizontalGroup>
+    <Stack direction="column" gap={2} alignItems="flex-start">
       <RadioButtonGroup
         value={value?.fill || 'solid'}
         options={lineFillOptions}
@@ -81,42 +96,51 @@ export const LineStyleEditor: React.FC<FieldOverrideEditorProps<LineStyle, any>>
             dash = parseText(dashOptions[0].value!);
           }
           onChange({
-            ...value,
             fill: v!,
             dash,
           });
         }}
       />
-      {value?.fill && value?.fill !== 'solid' && (
-        <>
-          <Select
-            menuShouldPortal
-            allowCustomValue={true}
-            options={options}
-            value={current}
-            width={20}
-            onChange={(v) => {
-              onChange({
-                ...value,
-                dash: parseText(v.value ?? ''),
-              });
-            }}
-            formatCreateLabel={(t) => `Segments: ${parseText(t).join(', ')}`}
-          />
-          <div>
-            &nbsp;
+      {hasDashPattern && (
+        <Field
+          noMargin
+          htmlFor={dashPatternId}
+          label={t('timeseries.line-style-editor.label-dash-pattern', 'Dash pattern')}
+          description={t(
+            'timeseries.line-style-editor.description-dash-pattern',
+            'Comma or space separated lengths. Example: 10, 20'
+          )}
+        >
+          <Stack wrap={true} alignItems="center">
+            <Select
+              inputId={dashPatternId}
+              allowCustomValue={true}
+              options={options}
+              value={current}
+              width={20}
+              onChange={(v) => {
+                onChange({
+                  ...value,
+                  dash: parseText(v.value ?? ''),
+                });
+              }}
+              formatCreateLabel={(text) => `Segments: ${parseText(text).join(', ')}`}
+            />
             <a
-              title="The input expects a segment list"
+              title={t(
+                'timeseries.line-style-editor.title-the-input-expects-a-segment-list',
+                'The input expects a segment list'
+              )}
               href="https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/setLineDash#Parameters"
               target="_blank"
               rel="noreferrer"
             >
-              <IconButton name="question-circle" />
+              <IconButton name="question-circle" tooltip={t('timeseries.line-style-editor.tooltip-help', 'Help')} />
             </a>
-          </div>
-        </>
+          </Stack>
+        </Field>
       )}
-    </HorizontalGroup>
+    </Stack>
   );
 };
 

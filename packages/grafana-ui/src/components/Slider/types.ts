@@ -1,5 +1,6 @@
-import { SliderMarks } from '@grafana/data';
-import { Orientation } from '../../types/orientation';
+import { type SliderMarks } from '@grafana/data';
+
+import { type Orientation } from '../../types/orientation';
 
 interface CommonSliderProps {
   min: number;
@@ -13,6 +14,8 @@ interface CommonSliderProps {
   marks?: SliderMarks;
   /** If the value is true, it means a continuous value interval, otherwise, it is a independent value. */
   included?: boolean;
+  /** Controls visibility of the input field. Defaults to true. */
+  showInput?: boolean;
 }
 export interface SliderProps extends CommonSliderProps {
   value?: number;
@@ -20,6 +23,7 @@ export interface SliderProps extends CommonSliderProps {
   onAfterChange?: (value?: number) => void;
   formatTooltipResult?: (value: number) => number;
   ariaLabelForHandle?: string;
+  inputId?: string;
 }
 
 export interface RangeSliderProps extends CommonSliderProps {

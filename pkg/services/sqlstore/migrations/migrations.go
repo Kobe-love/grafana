@@ -1,9 +1,13 @@
 package migrations
 
 import (
-	"os"
-
+	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/sqlstore/migrations/accesscontrol"
+	"github.com/grafana/grafana/pkg/services/sqlstore/migrations/anonservice"
+	"github.com/grafana/grafana/pkg/services/sqlstore/migrations/externalsession"
+	"github.com/grafana/grafana/pkg/services/sqlstore/migrations/obsolete"
+	"github.com/grafana/grafana/pkg/services/sqlstore/migrations/signingkeys"
+	"github.com/grafana/grafana/pkg/services/sqlstore/migrations/ssosettings"
 	"github.com/grafana/grafana/pkg/services/sqlstore/migrations/ualert"
 	. "github.com/grafana/grafana/pkg/services/sqlstore/migrator"
 )
@@ -12,35 +16,44 @@ import (
 // 1. Never change a migration that is committed and pushed to main
 // 2. Always add new migrations (to change or undo previous migrations)
 // 3. Some migrations are not yet written (rename column, table, drop table, index etc)
+// 4. Putting migrations behind feature flags is no longer recommended as broken
+//    migrations may not be caught by integration tests unless feature flags are
+//    specifically added
+// 5. Adding a migration is a last resort. Resources are moving to the app
+//    platform, so schema added here is a dead end. Every migration also runs on
+//    every instance that upgrades and can never be rolled back or changed
+//    afterwards. New migrations require regenerating testdata/migration_ids.txt,
+//    which a human has to do deliberately; see migration_ids_golden_test.go
 
 type OSSMigrations struct {
+	features featuremgmt.FeatureToggles
 }
 
-func ProvideOSSMigrations() *OSSMigrations {
-	return &OSSMigrations{}
+func ProvideOSSMigrations(features featuremgmt.FeatureToggles) *OSSMigrations {
+	return &OSSMigrations{features}
 }
 
-func (*OSSMigrations) AddMigration(mg *Migrator) {
-	addMigrationLogMigrations(mg)
+func (oss *OSSMigrations) AddMigration(mg *Migrator) {
+	mg.AddCreateMigration()
 	addUserMigrations(mg)
 	addTempUserMigrations(mg)
 	addStarMigrations(mg)
 	addOrgMigrations(mg)
 	addDashboardMigration(mg) // Do NOT add more migrations to this function.
+	addDashboardUIDStarMigrations(mg)
 	addDataSourceMigration(mg)
 	addApiKeyMigrations(mg)
 	addDashboardSnapshotMigrations(mg)
 	addQuotaMigration(mg)
 	addAppSettingsMigration(mg)
 	addSessionMigration(mg)
-	addPlaylistMigrations(mg)
 	addPreferencesMigrations(mg)
 	addAlertMigrations(mg)
 	addAnnotationMig(mg)
 	addTestDataMigrations(mg)
 	addDashboardVersionMigration(mg)
 	addTeamMigrations(mg)
-	addDashboardAclMigrations(mg) // Do NOT add more migrations to this function.
+	addDashboardACLMigrations(mg) // Do NOT add more migrations to this function.
 	addTagMigration(mg)
 	addLoginAttemptMigrations(mg)
 	addUserAuthMigrations(mg)
@@ -48,56 +61,134 @@ func (*OSSMigrations) AddMigration(mg *Migrator) {
 	addUserAuthTokenMigrations(mg)
 	addCacheMigration(mg)
 	addShortURLMigrations(mg)
-	// TODO Delete when unified alerting is enabled by default unconditionally (Grafana v9)
-	if err := ualert.CheckUnifiedAlertingEnabledByDefault(mg); err != nil { // this should always go before any other ualert migration
-		mg.Logger.Error("failed to determine the status of alerting engine. Enable either legacy or unified alerting explicitly and try again", "err", err)
-		os.Exit(1)
-	}
 	ualert.AddTablesMigrations(mg)
-	ualert.AddDashAlertMigration(mg)
 	addLibraryElementsMigrations(mg)
-	if mg.Cfg != nil {
-		if mg.Cfg.IsLiveConfigEnabled() {
-			addLiveChannelMigrations(mg)
-		}
-	}
 
-	ualert.RerunDashAlertMigration(mg)
+	ualert.FixEarlyMigration(mg)
 	addSecretsMigration(mg)
 	addKVStoreMigrations(mg)
 	ualert.AddDashboardUIDPanelIDMigration(mg)
 	accesscontrol.AddMigration(mg)
-}
+	addQueryHistoryMigrations(mg)
 
-func addMigrationLogMigrations(mg *Migrator) {
-	migrationLogV1 := Table{
-		Name: "migration_log",
-		Columns: []*Column{
-			{Name: "id", Type: DB_BigInt, IsPrimaryKey: true, IsAutoIncrement: true},
-			{Name: "migration_id", Type: DB_NVarchar, Length: 255},
-			{Name: "sql", Type: DB_Text},
-			{Name: "success", Type: DB_Bool},
-			{Name: "error", Type: DB_Text},
-			{Name: "timestamp", Type: DB_DateTime},
-		},
-	}
+	accesscontrol.AddDisabledMigrator(mg)
+	accesscontrol.AddTeamMembershipMigrations(mg)
+	accesscontrol.AddDashboardPermissionsMigrator(mg)
+	accesscontrol.AddAlertingPermissionsMigrator(mg)
 
-	mg.AddMigration("create migration_log table", NewAddTableMigration(migrationLogV1))
-}
+	addQueryHistoryStarMigrations(mg)
 
-func addStarMigrations(mg *Migrator) {
-	starV1 := Table{
-		Name: "star",
-		Columns: []*Column{
-			{Name: "id", Type: DB_BigInt, IsPrimaryKey: true, IsAutoIncrement: true},
-			{Name: "user_id", Type: DB_BigInt, Nullable: false},
-			{Name: "dashboard_id", Type: DB_BigInt, Nullable: false},
-		},
-		Indices: []*Index{
-			{Cols: []string{"user_id", "dashboard_id"}, Type: UniqueIndex},
-		},
-	}
+	addCorrelationsMigrations(mg)
 
-	mg.AddMigration("create star table", NewAddTableMigration(starV1))
-	mg.AddMigration("add unique index star.user_id_dashboard_id", NewAddIndexMigration(starV1, starV1.Indices[0]))
+	addPublicDashboardMigration(mg)
+	addDbFileStorageMigration(mg)
+
+	accesscontrol.AddManagedPermissionsMigration(mg, accesscontrol.ManagedPermissionsMigrationID)
+	accesscontrol.AddManagedFolderAlertActionsMigration(mg)
+	accesscontrol.AddActionNameMigrator(mg)
+
+	ualert.UpdateRuleGroupIndexMigration(mg)
+	accesscontrol.AddManagedFolderAlertActionsRepeatMigration(mg)
+	accesscontrol.AddAdminOnlyMigration(mg)
+	accesscontrol.AddSeedAssignmentMigrations(mg)
+	accesscontrol.AddManagedFolderAlertActionsRepeatFixedMigration(mg)
+	accesscontrol.AddManagedFolderLibraryPanelActionsMigration(mg)
+	accesscontrol.AddManagedFolderVariableActionsMigration(mg)
+
+	AddExternalAlertmanagerToDatasourceMigration(mg)
+
+	addFolderMigrations(mg)
+
+	anonservice.AddMigration(mg)
+	signingkeys.AddMigration(mg)
+
+	ualert.MigrationServiceMigration(mg)
+	ualert.CreatedFoldersMigration(mg)
+
+	AddDashboardFolderMigrations(mg)
+
+	ssosettings.AddMigration(mg)
+
+	ualert.CreateOrgMigratedKVStoreEntries(mg)
+
+	accesscontrol.AddManagedDashboardAnnotationActionsMigration(mg)
+
+	addCloudMigrationsMigrations(mg)
+
+	addKVStoreMySQLValueTypeLongTextMigration(mg)
+
+	ualert.AddRuleNotificationSettingsColumns(mg)
+
+	accesscontrol.AddAlertingScopeRemovalMigration(mg)
+	accesscontrol.AddAnnotationsAllScopeReplacementMigration(mg)
+
+	accesscontrol.AddManagedFolderAlertingSilencesActionsMigrator(mg)
+
+	ualert.AddRecordingRuleColumns(mg)
+
+	ualert.AddStateResolvedAtColumns(mg)
+
+	ualert.AddReceiverActionScopesMigration(mg)
+
+	ualert.AddRuleMetadata(mg)
+
+	accesscontrol.AddOrphanedMigrations(mg)
+
+	accesscontrol.AddActionSetPermissionsMigrator(mg)
+
+	accesscontrol.AddSAActionSetPermissionsMigrator(mg)
+
+	externalsession.AddMigration(mg)
+
+	accesscontrol.AddReceiverCreateScopeMigration(mg)
+
+	ualert.AddAlertRuleUpdatedByMigration(mg)
+
+	ualert.AddAlertRuleStateTable(mg)
+
+	ualert.AddAlertRuleGuidMigration(mg)
+
+	ualert.AddAlertRuleKeepFiringFor(mg)
+
+	ualert.AddAlertRuleMissingSeriesEvalsToResolve(mg)
+
+	accesscontrol.AddDatasourceDrilldownRemovalMigration(mg)
+
+	ualert.DropTitleUniqueIndexMigration(mg)
+
+	ualert.AddStateFiredAtColumn(mg)
+
+	ualert.CollateAlertRuleGroup(mg)
+
+	ualert.ExpandAlertRuleUpdatedByMigration(mg)
+
+	ualert.AddAlertRuleGroupIndexMigration(mg)
+
+	ualert.AddStateAnnotationsColumn(mg)
+
+	ualert.CollateBinAlertRuleNamespace(mg)
+
+	ualert.CollateBinAlertRuleGroup(mg)
+
+	accesscontrol.AddReceiverProtectedFieldsEditor(mg)
+
+	ualert.AddStateEvaluationDurationColumn(mg)
+	ualert.AddStateLastErrorColumn(mg)
+	ualert.AddStateLastResultColumn(mg)
+
+	accesscontrol.AddScopedReceiverTestingPermissions(mg)
+
+	ualert.AddAlertRuleFolderFullpath(mg)
+
+	ualert.AddRuleAlertRoutingColumns(mg)
+
+	accesscontrol.AddManagedRoutesPermissions(mg)
+
+	addNatsDiscoveryMigrations(mg)
+
+	ualert.AddAlertRuleStateBigIntMigration(mg)
+
+	mg.AddObsoleteMigration(obsolete.PlaylistMigrations())
+
+	ualert.CollateBinAlertRuleFolderFullpath(mg)
 }

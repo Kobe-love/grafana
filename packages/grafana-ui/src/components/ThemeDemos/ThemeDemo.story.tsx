@@ -1,23 +1,21 @@
-import React from 'react';
-import { EmotionPerfTest } from './EmotionPerfTest';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+
 import { ThemeDemo as NewThemeDemoComponent } from './ThemeDemo';
 
-export default {
-  title: 'Docs Overview/Theme',
+const meta: Meta = {
+  title: 'Foundations/Theme',
   component: NewThemeDemoComponent,
   decorators: [],
+  tags: ['!autodocs'],
   parameters: {
     options: {
       showPanel: false,
     },
-    docs: {},
   },
 };
 
-export const ThemeDemo = () => {
+export const ThemeDemo: StoryFn = () => {
   return <NewThemeDemoComponent />;
 };
 
-export const PerfTest = () => {
-  return <EmotionPerfTest />;
-};
+export default meta;

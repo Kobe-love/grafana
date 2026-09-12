@@ -1,49 +1,61 @@
-import { WithAccessControlMetadata } from '@grafana/data';
-import { OrgRole } from '.';
+import { type OrgRole, type WithAccessControlMetadata } from '@grafana/data';
 
-export interface OrgServiceAccount {
-  serviceAccountId: number;
-  avatarUrl: string;
-  email: string;
-  login: string;
-  name: string;
-  displayName: string;
-  orgId: number;
-  role: OrgRole;
-  tokens: number[];
-}
-
-export interface ServiceAccount {
-  id: number;
-  label: string;
-  avatarUrl: string;
-  login: string;
-  email: string;
-  name: string;
-  displayName: string;
-  orgId?: number;
-}
+import { type Role } from './accessControl';
+import { type ApiKey } from './apiKeys';
 
 export interface ServiceAccountDTO extends WithAccessControlMetadata {
+  id: number;
+  uid: string;
   orgId: number;
-  userId: number;
-  email: string;
+  tokens: number;
   name: string;
-  avatarUrl?: string;
   login: string;
-  role: string;
-  lastSeenAt: string;
-  lastSeenAtAge: string;
+  avatarUrl?: string;
+  createdAt: string;
+  isDisabled: boolean;
+  isExternal?: boolean;
+  requiredBy?: string;
+  teams: string[];
+  role: OrgRole;
+  roles?: Role[];
+}
+
+export interface ServiceAccountCreateApiResponse {
+  avatarUrl?: string;
+  id: number;
+  uid: string;
+  isDisabled: boolean;
+  login: string;
+  name: string;
+  orgId: number;
+  role: OrgRole;
+  tokens: number;
 }
 
 export interface ServiceAccountProfileState {
   serviceAccount: ServiceAccountDTO;
   isLoading: boolean;
+  rolesLoading?: boolean;
+  tokens: ApiKey[];
+}
+
+export enum ServiceAccountStateFilter {
+  All = 'All',
+  WithExpiredTokens = 'WithExpiredTokens',
+  External = 'External',
+  Disabled = 'Disabled',
 }
 
 export interface ServiceAccountsState {
   serviceAccounts: ServiceAccountDTO[];
-  searchQuery: string;
-  searchPage: number;
   isLoading: boolean;
+  roleOptions: Role[];
+
+  // search / filtering
+  query: string;
+  perPage: number;
+  page: number;
+  totalPages: number;
+  showPaging: boolean;
+  serviceAccountStateFilter: ServiceAccountStateFilter;
 }

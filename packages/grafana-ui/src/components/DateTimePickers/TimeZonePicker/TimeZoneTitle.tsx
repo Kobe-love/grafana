@@ -1,15 +1,18 @@
-import React, { ReactNode } from 'react';
 import { css } from '@emotion/css';
-import { GrafanaTheme } from '@grafana/data';
-import { useTheme, stylesFactory } from '../../../themes';
+import { type ReactNode } from 'react';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useStyles2 } from '../../../themes/ThemeContext';
+
+import { type TimeZoneDisplayInfo } from './timeZoneUtils';
 
 interface Props {
   title: string | ReactNode;
 }
 
-export const TimeZoneTitle: React.FC<Props> = ({ title }) => {
-  const theme = useTheme();
-  const styles = getStyles(theme);
+export const TimeZoneTitle = ({ title }: Props) => {
+  const styles = useStyles2(getStyles);
 
   if (!title) {
     return null;
@@ -18,11 +21,15 @@ export const TimeZoneTitle: React.FC<Props> = ({ title }) => {
   return <span className={styles.title}>{title}</span>;
 };
 
-const getStyles = stylesFactory((theme: GrafanaTheme) => {
+export const getTimeZoneTitle = (info: Pick<TimeZoneDisplayInfo, 'name'>): string => {
+  return info.name.split('/').at(-1)!.replace(/_/g, ' ');
+};
+
+const getStyles = (theme: GrafanaTheme2) => {
   return {
-    title: css`
-      font-weight: ${theme.typography.weight.regular};
-      text-overflow: ellipsis;
-    `,
+    title: css({
+      fontWeight: theme.typography.fontWeightRegular,
+      textOverflow: 'ellipsis',
+    }),
   };
-});
+};

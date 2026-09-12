@@ -1,7 +1,6 @@
-import { useCallback } from 'react';
-import { UseFormReturn } from 'react-hook-form';
-
 import { set } from 'lodash';
+import { useCallback } from 'react';
+import { type UseFormReturn } from 'react-hook-form';
 
 interface Options<R> {
   name: string;

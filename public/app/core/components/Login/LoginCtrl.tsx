@@ -1,8 +1,10 @@
-import React, { PureComponent } from 'react';
+import { memo, useState, useCallback, type JSX } from 'react';
+
+import { t } from '@grafana/i18n';
+import { type FetchError, getBackendSrv, isFetchError } from '@grafana/runtime';
 import config from 'app/core/config';
-import { getBackendSrv } from '@grafana/runtime';
-import appEvents from 'app/core/app_events';
-import { AppEvents } from '@grafana/data';
+
+import { type LoginDTO } from './types';
 
 const isOauthEnabled = () => {
   return !!config.oauth && Object.keys(config.oauth).length > 0;
@@ -24,131 +26,151 @@ interface Props {
     skipPasswordChange: Function;
     login: (data: FormModel) => void;
     disableLoginForm: boolean;
-    ldapEnabled: boolean;
-    authProxyEnabled: boolean;
     disableUserSignUp: boolean;
     isOauthEnabled: boolean;
     loginHint: string;
     passwordHint: string;
+    showDefaultPasswordWarning: boolean;
+    loginErrorMessage: string | undefined;
   }) => JSX.Element;
 }
 
-interface State {
-  isLoggingIn: boolean;
-  isChangingPassword: boolean;
-}
+const LoginCtrl = memo(({ resetCode, children }: Props) => {
+  const [result, setResult] = useState<LoginDTO | undefined>();
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [showDefaultPasswordWarning, setShowDefaultPasswordWarning] = useState(false);
+  // oAuth unauthorized sets the redirect error message in the bootdata, hence we need to check the key here
+  const [loginErrorMessage, setLoginErrorMessage] = useState<string | undefined>(
+    getBootDataErrMessage(config.loginError)
+  );
 
-export class LoginCtrl extends PureComponent<Props, State> {
-  result: any = {};
-
-  constructor(props: Props) {
-    super(props);
-    this.state = {
-      isLoggingIn: false,
-      isChangingPassword: false,
-    };
-
-    if (config.loginError) {
-      appEvents.emit(AppEvents.alertWarning, ['Login Failed', config.loginError]);
-    }
-  }
-
-  changePassword = (password: string) => {
-    const pw = {
-      newPassword: password,
-      confirmNew: password,
-      oldPassword: 'admin',
-    };
-
-    if (!this.props.resetCode) {
-      getBackendSrv()
-        .put('/api/user/password', pw)
-        .then(() => {
-          this.toGrafana();
-        })
-        .catch((err: any) => console.error(err));
+  const toGrafana = useCallback(() => {
+    if (config.featureToggles.useSessionStorageForRedirection) {
+      window.location.assign(config.appSubUrl + '/');
+      return;
     }
 
-    const resetModel = {
-      code: this.props.resetCode,
-      newPassword: password,
-      confirmPassword: password,
-    };
-
-    getBackendSrv()
-      .post('/api/user/password/reset', resetModel)
-      .then(() => {
-        this.toGrafana();
-      });
-  };
-
-  login = (formModel: FormModel) => {
-    this.setState({
-      isLoggingIn: true,
-    });
-
-    getBackendSrv()
-      .post('/login', formModel)
-      .then((result: any) => {
-        this.result = result;
-        if (formModel.password !== 'admin' || config.ldapEnabled || config.authProxyEnabled) {
-          this.toGrafana();
-          return;
-        } else {
-          this.changeView();
-        }
-      })
-      .catch(() => {
-        this.setState({
-          isLoggingIn: false,
-        });
-      });
-  };
-
-  changeView = () => {
-    this.setState({
-      isChangingPassword: true,
-    });
-  };
-
-  toGrafana = () => {
-    // Use window.location.href to force page reload
-    if (this.result.redirectUrl) {
-      if (config.appSubUrl !== '' && !this.result.redirectUrl.startsWith(config.appSubUrl)) {
-        window.location.assign(config.appSubUrl + this.result.redirectUrl);
+    if (result?.redirectUrl) {
+      if (config.appSubUrl !== '' && !result.redirectUrl.startsWith(config.appSubUrl)) {
+        window.location.assign(config.appSubUrl + result.redirectUrl);
       } else {
-        window.location.assign(this.result.redirectUrl);
+        window.location.assign(result.redirectUrl);
       }
     } else {
       window.location.assign(config.appSubUrl + '/');
     }
-  };
+  }, [result]);
 
-  render() {
-    const { children } = this.props;
-    const { isLoggingIn, isChangingPassword } = this.state;
-    const { login, toGrafana, changePassword } = this;
-    const { loginHint, passwordHint, disableLoginForm, ldapEnabled, authProxyEnabled, disableUserSignUp } = config;
+  const changePassword = useCallback(
+    (password: string) => {
+      const pw = {
+        newPassword: password,
+        confirmNew: password,
+        oldPassword: 'admin',
+      };
 
-    return (
-      <>
-        {children({
-          isOauthEnabled: isOauthEnabled(),
-          loginHint,
-          passwordHint,
-          disableLoginForm,
-          ldapEnabled,
-          authProxyEnabled,
-          disableUserSignUp,
-          login,
-          isLoggingIn,
-          changePassword,
-          skipPasswordChange: toGrafana,
-          isChangingPassword,
-        })}
-      </>
-    );
+      if (resetCode) {
+        const resetModel = {
+          code: resetCode,
+          newPassword: password,
+          confirmPassword: password,
+        };
+
+        getBackendSrv()
+          .post('/api/user/password/reset', resetModel)
+          .then(() => {
+            toGrafana();
+          });
+      } else {
+        getBackendSrv()
+          .put('/api/user/password', pw)
+          .then(() => {
+            toGrafana();
+          })
+          .catch((err) => console.error(err));
+      }
+    },
+    [resetCode, toGrafana]
+  );
+
+  const changeView = useCallback((showDefaultPasswordWarning: boolean) => {
+    setIsChangingPassword(true);
+    setShowDefaultPasswordWarning(showDefaultPasswordWarning);
+  }, []);
+
+  const login = useCallback(
+    async (formModel: FormModel) => {
+      setLoginErrorMessage(undefined);
+      setIsLoggingIn(true);
+
+      return getBackendSrv()
+        .post<LoginDTO>('/login', formModel, { showErrorAlert: false })
+        .then((result) => {
+          setResult(result);
+          if (formModel.password !== 'admin' || config.ldapEnabled || config.authProxyEnabled) {
+            toGrafana();
+            return;
+          } else {
+            changeView(formModel.password === 'admin');
+          }
+        })
+        .catch((err) => {
+          const fetchErrorMessage = isFetchError(err) ? getErrorMessage(err) : undefined;
+          setIsLoggingIn(false);
+          setLoginErrorMessage(fetchErrorMessage || t('login.error.unknown', 'Unknown error occurred'));
+        });
+    },
+    [toGrafana, changeView]
+  );
+
+  const { loginHint, passwordHint, disableLoginForm, disableUserSignUp } = config;
+
+  return (
+    <>
+      {children({
+        isOauthEnabled: isOauthEnabled(),
+        loginHint,
+        passwordHint,
+        disableLoginForm,
+        disableUserSignUp,
+        login,
+        isLoggingIn,
+        changePassword,
+        skipPasswordChange: toGrafana,
+        isChangingPassword,
+        showDefaultPasswordWarning,
+        loginErrorMessage,
+      })}
+    </>
+  );
+});
+
+LoginCtrl.displayName = 'LoginCtrl';
+
+export default LoginCtrl;
+
+function getErrorMessage(err: FetchError<undefined | { messageId?: string; message?: string }>): string | undefined {
+  switch (err.data?.messageId) {
+    case 'password-auth.empty':
+    case 'password-auth.failed':
+    case 'password-auth.invalid':
+      return t('login.error.invalid-user-or-password', 'Invalid username or password');
+    case 'login-attempt.blocked':
+      return t(
+        'login.error.blocked',
+        'You have exceeded the number of login attempts for this user. Please try again later.'
+      );
+    default:
+      return err.data?.message;
   }
 }
 
-export default LoginCtrl;
+function getBootDataErrMessage(str?: string) {
+  switch (str) {
+    case 'oauth.login.error':
+      return t('oauth.login.error', 'Login provider denied login request');
+    default:
+      return str;
+  }
+}

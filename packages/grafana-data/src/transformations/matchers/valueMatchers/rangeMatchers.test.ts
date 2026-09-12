@@ -1,5 +1,5 @@
-import { toDataFrame } from '../../../dataframe';
-import { DataFrame } from '../../../types/dataFrame';
+import { toDataFrame } from '../../../dataframe/processDataFrame';
+import { type DataFrame } from '../../../types/dataFrame';
 import { getValueMatcher } from '../../matchers';
 import { ValueMatcherID } from '../ids';
 

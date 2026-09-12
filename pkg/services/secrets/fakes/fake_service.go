@@ -40,12 +40,21 @@ func (f FakeSecretsService) GetDecryptedValue(_ context.Context, sjd map[string]
 	return fallback
 }
 
+func (f FakeSecretsService) RotateDataKeys(_ context.Context) error {
+	return nil
+}
+
+func (f FakeSecretsService) ReEncryptDataKeys(_ context.Context) error {
+	return nil
+}
+
 func (f FakeSecretsService) CurrentProviderID() string {
 	return "fakeProvider"
 }
 
-func (f FakeSecretsService) GetProviders() map[string]secrets.Provider {
-	return make(map[string]secrets.Provider)
+func (f FakeSecretsService) GetProviders() map[string]secrets.Provider { //nolint:staticcheck // SA1019: Legacy envelope encryption for single-tenant feature
+	return make(map[string]secrets.Provider) //nolint:staticcheck // SA1019: Legacy envelope encryption for single-tenant feature
 }
 
-func (f FakeSecretsService) RegisterProvider(_ string, _ secrets.Provider) {}
+func (f FakeSecretsService) RegisterProvider(_ string, _ secrets.Provider) { //nolint:staticcheck // SA1019: Legacy envelope encryption for single-tenant feature
+}

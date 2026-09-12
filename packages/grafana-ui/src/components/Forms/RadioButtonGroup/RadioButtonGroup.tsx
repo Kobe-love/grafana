@@ -1,14 +1,17 @@
-import React, { useCallback, useEffect, useRef } from 'react';
 import { css, cx } from '@emotion/css';
-import { uniqueId } from 'lodash';
-import { GrafanaTheme2, SelectableValue } from '@grafana/data';
-import { RadioButtonSize, RadioButton } from './RadioButton';
-import { Icon } from '../../Icon/Icon';
-import { IconName } from '../../../types/icon';
-import { useStyles2 } from '../../../themes';
+import { type HTMLAttributes, useCallback, useEffect, useId, useRef } from 'react';
 
-export interface RadioButtonGroupProps<T> {
+import { type GrafanaTheme2, type SelectableValue, toIconName } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+
+import { useStyles2 } from '../../../themes/ThemeContext';
+import { Icon } from '../../Icon/Icon';
+import { useFieldContext } from '../FieldContext';
+
+import { type RadioButtonSize, RadioButton, RADIO_GROUP_PADDING } from './RadioButton';
+export interface RadioButtonGroupProps<T> extends Omit<HTMLAttributes<HTMLDivElement>, 'onChange' | 'onClick'> {
   value?: T;
+  id?: string;
   disabled?: boolean;
   disabledOptions?: T[];
   options: Array<SelectableValue<T>>;
@@ -18,20 +21,43 @@ export interface RadioButtonGroupProps<T> {
   fullWidth?: boolean;
   className?: string;
   autoFocus?: boolean;
+  ['aria-label']?: string;
+  invalid?: boolean;
+  'data-testid'?: string;
 }
 
+/**
+ * RadioButtonGroup is used to select a single value from multiple mutually exclusive options.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/inputs-radiobuttongroup--docs
+ */
 export function RadioButtonGroup<T>({
   options,
   value,
   onChange,
   onClick,
-  disabled,
+  disabled: disabledProp,
   disabledOptions,
   size = 'md',
+  id: idProp,
   className,
   fullWidth = false,
   autoFocus = false,
+  'aria-label': ariaLabel,
+  'aria-describedby': ariaDescribedByProp,
+  'aria-labelledby': ariaLabelledByProp,
+  'data-testid': dataTestId,
+  invalid: invalidProp,
+  ...rest
 }: RadioButtonGroupProps<T>) {
+  const fieldContext = useFieldContext();
+  const generatedId = useId();
+  const disabled = disabledProp ?? fieldContext.disabled;
+  const invalid = invalidProp ?? fieldContext.invalid;
+  const internalId = idProp ?? fieldContext.id ?? generatedId;
+  const ariaDescribedBy = ariaDescribedByProp ?? fieldContext['aria-describedby'];
+  const ariaLabelledBy = ariaLabelledByProp ?? fieldContext['aria-labelledby'];
+
   const handleOnChange = useCallback(
     (option: SelectableValue) => {
       return () => {
@@ -52,8 +78,8 @@ export function RadioButtonGroup<T>({
     },
     [onClick]
   );
-  const id = uniqueId('radiogroup-');
-  const groupName = useRef(id);
+
+  const groupName = useRef(internalId);
   const styles = useStyles2(getStyles);
 
   const activeButtonRef = useRef<HTMLInputElement | null>(null);
@@ -64,27 +90,42 @@ export function RadioButtonGroup<T>({
   }, [autoFocus]);
 
   return (
-    <div className={cx(styles.radioGroup, fullWidth && styles.fullWidth, className)}>
-      {options.map((o, i) => {
-        const isItemDisabled = disabledOptions && o.value && disabledOptions.includes(o.value);
+    <div
+      {...rest}
+      role="radiogroup"
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
+      data-testid={dataTestId ?? selectors.components.RadioGroup.container}
+      className={cx(styles.radioGroup, fullWidth && styles.fullWidth, invalid && styles.invalid, className)}
+    >
+      {options.map((opt, i) => {
+        const isItemDisabled = disabledOptions && opt.value && disabledOptions.includes(opt.value);
+        const icon = opt.icon ? toIconName(opt.icon) : undefined;
+        const hasNonIconPart = Boolean(opt.imgUrl || opt.label || opt.component);
+        const labelTitle = typeof opt.label === 'string' ? opt.label : undefined;
+
         return (
           <RadioButton
             size={size}
             disabled={isItemDisabled || disabled}
-            active={value === o.value}
+            active={value === opt.value}
             key={`o.label-${i}`}
-            aria-label={o.ariaLabel}
-            onChange={handleOnChange(o)}
-            onClick={handleOnClick(o)}
-            id={`option-${o.value}-${id}`}
+            data-testid={getDataTestId(opt)}
+            aria-label={opt.ariaLabel}
+            aria-invalid={!!invalid}
+            aria-describedby={ariaDescribedBy}
+            onChange={handleOnChange(opt)}
+            onClick={handleOnClick(opt)}
             name={groupName.current}
-            description={o.description}
+            description={opt.description}
+            title={labelTitle}
             fullWidth={fullWidth}
-            ref={value === o.value ? activeButtonRef : undefined}
+            ref={value === opt.value ? activeButtonRef : undefined}
           >
-            {o.icon && <Icon name={o.icon as IconName} className={styles.icon} />}
-            {o.imgUrl && <img src={o.imgUrl} alt={o.label} className={styles.img} />}
-            {o.label}
+            {icon && <Icon name={icon} className={cx(hasNonIconPart && styles.icon)} />}
+            {opt.imgUrl && <img src={opt.imgUrl} alt={opt.label} className={styles.img} />}
+            {opt.label != null && <span className={styles.labelText}>{opt.label}</span>}
+            {opt.component ? <opt.component /> : null}
           </RadioButton>
         );
       })}
@@ -100,20 +141,52 @@ const getStyles = (theme: GrafanaTheme2) => {
       display: 'inline-flex',
       flexDirection: 'row',
       flexWrap: 'nowrap',
+      maxWidth: '100%',
+      minWidth: 0,
       border: `1px solid ${theme.components.input.borderColor}`,
-      borderRadius: theme.shape.borderRadius(),
-      padding: '2px',
+      borderRadius: theme.shape.radius.default,
+      padding: RADIO_GROUP_PADDING,
+      '&:hover': {
+        borderColor: theme.components.input.borderHover,
+      },
     }),
     fullWidth: css({
       display: 'flex',
+      flexGrow: 1,
+      minWidth: 0,
+      width: '100%',
     }),
-    icon: css`
-      margin-right: 6px;
-    `,
-    img: css`
-      width: ${theme.spacing(2)};
-      height: ${theme.spacing(2)};
-      margin-right: ${theme.spacing(1)};
-    `,
+    icon: css({
+      marginRight: '6px',
+      flexShrink: 0,
+    }),
+    img: css({
+      width: theme.spacing(2),
+      height: theme.spacing(2),
+      marginRight: theme.spacing(1),
+      flexShrink: 0,
+    }),
+    labelText: css({
+      minWidth: 0,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+    }),
+    invalid: css({
+      border: `1px solid ${theme.colors.error.border}`,
+    }),
   };
 };
+
+export function getDataTestId(option: SelectableValue): string | undefined {
+  if (option.dataTestId) {
+    return option.dataTestId;
+  }
+
+  // Keyed on the option's value, not its label, so the selector survives translation.
+  // Skipped for objects and undefined, which have no meaningful string form.
+  if (typeof option.value !== 'string' && typeof option.value !== 'number' && typeof option.value !== 'boolean') {
+    return;
+  }
+
+  return selectors.components.RadioButton.option(String(option.value));
+}

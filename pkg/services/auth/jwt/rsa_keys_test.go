@@ -6,13 +6,14 @@ import (
 	"encoding/pem"
 	"fmt"
 
-	jose "gopkg.in/square/go-jose.v2"
+	"github.com/go-jose/go-jose/v4"
 )
 
 var rsaKeys [3]*rsa.PrivateKey
 var jwKeys [3]jose.JSONWebKey
 var jwksPublic jose.JSONWebKeySet
 
+// #nosec G101
 const rsaKeysPEM = `
 -----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEA0vKKKQzRHxtnvgvScOvZW2lIBiZ0YBN8ZwAfQdpEQy2w7qAT
@@ -99,7 +100,7 @@ kXxSnDcVQGY0cWZ0FROyYbBp3nBVA5VT5HYYGfazhsisIHP+3zoG
 
 func init() {
 	data := []byte(rsaKeysPEM)
-	for i := 0; i < len(rsaKeys); i++ {
+	for i := range len(rsaKeys) {
 		var block *pem.Block
 		block, data = pem.Decode(data)
 		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)

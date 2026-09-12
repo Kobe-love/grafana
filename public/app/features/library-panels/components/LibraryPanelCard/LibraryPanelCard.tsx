@@ -1,26 +1,28 @@
-import React, { ReactElement, useState } from 'react';
 import { css } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
-import { Icon, Link, useStyles2 } from '@grafana/ui';
-import { LibraryElementDTO } from '../../types';
-import { PanelTypeCard } from 'app/features/panel/components/VizTypePicker/PanelTypeCard';
-import { DeleteLibraryPanelModal } from '../DeleteLibraryPanelModal/DeleteLibraryPanelModal';
-import { config } from '@grafana/runtime';
-import { getPanelPluginNotFound } from 'app/features/panel/components/PanelPluginError';
+import { type ReactElement, useState, type JSX } from 'react';
+import Skeleton from 'react-loading-skeleton';
 
-export interface LibraryPanelCardProps {
+import { type GrafanaTheme2 } from '@grafana/data';
+import { Trans } from '@grafana/i18n';
+import { usePanelPluginMeta } from '@grafana/runtime/internal';
+import { Icon, Link, useStyles2 } from '@grafana/ui';
+import { type SkeletonComponent, attachSkeleton } from '@grafana/ui/unstable';
+import { getPanelPluginNotFound } from 'app/features/panel/components/PanelPluginError';
+import { PanelTypeCard } from 'app/features/panel/components/VizTypePicker/PanelTypeCard';
+
+import { type LibraryElementDTO } from '../../types';
+import { DeleteLibraryPanelModal } from '../DeleteLibraryPanelModal/DeleteLibraryPanelModal';
+
+interface LibraryPanelCardProps {
   libraryPanel: LibraryElementDTO;
   onClick: (panel: LibraryElementDTO) => void;
   onDelete?: (panel: LibraryElementDTO) => void;
   showSecondaryActions?: boolean;
 }
 
-export const LibraryPanelCard: React.FC<LibraryPanelCardProps & { children?: JSX.Element | JSX.Element[] }> = ({
-  libraryPanel,
-  onClick,
-  onDelete,
-  showSecondaryActions,
-}) => {
+type Props = LibraryPanelCardProps & { children?: JSX.Element | JSX.Element[] };
+
+const LibraryPanelCardComponent = ({ libraryPanel, onClick, onDelete, showSecondaryActions }: Props) => {
   const [showDeletionModal, setShowDeletionModal] = useState(false);
 
   const onDeletePanel = () => {
@@ -28,7 +30,8 @@ export const LibraryPanelCard: React.FC<LibraryPanelCardProps & { children?: JSX
     setShowDeletionModal(false);
   };
 
-  const panelPlugin = config.panels[libraryPanel.model.type] ?? getPanelPluginNotFound(libraryPanel.model.type).meta;
+  const { value: panelPluginMeta } = usePanelPluginMeta(libraryPanel.model.type);
+  const panelPlugin = panelPluginMeta ?? getPanelPluginNotFound(libraryPanel.model.type).meta;
 
   return (
     <>
@@ -37,7 +40,7 @@ export const LibraryPanelCard: React.FC<LibraryPanelCardProps & { children?: JSX
         title={libraryPanel.name}
         description={libraryPanel.description}
         plugin={panelPlugin}
-        onClick={() => onClick?.(libraryPanel)}
+        onSelect={() => onClick?.(libraryPanel)}
         onDelete={showSecondaryActions ? () => setShowDeletionModal(true) : undefined}
       >
         <FolderLink libraryPanel={libraryPanel} />
@@ -53,6 +56,21 @@ export const LibraryPanelCard: React.FC<LibraryPanelCardProps & { children?: JSX
   );
 };
 
+const LibraryPanelCardSkeleton: SkeletonComponent<Pick<Props, 'showSecondaryActions'>> = ({
+  showSecondaryActions,
+  rootProps,
+}) => {
+  const styles = useStyles2(getStyles);
+
+  return (
+    <PanelTypeCard.Skeleton hasDelete={showSecondaryActions} {...rootProps}>
+      <Skeleton containerClassName={styles.metaContainer} width={80} />
+    </PanelTypeCard.Skeleton>
+  );
+};
+
+export const LibraryPanelCard = attachSkeleton(LibraryPanelCardComponent, LibraryPanelCardSkeleton);
+
 interface FolderLinkProps {
   libraryPanel: LibraryElementDTO;
 }
@@ -60,15 +78,18 @@ interface FolderLinkProps {
 function FolderLink({ libraryPanel }: FolderLinkProps): ReactElement | null {
   const styles = useStyles2(getStyles);
 
-  if (!libraryPanel.meta.folderUid && !libraryPanel.meta.folderName) {
+  if (!libraryPanel.meta?.folderUid && !libraryPanel.meta?.folderName) {
     return null;
   }
 
+  // LibraryPanels API returns folder-less library panels with an empty string folder UID
   if (!libraryPanel.meta.folderUid) {
     return (
       <span className={styles.metaContainer}>
         <Icon name={'folder'} size="sm" />
-        <span>{libraryPanel.meta.folderName}</span>
+        <span>
+          <Trans i18nKey="library-panels.folder-link.dashboards">Dashboards</Trans>
+        </span>
       </span>
     );
   }
@@ -85,17 +106,17 @@ function FolderLink({ libraryPanel }: FolderLinkProps): ReactElement | null {
 
 function getStyles(theme: GrafanaTheme2) {
   return {
-    metaContainer: css`
-      display: flex;
-      align-items: center;
-      color: ${theme.colors.text.secondary};
-      font-size: ${theme.typography.bodySmall.fontSize};
-      padding-top: ${theme.spacing(0.5)};
+    metaContainer: css({
+      display: 'flex',
+      alignItems: 'center',
+      color: theme.colors.text.secondary,
+      fontSize: theme.typography.bodySmall.fontSize,
+      paddingTop: theme.spacing(0.5),
 
-      svg {
-        margin-right: ${theme.spacing(0.5)};
-        margin-bottom: 3px;
-      }
-    `,
+      svg: {
+        marginRight: theme.spacing(0.5),
+        marginBottom: 3,
+      },
+    }),
   };
 }

@@ -1,7 +1,8 @@
 package frontendlogging
 
 import (
-	"io/ioutil"
+	"context"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -10,11 +11,13 @@ import (
 	"sync"
 
 	sourcemap "github.com/go-sourcemap/sourcemap"
-
-	"github.com/getsentry/sentry-go"
+	"github.com/grafana/grafana/pkg/api/webassets"
+	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/plugins"
 	"github.com/grafana/grafana/pkg/setting"
 )
+
+var logger = log.New("frontendlogging")
 
 type sourceMapLocation struct {
 	dir      string
@@ -39,7 +42,7 @@ func ReadSourceMapFromFS(dir string, path string) ([]byte, error) {
 			logger.Error("Failed to close source map file", "err", err)
 		}
 	}()
-	return ioutil.ReadAll(file)
+	return io.ReadAll(file)
 }
 
 type SourceMapStore struct {
@@ -64,7 +67,7 @@ func NewSourceMapStore(cfg *setting.Cfg, routeResolver plugins.StaticRouteResolv
  * just assumes that a [source filename].map file might exist in the same dir as the source file
  * and only considers sources coming from grafana core or plugins`
  */
-func (store *SourceMapStore) guessSourceMapLocation(sourceURL string) (*sourceMapLocation, error) {
+func (store *SourceMapStore) guessSourceMapLocation(ctx context.Context, sourceURL string) (*sourceMapLocation, error) {
 	u, err := url.Parse(sourceURL)
 	if err != nil {
 		return nil, err
@@ -73,17 +76,19 @@ func (store *SourceMapStore) guessSourceMapLocation(sourceURL string) (*sourceMa
 	// determine if source comes from grafana core, locally or CDN, look in public build dir on fs
 	if strings.HasPrefix(u.Path, "/public/build/") || (store.cfg.CDNRootURL != nil &&
 		strings.HasPrefix(sourceURL, store.cfg.CDNRootURL.String()) && strings.Contains(u.Path, "/public/build/")) {
+		// The remainder carries the rspack/ segment for rspack assets, so one
+		// directory resolves both bundlers.
 		pathParts := strings.SplitN(u.Path, "/public/build/", 2)
 		if len(pathParts) == 2 {
 			return &sourceMapLocation{
 				dir:      store.cfg.StaticRootPath,
-				path:     filepath.Join("build", pathParts[1]+".map"),
+				path:     filepath.Join(webassets.BuildDir, pathParts[1]+".map"),
 				pluginID: "",
 			}, nil
 		}
 		// if source comes from a plugin, look in plugin dir
 	} else if strings.HasPrefix(u.Path, "/public/plugins/") {
-		for _, route := range store.routeResolver.Routes() {
+		for _, route := range store.routeResolver.Routes(ctx) {
 			pluginPrefix := filepath.Join("/public/plugins/", route.PluginID)
 			if strings.HasPrefix(u.Path, pluginPrefix) {
 				return &sourceMapLocation{
@@ -97,14 +102,14 @@ func (store *SourceMapStore) guessSourceMapLocation(sourceURL string) (*sourceMa
 	return nil, nil
 }
 
-func (store *SourceMapStore) getSourceMap(sourceURL string) (*sourceMap, error) {
+func (store *SourceMapStore) getSourceMap(ctx context.Context, sourceURL string) (*sourceMap, error) {
 	store.Lock()
 	defer store.Unlock()
 
 	if smap, ok := store.cache[sourceURL]; ok {
 		return smap, nil
 	}
-	sourceMapLocation, err := store.guessSourceMapLocation(sourceURL)
+	sourceMapLocation, err := store.guessSourceMapLocation(ctx, sourceURL)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +119,7 @@ func (store *SourceMapStore) getSourceMap(sourceURL string) (*sourceMap, error) 
 		return nil, nil
 	}
 	path := strings.ReplaceAll(sourceMapLocation.path, "../", "") // just in case
-	b, err := store.readSourceMap(sourceMapLocation.dir, path)
+	content, err := store.readSourceMap(sourceMapLocation.dir, path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Cache nil value for sourceURL, since we want to flag that it wasn't found in the filesystem and not try again
@@ -124,7 +129,7 @@ func (store *SourceMapStore) getSourceMap(sourceURL string) (*sourceMap, error) 
 		return nil, err
 	}
 
-	consumer, err := sourcemap.Parse(sourceURL+".map", b)
+	consumer, err := sourcemap.Parse(sourceURL+".map", content)
 	if err != nil {
 		return nil, err
 	}
@@ -136,8 +141,8 @@ func (store *SourceMapStore) getSourceMap(sourceURL string) (*sourceMap, error) 
 	return smap, nil
 }
 
-func (store *SourceMapStore) resolveSourceLocation(frame sentry.Frame) (*sentry.Frame, error) {
-	smap, err := store.getSourceMap(frame.Filename)
+func (store *SourceMapStore) resolveSourceLocation(ctx context.Context, frame Frame) (*Frame, error) {
+	smap, err := store.getSourceMap(ctx, frame.Filename)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +162,7 @@ func (store *SourceMapStore) resolveSourceLocation(frame sentry.Frame) (*sentry.
 	if len(smap.pluginID) > 0 {
 		module = smap.pluginID
 	}
-	return &sentry.Frame{
+	return &Frame{
 		Filename: file,
 		Lineno:   line,
 		Colno:    col,

@@ -1,6 +1,8 @@
 import { default as calculateSize } from 'calculate-size';
-import { CompletionItemGroup, CompletionItem, CompletionItemKind } from '../types/completion';
-import { GrafanaTheme } from '@grafana/data';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { type CompletionItemGroup, type CompletionItem, CompletionItemKind } from '../types/completion';
 
 export const flattenGroupItems = (groupedItems: CompletionItemGroup[]): CompletionItem[] => {
   return groupedItems.reduce((all: CompletionItem[], { items, label }) => {
@@ -21,10 +23,10 @@ export const calculateLongestLabel = (allItems: CompletionItem[]): string => {
   }, '');
 };
 
-export const calculateListSizes = (theme: GrafanaTheme, allItems: CompletionItem[], longestLabel: string) => {
+export const calculateListSizes = (theme: GrafanaTheme2, allItems: CompletionItem[], longestLabel: string) => {
   const size = calculateSize(longestLabel, {
-    font: theme.typography.fontFamily.monospace,
-    fontSize: theme.typography.size.sm,
+    font: theme.typography.fontFamilyMonospace,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontWeight: 'normal',
   });
 
@@ -39,22 +41,22 @@ export const calculateListSizes = (theme: GrafanaTheme, allItems: CompletionItem
   };
 };
 
-export const calculateItemHeight = (longestLabelHeight: number, theme: GrafanaTheme) => {
-  const horizontalPadding = parseInt(theme.spacing.sm, 10) * 2;
+const calculateItemHeight = (longestLabelHeight: number, theme: GrafanaTheme2) => {
+  const horizontalPadding = theme.spacing.gridSize * 2;
   const itemHeight = longestLabelHeight + horizontalPadding;
 
   return itemHeight;
 };
 
-export const calculateListWidth = (longestLabelWidth: number, theme: GrafanaTheme) => {
-  const verticalPadding = parseInt(theme.spacing.sm, 10) + parseInt(theme.spacing.md, 10);
+const calculateListWidth = (longestLabelWidth: number, theme: GrafanaTheme2) => {
+  const verticalPadding = theme.spacing.gridSize * 3;
   const maxWidth = 800;
   const listWidth = Math.min(Math.max(longestLabelWidth + verticalPadding, 200), maxWidth);
 
   return listWidth;
 };
 
-export const calculateListHeight = (itemHeight: number, allItems: CompletionItem[]) => {
+const calculateListHeight = (itemHeight: number, allItems: CompletionItem[]) => {
   const numberOfItemsToShow = Math.min(allItems.length, 10);
   const minHeight = 100;
   const totalHeight = numberOfItemsToShow * itemHeight;

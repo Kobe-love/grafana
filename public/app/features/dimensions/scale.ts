@@ -1,7 +1,7 @@
-import { DataFrame, Field } from '@grafana/data';
-import { ScaleDimensionMode } from '.';
-import { getMinMaxAndDelta } from '../../../../packages/grafana-data/src/field/scale';
-import { ScaleDimensionConfig, DimensionSupplier, ScaleDimensionOptions } from './types';
+import { getMinMaxAndDelta, type DataFrame, type Field } from '@grafana/data';
+import { type ScaleDimensionConfig, ScaleDimensionMode } from '@grafana/schema';
+
+import { type DimensionSupplier, type ScaleDimensionOptions } from './types';
 import { findField, getLastNotNullFieldValue } from './utils';
 
 //---------------------------------------------------------
@@ -15,7 +15,7 @@ export function getScaledDimension(
   return getScaledDimensionForField(findField(frame, config?.field), config);
 }
 
-export function getScaledDimensionForField(
+function getScaledDimensionForField(
   field: Field | undefined,
   config: ScaleDimensionConfig,
   mode?: ScaleDimensionMode
@@ -41,7 +41,7 @@ export function getScaledDimensionForField(
   }
 
   let scaled = (percent: number) => config.min + percent * delta;
-  if (mode === ScaleDimensionMode.Quadratic) {
+  if (mode === ScaleDimensionMode.Quad) {
     const maxArea = Math.PI * (config.max / 2) ** 2;
     const minArea = Math.PI * (config.min / 2) ** 2;
     const deltaArea = maxArea - minArea;
@@ -53,8 +53,7 @@ export function getScaledDimensionForField(
     };
   }
 
-  const get = (i: number) => {
-    const value = field.values.get(i);
+  const scaleValue = (value: number) => {
     let percent = 0;
     if (value !== -Infinity) {
       percent = (value - info.min!) / info.delta;
@@ -68,8 +67,9 @@ export function getScaledDimensionForField(
   };
 
   return {
-    get,
-    value: () => get(getLastNotNullFieldValue(field)),
+    get: (i: number) => scaleValue(field.values[i]),
+    // value() scales the last non-null field value, not an index into it
+    value: () => scaleValue(getLastNotNullFieldValue(field)),
     field,
   };
 }
@@ -93,7 +93,7 @@ export function validateScaleOptions(options?: ScaleDimensionOptions): ScaleDime
 export function validateScaleConfig(copy: ScaleDimensionConfig, options: ScaleDimensionOptions): ScaleDimensionConfig {
   let { min, max } = validateScaleOptions(options);
   if (!copy) {
-    copy = {} as any;
+    copy = {} as ScaleDimensionConfig;
   }
 
   if (copy.max == null) {

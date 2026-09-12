@@ -1,5 +1,4 @@
 export enum DataTransformerID {
-  // join = 'join', // Pick a field and merge all series based on that field
   append = 'append',
   //  rotate = 'rotate', // Columns to rows
   reduce = 'reduce',
@@ -7,6 +6,7 @@ export enum DataTransformerID {
   organize = 'organize',
   rename = 'rename',
   calculateField = 'calculateField',
+  /** @deprecated use joinByField */
   seriesToColumns = 'seriesToColumns',
   seriesToRows = 'seriesToRows',
   merge = 'merge',
@@ -27,7 +27,21 @@ export enum DataTransformerID {
   rowsToFields = 'rowsToFields',
   prepareTimeSeries = 'prepareTimeSeries',
   convertFieldType = 'convertFieldType',
+  convertFrameType = 'convertFrameType',
   fieldLookup = 'fieldLookup',
-  setGeometry = 'setGeometry',
+  heatmap = 'heatmap',
+  spatial = 'spatial',
+  joinByField = 'joinByField',
+  joinByLabels = 'joinByLabels',
   extractFields = 'extractFields',
+  groupingToMatrix = 'groupingToMatrix',
+  limit = 'limit',
+  partitionByValues = 'partitionByValues',
+  timeSeriesTable = 'timeSeriesTable',
+  transpose = 'transpose',
+  formatTime = 'formatTime',
+  formatString = 'formatString',
+  regression = 'regression',
+  smoothing = 'smoothing',
+  groupToNestedTable = 'groupToNestedTable',
 }

@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	pngExt                        = ".png"
-	defaultGCSSignedURLExpiration = 7 * 24 * time.Hour // 7 days
+	pngExt                          = ".png"
+	defaultGCSSignedURLExpiration   = 7 * 24 * time.Hour // 7 days
+	defaultS3PresignedURLExpiration = 7 * 24 * time.Hour // 7 days
 )
 
+//go:generate mockgen -destination=mock.go -package=imguploader github.com/grafana/grafana/pkg/components/imguploader ImageUploader
 type ImageUploader interface {
 	Upload(ctx context.Context, path string) (string, error)
 }
@@ -31,10 +33,10 @@ var (
 	logger = log.New("imguploader")
 )
 
-func NewImageUploader() (ImageUploader, error) {
-	switch setting.ImageUploadProvider {
+func NewImageUploader(cfg *setting.Cfg) (ImageUploader, error) {
+	switch cfg.ImageUploadProvider {
 	case "s3":
-		s3sec, err := setting.Raw.GetSection("external_image_storage.s3")
+		s3sec, err := cfg.Raw.GetSection("external_image_storage.s3")
 		if err != nil {
 			return nil, err
 		}
@@ -47,6 +49,23 @@ func NewImageUploader() (ImageUploader, error) {
 		bucketUrl := s3sec.Key("bucket_url").MustString("")
 		accessKey := s3sec.Key("access_key").MustString("")
 		secretKey := s3sec.Key("secret_key").MustString("")
+		enablePresignedURLs := s3sec.Key("enable_presigned_urls").MustBool(false)
+
+		presignedURLExp := s3sec.Key("presigned_url_expiration").MustString("")
+		var presignedURLExpiration time.Duration
+		if presignedURLExp != "" {
+			presignedURLExpiration, err = time.ParseDuration(presignedURLExp)
+			if err != nil {
+				return nil, err
+			}
+			if presignedURLExpiration < 0 {
+				return nil, fmt.Errorf("presigned_url_expiration must be >= 0, got %s", presignedURLExp)
+			}
+		} else {
+			presignedURLExpiration = defaultS3PresignedURLExpiration
+		}
+
+		acl := "public-read"
 
 		if path != "" && path[len(path)-1:] != "/" {
 			path += "/"
@@ -61,9 +80,20 @@ func NewImageUploader() (ImageUploader, error) {
 			region = info.region
 		}
 
-		return NewS3Uploader(endpoint, region, bucket, path, "public-read", accessKey, secretKey, pathStyleAccess), nil
+		return NewS3Uploader(S3UploaderOptions{
+			Endpoint:               endpoint,
+			Region:                 region,
+			Bucket:                 bucket,
+			Path:                   path,
+			ACL:                    acl,
+			AccessKey:              accessKey,
+			SecretKey:              secretKey,
+			PathStyleAccess:        pathStyleAccess,
+			EnablePresignedURLs:    enablePresignedURLs,
+			PresignedURLExpiration: presignedURLExpiration,
+		}), nil
 	case "webdav":
-		webdavSec, err := setting.Raw.GetSection("external_image_storage.webdav")
+		webdavSec, err := cfg.Raw.GetSection("external_image_storage.webdav")
 		if err != nil {
 			return nil, err
 		}
@@ -79,7 +109,7 @@ func NewImageUploader() (ImageUploader, error) {
 
 		return NewWebdavImageUploader(url, username, password, public_url)
 	case "gcs":
-		gcssec, err := setting.Raw.GetSection("external_image_storage.gcs")
+		gcssec, err := cfg.Raw.GetSection("external_image_storage.gcs")
 		if err != nil {
 			return nil, err
 		}
@@ -101,7 +131,7 @@ func NewImageUploader() (ImageUploader, error) {
 
 		return gcs.NewUploader(keyFile, bucketName, path, enableSignedURLs, suExp)
 	case "azure_blob":
-		azureBlobSec, err := setting.Raw.GetSection("external_image_storage.azure_blob")
+		azureBlobSec, err := cfg.Raw.GetSection("external_image_storage.azure_blob")
 		if err != nil {
 			return nil, err
 		}
@@ -109,14 +139,16 @@ func NewImageUploader() (ImageUploader, error) {
 		account_name := azureBlobSec.Key("account_name").MustString("")
 		account_key := azureBlobSec.Key("account_key").MustString("")
 		container_name := azureBlobSec.Key("container_name").MustString("")
+		sas_token_expiration_days := azureBlobSec.Key("sas_token_expiration_days").MustInt(-1)
 
-		return NewAzureBlobUploader(account_name, account_key, container_name), nil
+		return NewAzureBlobUploader(account_name, account_key, container_name, sas_token_expiration_days), nil
+
 	case "local":
 		return NewLocalImageUploader()
 	}
 
-	if setting.ImageUploadProvider != "" {
-		logger.Error("The external image storage configuration is invalid", "unsupported provider", setting.ImageUploadProvider)
+	if cfg.ImageUploadProvider != "" {
+		logger.Error("The external image storage configuration is invalid", "unsupported provider", cfg.ImageUploadProvider)
 	}
 
 	return NopImageUploader{}, nil

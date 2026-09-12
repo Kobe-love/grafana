@@ -1,174 +1,447 @@
-import React from 'react';
-import { Redirect } from 'react-router-dom';
-import { SafeDynamicImport } from 'app/core/components/DynamicImports/SafeDynamicImport';
-import { config } from 'app/core/config';
-import { RouteDescriptor } from 'app/core/navigation/types';
+import { Navigate } from 'react-router-dom-v5-compat';
 
-const alertingRoutes: RouteDescriptor[] = [
-  {
-    path: '/alerting',
-    // eslint-disable-next-line react/display-name
-    component: () => <Redirect to="/alerting/list" />,
-  },
-  {
-    path: '/alerting/list',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertRuleListIndex" */ 'app/features/alerting/AlertRuleListIndex')
-    ),
-  },
-  {
-    path: '/alerting/ng/list',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertRuleList" */ 'app/features/alerting/AlertRuleList')
-    ),
-  },
-  {
-    path: '/alerting/routes',
-    roles: () => ['Admin', 'Editor'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertAmRoutes" */ 'app/features/alerting/unified/AmRoutes')
-    ),
-  },
-  {
-    path: '/alerting/routes/mute-timing/new',
-    roles: () => ['Admin', 'Editor'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "MuteTimings" */ 'app/features/alerting/unified/MuteTimings')
-    ),
-  },
-  {
-    path: '/alerting/routes/mute-timing/edit',
-    roles: () => ['Admin', 'Editor'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "MuteTimings" */ 'app/features/alerting/unified/MuteTimings')
-    ),
-  },
-  {
-    path: '/alerting/silences',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertSilences" */ 'app/features/alerting/unified/Silences')
-    ),
-  },
-  {
-    path: '/alerting/silence/new',
-    roles: () => ['Editor', 'Admin'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertSilences" */ 'app/features/alerting/unified/Silences')
-    ),
-  },
-  {
-    path: '/alerting/silence/:id/edit',
-    roles: () => ['Editor', 'Admin'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertSilences" */ 'app/features/alerting/unified/Silences')
-    ),
-  },
-  {
-    path: '/alerting/notifications',
-    roles: config.unifiedAlertingEnabled ? () => ['Editor', 'Admin'] : undefined,
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "NotificationsListPage" */ 'app/features/alerting/NotificationsIndex')
-    ),
-  },
-  {
-    path: '/alerting/notifications/templates/new',
-    roles: () => ['Editor', 'Admin'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "NotificationsListPage" */ 'app/features/alerting/NotificationsIndex')
-    ),
-  },
-  {
-    path: '/alerting/notifications/templates/:id/edit',
-    roles: () => ['Editor', 'Admin'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "NotificationsListPage" */ 'app/features/alerting/NotificationsIndex')
-    ),
-  },
-  {
-    path: '/alerting/notifications/receivers/new',
-    roles: () => ['Editor', 'Admin'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "NotificationsListPage" */ 'app/features/alerting/NotificationsIndex')
-    ),
-  },
-  {
-    path: '/alerting/notifications/receivers/:id/edit',
-    roles: () => ['Editor', 'Admin'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "NotificationsListPage" */ 'app/features/alerting/NotificationsIndex')
-    ),
-  },
-  {
-    path: '/alerting/notifications/global-config',
-    roles: () => ['Admin', 'Editor'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "NotificationsListPage" */ 'app/features/alerting/NotificationsIndex')
-    ),
-  },
-  {
-    path: '/alerting/notification/new',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "NewNotificationChannel" */ 'app/features/alerting/NewNotificationChannelPage')
-    ),
-  },
-  {
-    path: '/alerting/notification/:id/edit',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "EditNotificationChannel"*/ 'app/features/alerting/EditNotificationChannelPage')
-    ),
-  },
-  {
-    path: '/alerting/groups/',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertGroups" */ 'app/features/alerting/unified/AlertGroups')
-    ),
-  },
-  {
-    path: '/alerting/new',
-    pageClass: 'page-alerting',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertingRuleForm"*/ 'app/features/alerting/unified/RuleEditor')
-    ),
-  },
-  {
-    path: '/alerting/:id/edit',
-    pageClass: 'page-alerting',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertingRuleForm"*/ 'app/features/alerting/unified/RuleEditor')
-    ),
-  },
-  {
-    path: '/alerting/:sourceName/:id/view',
-    pageClass: 'page-alerting',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertingRule"*/ 'app/features/alerting/unified/RuleViewer')
-    ),
-  },
-  {
-    path: '/alerting/:sourceName/:name/find',
-    pageClass: 'page-alerting',
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertingRedirectToRule"*/ 'app/features/alerting/unified/RedirectToRuleViewer')
-    ),
-  },
-  {
-    path: '/alerting/admin',
-    roles: () => ['Admin'],
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "AlertingAdmin" */ 'app/features/alerting/unified/Admin')
-    ),
-  },
-];
+import { config } from '@grafana/runtime';
+import { SafeDynamicImport } from 'app/core/components/DynamicImports/SafeDynamicImport';
+import { type GrafanaRouteComponent, type RouteDescriptor } from 'app/core/navigation/types';
+import { AccessControlAction } from 'app/types/accessControl';
+
+import { evaluateAccess, evaluateAccessAll } from './routePermissions';
+import { shouldAllowRecoveringDeletedRules } from './unified/featureToggles';
+import {
+  PERMISSIONS_CONTACT_POINTS,
+  PERMISSIONS_NOTIFICATION_POLICIES,
+  PERMISSIONS_TEMPLATES,
+  PERMISSIONS_TIME_INTERVALS_MODIFY,
+  PERMISSIONS_TIME_INTERVALS_READ,
+} from './unified/utils/alertmanagerPermissions';
 
 export function getAlertingRoutes(cfg = config): RouteDescriptor[] {
-  if (cfg.alertingEnabled || cfg.unifiedAlertingEnabled) {
-    return alertingRoutes;
+  const routes = [
+    {
+      path: '/alerting',
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertingHome" */ 'app/features/alerting/unified/home/Home')
+      ),
+    },
+    {
+      path: '/alerting/home',
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertingHome" */ 'app/features/alerting/unified/home/Home')
+      ),
+    },
+    {
+      path: '/alerting/list',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleRead, AccessControlAction.AlertingRuleExternalRead]),
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertRuleListIndex" */ 'app/features/alerting/unified/RuleList')
+      ),
+    },
+    {
+      path: '/alerting/routes',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsRead,
+        AccessControlAction.AlertingNotificationsExternalRead,
+        ...PERMISSIONS_NOTIFICATION_POLICIES,
+        ...PERMISSIONS_TIME_INTERVALS_READ,
+        ...PERMISSIONS_TIME_INTERVALS_MODIFY,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "NotificationPoliciesPage" */ 'app/features/alerting/unified/NotificationPoliciesPage'
+          )
+      ),
+    },
+    {
+      // Standalone Time Intervals page for V2 navigation
+      path: '/alerting/routes/mute-timing',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsRead,
+        AccessControlAction.AlertingNotificationsExternalRead,
+        ...PERMISSIONS_TIME_INTERVALS_READ,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "TimeIntervalsPage" */ 'app/features/alerting/unified/components/mute-timings/TimeIntervalsPage'
+          )
+      ),
+    },
+    {
+      path: '/alerting/routes/mute-timing/new',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsWrite,
+        AccessControlAction.AlertingNotificationsExternalWrite,
+        ...PERMISSIONS_TIME_INTERVALS_MODIFY,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "NewMuteTiming" */ 'app/features/alerting/unified/components/mute-timings/NewMuteTiming'
+          )
+      ),
+    },
+    {
+      path: '/alerting/routes/mute-timing/edit',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsWrite,
+        AccessControlAction.AlertingNotificationsExternalWrite,
+        ...PERMISSIONS_TIME_INTERVALS_READ,
+        ...PERMISSIONS_TIME_INTERVALS_MODIFY,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "EditMuteTiming" */ 'app/features/alerting/unified/components/mute-timings/EditMuteTiming'
+          )
+      ),
+    },
+    {
+      path: '/alerting/routes/policy/:name/edit',
+      roles: evaluateAccess([AccessControlAction.AlertingNotificationsRead, ...PERMISSIONS_NOTIFICATION_POLICIES]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "PolicyPage" */ 'app/features/alerting/unified/components/notification-policies/PolicyPage'
+          )
+      ),
+    },
+    {
+      path: '/alerting/silences',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingInstanceRead,
+        AccessControlAction.AlertingInstancesExternalRead,
+        AccessControlAction.AlertingSilenceRead,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "SilencesTablePage" */ 'app/features/alerting/unified/components/silences/SilencesTable'
+          )
+      ),
+    },
+    {
+      path: '/alerting/silence/new',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingInstanceCreate,
+        AccessControlAction.AlertingInstancesExternalWrite,
+        AccessControlAction.AlertingSilenceCreate,
+        AccessControlAction.AlertingSilenceUpdate,
+      ]),
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "NewSilencePage" */ 'app/features/alerting/unified/NewSilencePage')
+      ),
+    },
+    {
+      path: '/alerting/silence/:id/edit',
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "ExistingSilenceEditorPage" */ 'app/features/alerting/unified/components/silences/SilencesEditor'
+          )
+      ),
+    },
+    {
+      path: '/alerting/silence/:id/view',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingInstanceRead,
+        AccessControlAction.AlertingInstancesExternalRead,
+        AccessControlAction.AlertingSilenceRead,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "SilenceViewPage" */ 'app/features/alerting/unified/components/silences/SilenceViewPage'
+          )
+      ),
+    },
+    {
+      path: '/alerting/notifications',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsRead,
+        AccessControlAction.AlertingNotificationsExternalRead,
+        ...PERMISSIONS_CONTACT_POINTS,
+        ...PERMISSIONS_TEMPLATES,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "ContactPoints" */ 'app/features/alerting/unified/components/contact-points/ContactPoints'
+          )
+      ),
+    },
+    {
+      path: '/alerting/notifications/receivers/new',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsRead,
+        AccessControlAction.AlertingNotificationsExternalRead,
+        ...PERMISSIONS_CONTACT_POINTS,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "NewReceiverView" */ 'app/features/alerting/unified/components/receivers/NewReceiverView'
+          )
+      ),
+    },
+    {
+      path: '/alerting/notifications/receivers/:name/edit',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsWrite,
+        AccessControlAction.AlertingNotificationsExternalWrite,
+        AccessControlAction.AlertingNotificationsRead,
+        AccessControlAction.AlertingNotificationsExternalRead,
+        // We check any contact point permission here because a user without edit permissions
+        // still has to be able to visit the "edit" page, because we don't have a separate view for edit vs view
+        // (we just disable the form instead)
+        ...PERMISSIONS_CONTACT_POINTS,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "EditContactPoint" */ 'app/features/alerting/unified/components/contact-points/EditContactPoint'
+          )
+      ),
+    },
+    {
+      // Standalone Templates page for V2 navigation (index route)
+      path: '/alerting/notifications/templates',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsRead,
+        AccessControlAction.AlertingNotificationsExternalRead,
+        ...PERMISSIONS_TEMPLATES,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "TemplatesPage" */ 'app/features/alerting/unified/components/contact-points/TemplatesPage'
+          )
+      ),
+    },
+    {
+      // Templates sub-routes (new, edit, duplicate)
+      path: '/alerting/notifications/templates/*',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsRead,
+        AccessControlAction.AlertingNotificationsExternalRead,
+        ...PERMISSIONS_TEMPLATES,
+      ]),
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "Templates" */ 'app/features/alerting/unified/Templates')
+      ),
+    },
+    {
+      path: '/alerting/notifications/global-config',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingNotificationsWrite,
+        AccessControlAction.AlertingNotificationsExternalWrite,
+      ]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "GlobalConfig" */ 'app/features/alerting/unified/components/contact-points/components/GlobalConfig'
+          )
+      ),
+    },
+    {
+      path: '/alerting/groups/',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingInstanceRead,
+        AccessControlAction.AlertingInstancesExternalRead,
+      ]),
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertGroups" */ 'app/features/alerting/unified/AlertGroups')
+      ),
+    },
+    {
+      path: '/alerting/history/',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleRead]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "HistoryPage" */ 'app/features/alerting/unified/components/rules/central-state-history/CentralAlertHistoryPage'
+          )
+      ),
+    },
+    {
+      path: '/alerting/notifications-history',
+      component: () => <Navigate replace to="/alerting/history?tab=notifications" />,
+    },
+    {
+      path: '/alerting/notifications-history/view/:uuid',
+      component: cfg.featureToggles.alertingNotificationHistoryDetail
+        ? importAlertingComponent(
+            () =>
+              import(
+                /* webpackChunkName: "NotificationDetailPage" */ 'app/features/alerting/unified/notifications/NotificationDetailPage'
+              )
+          )
+        : () => <Navigate replace to="/alerting" />,
+    },
+    {
+      path: '/alerting/recently-deleted/',
+      roles: () => ['Admin'],
+      component: shouldAllowRecoveringDeletedRules()
+        ? importAlertingComponent(
+            () =>
+              import(
+                /* webpackChunkName: "RecentlyDeleted" */ 'app/features/alerting/unified/components/rules/deleted-rules/DeletedRulesPage'
+              )
+          )
+        : () => <Navigate replace to="/alerting/list" />,
+    },
+    {
+      path: '/alerting/import-datasource-managed-rules',
+      roles: evaluateAccess([
+        AccessControlAction.AlertingRuleCreate,
+        AccessControlAction.AlertingProvisioningSetStatus,
+      ]),
+      component: config.featureToggles.alertingMigrationUI
+        ? importAlertingComponent(
+            () =>
+              import(
+                /* webpackChunkName: "AlertingImportFromDSRules"*/ 'app/features/alerting/unified/components/import-to-gma/ImportToGMARules'
+              )
+          )
+        : () => <Navigate replace to="/alerting/list" />,
+    },
+    {
+      path: '/alerting/import-to-gma',
+      roles: evaluateAccessAll([
+        AccessControlAction.AlertingRuleCreate,
+        AccessControlAction.AlertingProvisioningSetStatus,
+      ]),
+      component: config.featureToggles.alertingMigrationWizardUI
+        ? importAlertingComponent(
+            () =>
+              import(
+                /* webpackChunkName: "AlertingImportToGMA"*/ 'app/features/alerting/unified/components/import-to-gma/ImportToGMA'
+              )
+          )
+        : () => <Navigate replace to="/alerting/list" />,
+    },
+    {
+      path: '/alerting/new/:type?',
+      pageClass: 'page-alerting',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleCreate, AccessControlAction.AlertingRuleExternalWrite]),
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertingRuleForm"*/ 'app/features/alerting/unified/rule-editor/RuleEditor')
+      ),
+    },
+    {
+      path: '/alerting/:id/edit',
+      pageClass: 'page-alerting',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleUpdate, AccessControlAction.AlertingRuleExternalWrite]),
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertingRuleForm"*/ 'app/features/alerting/unified/rule-editor/RuleEditor')
+      ),
+    },
+    {
+      path: '/alerting/:id/modify-export',
+      pageClass: 'page-alerting',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleRead]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "AlertingRuleForm"*/ 'app/features/alerting/unified/components/export/GrafanaModifyExport'
+          )
+      ),
+    },
+    {
+      path: '/alerting/export-new-rule',
+      pageClass: 'page-alerting',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleRead]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "AlertingRuleForm"*/ 'app/features/alerting/unified/components/export/ExportNewGrafanaRule'
+          )
+      ),
+    },
+    {
+      path: '/alerting/:sourceName/:id/view',
+      pageClass: 'page-alerting',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleRead, AccessControlAction.AlertingRuleExternalRead]),
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertingRule"*/ 'app/features/alerting/unified/RuleViewer')
+      ),
+    },
+    {
+      path: '/alerting/:sourceName/:name/find',
+      pageClass: 'page-alerting',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleRead, AccessControlAction.AlertingRuleExternalRead]),
+      component: importAlertingComponent(
+        () =>
+          import(/* webpackChunkName: "AlertingRedirectToRule"*/ 'app/features/alerting/unified/RedirectToRuleViewer')
+      ),
+    },
+    {
+      path: '/alerting/:dataSourceUid/namespaces/:namespaceId/groups/:groupName/view',
+      pageClass: 'page-alerting',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleRead, AccessControlAction.AlertingRuleExternalRead]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "AlertingGroupDetails" */ 'app/features/alerting/unified/group-details/GroupDetailsPage'
+          )
+      ),
+    },
+    {
+      path: '/alerting/:dataSourceUid/namespaces/:namespaceId/groups/:groupName/edit',
+      pageClass: 'page-alerting',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleUpdate, AccessControlAction.AlertingRuleExternalWrite]),
+      component: importAlertingComponent(
+        () =>
+          import(
+            /* webpackChunkName: "AlertingGroupEdit" */ 'app/features/alerting/unified/group-details/GroupEditPage'
+          )
+      ),
+    },
+    {
+      // This route is for backward compatibility
+      // Previously we had a single admin page containing only the alertmanager settings
+      // We now have a separate route for the alertmanager settings and other settings can be added as extensions
+      path: '/alerting/admin',
+      roles: () => ['Admin'],
+      component: () => <Navigate replace to="/alerting/admin/alertmanager" />,
+    },
+    {
+      path: '/alerting/admin/alertmanager',
+      roles: () => ['Admin'],
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertingSettings" */ 'app/features/alerting/unified/Settings')
+      ),
+    },
+    {
+      path: '/alerting/admin/import',
+      roles: () => ['Admin'],
+      component: cfg.featureToggles.alertingMigrationWizardUI
+        ? importAlertingComponent(
+            () =>
+              import(
+                /* webpackChunkName: "AlertingImportSettings" */ 'app/features/alerting/unified/settings/import/ImportSettingsPage'
+              )
+          )
+        : () => <Navigate replace to="/alerting/admin/alertmanager" />,
+    },
+  ];
+
+  if (cfg.featureToggles.alertingTriage) {
+    routes.push({
+      path: '/alerting/alerts',
+      roles: evaluateAccess([AccessControlAction.AlertingRuleRead, AccessControlAction.AlertingRuleExternalRead]),
+      component: importAlertingComponent(
+        () => import(/* webpackChunkName: "AlertingTriage" */ 'app/features/alerting/unified/triage/Triage')
+      ),
+    });
   }
 
-  return alertingRoutes.map((route) => ({
-    ...route,
-    component: SafeDynamicImport(
-      () => import(/* webpackChunkName: "Alerting feature toggle page"*/ 'app/features/alerting/FeatureTogglePage')
-    ),
-  }));
+  return routes;
+}
+
+// this function will always load the "feature disabled" component for all alerting routes
+function importAlertingComponent(loader: () => Promise<unknown>): GrafanaRouteComponent {
+  const featureDisabledPageLoader = () =>
+    import(/* webpackChunkName: "AlertingDisabled" */ 'app/features/alerting/unified/AlertingNotEnabled');
+  return SafeDynamicImport(config.unifiedAlertingEnabled ? loader : featureDisabledPageLoader);
 }

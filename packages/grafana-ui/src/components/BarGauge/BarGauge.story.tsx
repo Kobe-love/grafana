@@ -1,16 +1,16 @@
-import React from 'react';
-import { Story, Meta } from '@storybook/react';
-import { BarGauge, BarGaugeDisplayMode } from '@grafana/ui';
-import { VizOrientation, ThresholdsMode, Field, FieldType, getDisplayProcessor } from '@grafana/data';
-import { Props } from './BarGauge';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
-import mdx from './BarGauge.mdx';
-import { useTheme2 } from '../../themes';
+import { type StoryFn, type Meta } from '@storybook/react-webpack5';
 
-export default {
-  title: 'Visualizations/BarGauge',
+import { VizOrientation, ThresholdsMode, type Field, FieldType, getDisplayProcessor } from '@grafana/data';
+import { BarGaugeDisplayMode } from '@grafana/schema';
+
+import { useTheme2 } from '../../themes/ThemeContext';
+
+import { BarGauge, type Props } from './BarGauge';
+import mdx from './BarGauge.mdx';
+
+const meta: Meta = {
+  title: 'Plugins/BarGauge',
   component: BarGauge,
-  decorators: [withCenteredStory],
   parameters: {
     docs: {
       page: mdx,
@@ -55,9 +55,13 @@ export default {
     threshold1Color: { control: 'color' },
     threshold2Color: { control: 'color' },
   },
-} as Meta;
+};
 
 interface StoryProps extends Partial<Props> {
+  height: number;
+  width: number;
+  orientation: VizOrientation;
+  displayMode: BarGaugeDisplayMode;
   numeric: number;
   title: string;
   minValue: number;
@@ -88,7 +92,7 @@ const AddBarGaugeStory = (storyProps: StoryProps) => {
   };
   field.display = getDisplayProcessor({ field, theme });
 
-  const props: Partial<Props> = {
+  const props = {
     theme,
     lcdCellWidth: storyProps.lcdCellWidth,
     itemSpacing: storyProps.itemSpacing,
@@ -109,16 +113,18 @@ const AddBarGaugeStory = (storyProps: StoryProps) => {
   return <BarGauge {...props} />;
 };
 
-export const barGaugeVertical: Story<StoryProps> = AddBarGaugeStory.bind({});
+export const barGaugeVertical: StoryFn<StoryProps> = AddBarGaugeStory.bind({});
 barGaugeVertical.args = {
   height: 500,
   width: 100,
   orientation: VizOrientation.Vertical,
 };
 
-export const barGaugeHorizontal: Story<StoryProps> = AddBarGaugeStory.bind({});
+export const barGaugeHorizontal: StoryFn<StoryProps> = AddBarGaugeStory.bind({});
 barGaugeHorizontal.args = {
   height: 100,
   width: 500,
   orientation: VizOrientation.Horizontal,
 };
+
+export default meta;

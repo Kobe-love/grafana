@@ -1,37 +1,57 @@
-import React, { FC, useState, useCallback } from 'react';
-import { ConfirmModal, Button, LinkButton } from '@grafana/ui';
-import { getBackendSrv, locationService } from '@grafana/runtime';
-import { Snapshot } from '../types';
-import useAsync from 'react-use/lib/useAsync';
+import { useCallback, useEffect, useState } from 'react';
+import { useAsyncFn } from 'react-use';
 
-export function getSnapshots() {
-  return getBackendSrv()
-    .get('/api/dashboard/snapshots')
-    .then((result: Snapshot[]) => {
-      return result.map((snapshot) => ({
-        ...snapshot,
-        url: `/dashboard/snapshot/${snapshot.key}`,
-      }));
-    });
+import { Trans, t } from '@grafana/i18n';
+import { config } from '@grafana/runtime';
+import { Alert, Box, Button, ConfirmModal, EmptyState, ScrollContainer, TextLink } from '@grafana/ui';
+import {
+  getDashboardSnapshotSrv,
+  type Snapshot,
+  type SnapshotListOptions,
+  type SnapshotListPage,
+} from 'app/features/dashboard/services/SnapshotSrv';
+
+import { SnapshotListTableRow } from './SnapshotListTableRow';
+
+export async function getSnapshots(opts?: SnapshotListOptions): Promise<SnapshotListPage> {
+  const page = await getDashboardSnapshotSrv().getSnapshots(opts);
+  return {
+    items: page.items.map((snapshot) => ({
+      ...snapshot,
+      url: `${config.appUrl}dashboard/snapshot/${snapshot.key}`,
+    })),
+    continueToken: page.continueToken,
+  };
 }
-export const SnapshotListTable: FC = () => {
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [removeSnapshot, setRemoveSnapshot] = useState<Snapshot | undefined>();
-  const currentPath = locationService.getLocation().pathname;
-  const fullUrl = window.location.href;
-  const baseUrl = fullUrl.substr(0, fullUrl.indexOf(currentPath));
 
-  useAsync(async () => {
-    const response = await getSnapshots();
-    setSnapshots(response);
-  }, [setSnapshots]);
+export const SnapshotListTable = () => {
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [continueToken, setContinueToken] = useState<string | undefined>();
+  const [removeSnapshot, setRemoveSnapshot] = useState<Snapshot | undefined>();
+
+  const [{ loading, error }, loadSnapshots] = useAsyncFn(
+    async (token?: string) => {
+      const page = await getSnapshots(token ? { continue: token } : undefined);
+      setSnapshots((prev) => (token ? [...prev, ...page.items] : page.items));
+      setContinueToken(page.continueToken);
+    },
+    [],
+    { loading: true }
+  );
+
+  useEffect(() => {
+    loadSnapshots();
+  }, [loadSnapshots]);
+
+  const isInitialLoading = loading && snapshots.length === 0;
+  const isLoadingMore = loading && snapshots.length > 0;
 
   const doRemoveSnapshot = useCallback(
     async (snapshot: Snapshot) => {
       const filteredSnapshots = snapshots.filter((ss) => ss.key !== snapshot.key);
       setSnapshots(filteredSnapshots);
-      await getBackendSrv()
-        .delete(`/api/snapshots/${snapshot.key}`)
+      await getDashboardSnapshotSrv()
+        .deleteSnapshot(snapshot.key)
         .catch(() => {
           setSnapshots(snapshots);
         });
@@ -39,16 +59,55 @@ export const SnapshotListTable: FC = () => {
     [snapshots]
   );
 
+  if (error && snapshots.length === 0 && !continueToken) {
+    return (
+      <Alert
+        severity="error"
+        title={t('snapshot.load-error.title', 'Failed to load snapshots')}
+        action={
+          <Button variant="secondary" onClick={() => loadSnapshots()}>
+            <Trans i18nKey="snapshot.load-error.retry">Retry</Trans>
+          </Button>
+        }
+      >
+        {error.message}
+      </Alert>
+    );
+  }
+
+  if (!isInitialLoading && snapshots.length === 0 && !continueToken) {
+    return (
+      <EmptyState
+        variant="call-to-action"
+        message={t('snapshot.empty-state.message', "You haven't created any snapshots yet")}
+      >
+        <Trans i18nKey="snapshot.empty-state.more-info">
+          You can create a snapshot of any dashboard through the <b>Share</b> modal.{' '}
+          <TextLink
+            external
+            href="https://grafana.com/docs/grafana/latest/visualizations/dashboards/share-dashboards-panels/#share-a-snapshot"
+          >
+            Learn more
+          </TextLink>
+        </Trans>
+      </EmptyState>
+    );
+  }
+
   return (
-    <div>
+    <ScrollContainer overflowY="visible" overflowX="auto" width="100%">
       <table className="filter-table">
         <thead>
           <tr>
             <th>
-              <strong>Name</strong>
+              <strong>
+                <Trans i18nKey="snapshot.name-column-header">Name</Trans>
+              </strong>
             </th>
             <th>
-              <strong>Snapshot url</strong>
+              <strong>
+                <Trans i18nKey="snapshot.url-column-header">Snapshot url</Trans>
+              </strong>
             </th>
             <th style={{ width: '70px' }}></th>
             <th style={{ width: '30px' }}></th>
@@ -56,44 +115,62 @@ export const SnapshotListTable: FC = () => {
           </tr>
         </thead>
         <tbody>
-          {snapshots.map((snapshot) => {
-            const url = snapshot.externalUrl || snapshot.url;
-            const fullUrl = snapshot.externalUrl || `${baseUrl}${snapshot.url}`;
-            return (
-              <tr key={snapshot.key}>
-                <td>
-                  <a href={url}>{snapshot.name}</a>
-                </td>
-                <td>
-                  <a href={url}>{fullUrl}</a>
-                </td>
-                <td>{snapshot.external && <span className="query-keyword">External</span>}</td>
-                <td className="text-center">
-                  <LinkButton href={url} variant="secondary" size="sm" icon="eye">
-                    View
-                  </LinkButton>
-                </td>
-                <td className="text-right">
-                  <Button variant="destructive" size="sm" icon="times" onClick={() => setRemoveSnapshot(snapshot)} />
-                </td>
-              </tr>
-            );
-          })}
+          {isInitialLoading ? (
+            <>
+              <SnapshotListTableRow.Skeleton />
+              <SnapshotListTableRow.Skeleton />
+              <SnapshotListTableRow.Skeleton />
+            </>
+          ) : (
+            snapshots.map((snapshot) => (
+              <SnapshotListTableRow
+                key={snapshot.key}
+                snapshot={snapshot}
+                onRemove={() => setRemoveSnapshot(snapshot)}
+              />
+            ))
+          )}
         </tbody>
       </table>
 
+      {!isInitialLoading && continueToken && (
+        <Box paddingTop={2}>
+          <LoadMoreButton onClick={() => loadSnapshots(continueToken)} loading={isLoadingMore} />
+        </Box>
+      )}
+
       <ConfirmModal
         isOpen={!!removeSnapshot}
-        icon="trash-alt"
-        title="Delete"
-        body={`Are you sure you want to delete '${removeSnapshot?.name}'?`}
-        confirmText="Delete"
+        title={t('manage-dashboards.snapshot-list-table.title-delete', 'Delete')}
+        body={t(
+          'manage-dashboards.snapshot-list-table.body-delete',
+          "Are you sure you want to delete '{{snapshotToRemove}}'?",
+          { snapshotToRemove: removeSnapshot?.name }
+        )}
+        confirmText={t('manage-dashboards.snapshot-list-table.confirmText-delete', 'Delete')}
         onDismiss={() => setRemoveSnapshot(undefined)}
         onConfirm={() => {
           doRemoveSnapshot(removeSnapshot!);
           setRemoveSnapshot(undefined);
         }}
       />
-    </div>
+    </ScrollContainer>
   );
 };
+
+interface LoadMoreButtonProps {
+  onClick: () => void;
+  loading: boolean;
+}
+
+function LoadMoreButton({ onClick, loading }: LoadMoreButtonProps) {
+  return (
+    <Button type="button" variant="secondary" onClick={onClick} disabled={loading}>
+      {loading ? (
+        <Trans i18nKey="snapshot.load-more.loading">Loading more snapshots…</Trans>
+      ) : (
+        <Trans i18nKey="snapshot.load-more.label">Show more snapshots</Trans>
+      )}
+    </Button>
+  );
+}

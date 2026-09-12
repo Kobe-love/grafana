@@ -1,47 +1,39 @@
-import React, { FC, useState } from 'react';
-import { connect, MapStateToProps } from 'react-redux';
-import { NavModel } from '@grafana/data';
-import Page from 'app/core/components/Page/Page';
-import { StoreState } from 'app/types';
-import { GrafanaRouteComponentProps } from '../../core/navigation/types';
-import { getNavModel } from 'app/core/selectors/navModel';
-import { useDebounce } from 'react-use';
-import { PlaylistDTO } from './types';
-import { ConfirmModal } from '@grafana/ui';
+import { useMemo, useState } from 'react';
+
+import { Trans, t } from '@grafana/i18n';
+import { ConfirmModal, EmptyState, LinkButton, TextLink } from '@grafana/ui';
+import { Page } from 'app/core/components/Page/Page';
 import PageActionBar from 'app/core/components/PageActionBar/PageActionBar';
-import EmptyListCTA from '../../core/components/EmptyListCTA/EmptyListCTA';
-import { deletePlaylist, getAllPlaylist } from './api';
-import { StartModal } from './StartModal';
+import { useUrlParams } from 'app/core/navigation/hooks';
+import { PreviewBannerViewPR } from 'app/features/provisioning/components/Shared/PreviewBannerViewPR';
+import { SaveProvisionedResourceDrawer } from 'app/features/provisioning/components/Shared/SaveProvisionedResourceDrawer';
+import { usePullRequestParam } from 'app/features/provisioning/hooks/usePullRequestParam';
+import { isManagedByRepository } from 'app/features/provisioning/utils/managedResource';
+
+import { type Playlist, useDeletePlaylistMutation, useListPlaylistQuery } from '../../api/clients/playlist/v1';
+
 import { PlaylistPageList } from './PlaylistPageList';
-import { EmptyQueryListBanner } from './EmptyQueryListBanner';
+import { StartModal } from './StartModal';
+import { searchPlaylists, useCanWritePlaylists } from './utils';
 
-interface ConnectedProps {
-  navModel: NavModel;
-}
-export interface PlaylistPageProps extends ConnectedProps, GrafanaRouteComponentProps {}
-
-export const PlaylistPage: FC<PlaylistPageProps> = ({ navModel }) => {
+export const PlaylistPage = () => {
+  const canWrite = useCanWritePlaylists();
+  const { data, isLoading } = useListPlaylistQuery({});
+  const [deletePlaylist] = useDeletePlaylistMutation();
+  // Set after a repository-managed playlist is committed to a new branch; surfaces the PR banner.
+  const { newPrURL, repoURL } = usePullRequestParam();
+  const [urlParams] = useUrlParams();
+  const branchInfo = {
+    targetBranch: urlParams.get('ref') || undefined,
+    configuredBranch: urlParams.get('repo_branch') || undefined,
+    repoBaseUrl: repoURL,
+  };
   const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchQuery);
-  const [hasFetched, setHasFetched] = useState(false);
-  const [startPlaylist, setStartPlaylist] = useState<PlaylistDTO | undefined>();
-  const [playlistToDelete, setPlaylistToDelete] = useState<PlaylistDTO | undefined>();
-  const [forcePlaylistsFetch, setForcePlaylistsFetch] = useState(0);
+  const allPlaylists = useMemo(() => data?.items ?? [], [data?.items]);
+  const playlists = useMemo(() => searchPlaylists(allPlaylists, searchQuery), [searchQuery, allPlaylists]);
 
-  const [playlists, setPlaylists] = useState<PlaylistDTO[]>([]);
-
-  useDebounce(
-    async () => {
-      const playlists = await getAllPlaylist(searchQuery);
-      if (!hasFetched) {
-        setHasFetched(true);
-      }
-      setPlaylists(playlists);
-      setDebouncedSearchQuery(searchQuery);
-    },
-    350,
-    [forcePlaylistsFetch, searchQuery]
-  );
+  const [startPlaylist, setStartPlaylist] = useState<Playlist | undefined>();
+  const [playlistToDelete, setPlaylistToDelete] = useState<Playlist | undefined>();
 
   const hasPlaylists = playlists && playlists.length > 0;
   const onDismissDelete = () => setPlaylistToDelete(undefined);
@@ -49,66 +41,89 @@ export const PlaylistPage: FC<PlaylistPageProps> = ({ navModel }) => {
     if (!playlistToDelete) {
       return;
     }
-    deletePlaylist(playlistToDelete.id).finally(() => {
-      setForcePlaylistsFetch(forcePlaylistsFetch + 1);
+    deletePlaylist({
+      name: playlistToDelete.metadata?.name ?? '',
+    }).finally(() => {
       setPlaylistToDelete(undefined);
     });
   };
 
-  const emptyListBanner = (
-    <EmptyListCTA
-      title="There are no playlists created yet"
-      buttonIcon="plus"
-      buttonLink="playlists/new"
-      buttonTitle="Create Playlist"
-      proTip="You can use playlists to cycle dashboards on TVs without user control"
-      proTipLink="http://docs.grafana.org/reference/playlist/"
-      proTipLinkTitle="Learn more"
-      proTipTarget="_blank"
-    />
-  );
-
-  const showSearch = playlists.length > 0 || searchQuery.length > 0 || debouncedSearchQuery.length > 0;
+  const showSearch = isLoading || playlists.length > 0 || searchQuery.length > 0;
 
   return (
-    <Page navModel={navModel}>
-      <Page.Contents isLoading={!hasFetched}>
-        {showSearch && (
-          <PageActionBar
-            searchQuery={searchQuery}
-            linkButton={{ title: 'New playlist', href: '/playlists/new' }}
-            setSearchQuery={setSearchQuery}
-          />
-        )}
+    <Page
+      actions={
+        canWrite && showSearch ? (
+          <LinkButton href="/playlists/new">
+            <Trans i18nKey="playlist-page.create-button.title">New playlist</Trans>
+          </LinkButton>
+        ) : undefined
+      }
+      navId="dashboards/playlists"
+    >
+      <Page.Contents>
+        {newPrURL && <PreviewBannerViewPR prURL={newPrURL} isNewPr repoUrl={repoURL} branchInfo={branchInfo} />}
 
-        {!hasPlaylists && searchQuery ? (
-          <EmptyQueryListBanner />
+        {showSearch && <PageActionBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} />}
+
+        {isLoading ? (
+          <PlaylistPageList.Skeleton />
         ) : (
-          <PlaylistPageList
-            playlists={playlists}
-            setStartPlaylist={setStartPlaylist}
-            setPlaylistToDelete={setPlaylistToDelete}
-          />
+          <>
+            {!hasPlaylists && searchQuery ? (
+              <EmptyState variant="not-found" message={t('playlists.empty-state.message', 'No playlists found')} />
+            ) : (
+              <PlaylistPageList
+                playlists={playlists}
+                setStartPlaylist={setStartPlaylist}
+                setPlaylistToDelete={setPlaylistToDelete}
+              />
+            )}
+            {!showSearch && (
+              <EmptyState
+                variant="call-to-action"
+                button={
+                  <LinkButton disabled={!canWrite} href="playlists/new" icon="plus" size="lg">
+                    <Trans i18nKey="playlist-page.empty.button">Create playlist</Trans>
+                  </LinkButton>
+                }
+                message={t('playlist-page.empty.title', 'There are no playlists created yet')}
+              >
+                <Trans i18nKey="playlist-page.empty.pro-tip">
+                  You can use playlists to cycle dashboards on TVs without user control.{' '}
+                  <TextLink external href="https://docs.grafana.org/reference/playlist/">
+                    Learn more
+                  </TextLink>
+                </Trans>
+              </EmptyState>
+            )}
+            {playlistToDelete &&
+              (isManagedByRepository(playlistToDelete) ? (
+                // Repository-managed playlists are removed by committing the deletion to git.
+                <SaveProvisionedResourceDrawer
+                  resource={playlistToDelete}
+                  title={playlistToDelete.spec?.title ?? ''}
+                  action="delete"
+                  onDismiss={onDismissDelete}
+                />
+              ) : (
+                <ConfirmModal
+                  title={playlistToDelete.spec?.title ?? ''}
+                  confirmText={t('playlist-page.delete-modal.confirm-text', 'Delete')}
+                  body={t('playlist-page.delete-modal.body', 'Are you sure you want to delete {{name}} playlist?', {
+                    name: playlistToDelete.spec?.title,
+                  })}
+                  onConfirm={onDeletePlaylist}
+                  isOpen={Boolean(playlistToDelete)}
+                  onDismiss={onDismissDelete}
+                />
+              ))}
+            {startPlaylist && <StartModal playlist={startPlaylist} onDismiss={() => setStartPlaylist(undefined)} />}
+          </>
         )}
-        {!showSearch && emptyListBanner}
-        {playlistToDelete && (
-          <ConfirmModal
-            title={playlistToDelete.name}
-            confirmText="Delete"
-            body={`Are you sure you want to delete '${playlistToDelete.name}' playlist?`}
-            onConfirm={onDeletePlaylist}
-            isOpen={Boolean(playlistToDelete)}
-            onDismiss={onDismissDelete}
-          />
-        )}
-        {startPlaylist && <StartModal playlist={startPlaylist} onDismiss={() => setStartPlaylist(undefined)} />}
       </Page.Contents>
     </Page>
   );
 };
 
-const mapStateToProps: MapStateToProps<ConnectedProps, {}, StoreState> = (state: StoreState) => ({
-  navModel: getNavModel(state.navIndex, 'playlists'),
-});
-
-export default connect(mapStateToProps)(PlaylistPage);
+export default PlaylistPage;

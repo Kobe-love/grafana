@@ -1,66 +1,40 @@
-import { PanelModel } from '../dashboard/state';
-import { Dispatch } from 'react';
-import { AnyAction } from '@reduxjs/toolkit';
+import { type AnyAction } from '@reduxjs/toolkit';
+import { type Dispatch } from 'react';
+
+import { type LibraryPanel, type LibraryElementDTOMetaUser } from '@grafana/schema';
+
+import { type PanelModel } from '../dashboard/state/PanelModel';
 
 export enum LibraryElementKind {
   Panel = 1,
-  Variable,
 }
 
-export enum LibraryElementConnectionKind {
+enum LibraryElementConnectionKind {
   Dashboard = 1,
 }
+
+/** @deprecated use LibraryPanel */
+export interface LibraryElementDTO extends LibraryPanel {}
 
 export interface LibraryElementConnectionDTO {
   id: number;
   kind: LibraryElementConnectionKind;
   elementId: number;
   connectionId: number;
+  connectionUid: string;
   created: string;
   createdBy: LibraryElementDTOMetaUser;
 }
 
 export interface LibraryElementsSearchResult {
   totalCount: number;
-  elements: LibraryElementDTO[];
+  elements: LibraryPanel[];
   perPage: number;
   page: number;
 }
 
-export interface LibraryElementDTO {
-  id: number;
-  orgId: number;
-  folderId: number;
-  uid: string;
-  name: string;
-  kind: LibraryElementKind;
-  type: string;
-  description: string;
-  model: any;
-  version: number;
-  meta: LibraryElementDTOMeta;
-}
-
-export interface LibraryElementDTOMeta {
-  folderName: string;
-  folderUid: string;
-  connectedDashboards: number;
-  created: string;
-  updated: string;
-  createdBy: LibraryElementDTOMetaUser;
-  updatedBy: LibraryElementDTOMetaUser;
-}
-
-export interface LibraryElementDTOMetaUser {
-  id: number;
-  name: string;
-  avatarUrl: string;
-}
-
-export type PanelModelLibraryPanel = Pick<LibraryElementDTO, 'uid' | 'name' | 'meta' | 'version'>;
-
 export interface PanelModelWithLibraryPanel extends PanelModel {
-  libraryPanel: PanelModelLibraryPanel;
+  libraryPanel: LibraryPanel;
 }
 
 export type DispatchResult = (dispatch: Dispatch<AnyAction>) => void;

@@ -1,86 +1,115 @@
-import React from 'react';
-import {
-  DataFrame,
-  FALLBACK_COLOR,
-  formattedValueToString,
-  getDisplayProcessor,
-  getFieldDisplayName,
-  getValueFormat,
-  TimeZone,
-} from '@grafana/data';
-import { SeriesTableRow, useTheme2 } from '@grafana/ui';
-import { findNextStateIndex } from './utils';
+import { type ReactNode } from 'react';
 
-interface StateTimelineTooltipProps {
-  data: DataFrame[];
-  alignedData: DataFrame;
-  seriesIdx: number;
-  datapointIdx: number;
-  timeZone: TimeZone;
+import { FieldType, type TimeRange, usePluginContext } from '@grafana/data';
+import { SortOrder } from '@grafana/schema';
+import {
+  TooltipDisplayMode,
+  type VizTooltipItem,
+  VizTooltipContent,
+  VizTooltipFooter,
+  VizTooltipHeader,
+  VizTooltipWrapper,
+  getFieldDisplayItems,
+  isTooltipScrollable,
+} from '@grafana/ui';
+import { findNextStateIndex, fmtDuration } from 'app/core/components/TimelineChart/utils';
+
+import { getFieldActions } from '../status-history/utils';
+import { type TimeSeriesTooltipProps } from '../timeseries/TimeSeriesTooltip';
+
+interface StateTimelineTooltipProps extends TimeSeriesTooltipProps {
+  timeRange: TimeRange;
+  withDuration: boolean;
 }
 
-export const StateTimelineTooltip: React.FC<StateTimelineTooltipProps> = ({
-  data,
-  alignedData,
+export const StateTimelineTooltip = ({
+  series,
+  dataIdxs,
   seriesIdx,
-  datapointIdx,
-  timeZone,
-}) => {
-  const theme = useTheme2();
+  mode = TooltipDisplayMode.Single,
+  sortOrder = SortOrder.None,
+  isPinned,
+  annotate,
+  timeRange,
+  withDuration,
+  maxHeight,
+  replaceVariables,
+  dataLinks,
+  filterByGroupedLabels,
+}: StateTimelineTooltipProps) => {
+  const pluginContext = usePluginContext();
+  const xField = series.fields[0];
 
-  const xField = alignedData.fields[0];
-  const xFieldFmt = xField.display || getDisplayProcessor({ field: xField, timeZone, theme });
+  const dataIdx = seriesIdx != null ? dataIdxs[seriesIdx] : dataIdxs.find((idx) => idx != null);
 
-  const field = alignedData.fields[seriesIdx!];
+  const xVal = xField.display!(xField.values[dataIdx!]).text;
 
-  const dataFrameFieldIndex = field.state?.origin;
-  const fieldFmt = field.display || getDisplayProcessor({ field, timeZone, theme });
-  const value = field.values.get(datapointIdx!);
-  const display = fieldFmt(value);
-  const fieldDisplayName = dataFrameFieldIndex
-    ? getFieldDisplayName(
-        data[dataFrameFieldIndex.frameIndex].fields[dataFrameFieldIndex.fieldIndex],
-        data[dataFrameFieldIndex.frameIndex],
-        data
-      )
-    : null;
+  mode = isPinned ? TooltipDisplayMode.Single : mode;
 
-  const nextStateIdx = findNextStateIndex(field, datapointIdx!);
-  let nextStateTs;
-  if (nextStateIdx) {
-    nextStateTs = xField.values.get(nextStateIdx!);
+  const contentItems = getFieldDisplayItems(series.fields, xField, dataIdxs, seriesIdx, mode, sortOrder);
+  let endTime = null;
+
+  // append duration in single mode
+  if (withDuration && mode === TooltipDisplayMode.Single) {
+    const field = series.fields[seriesIdx!];
+    const nextStateIdx = findNextStateIndex(field, dataIdx!);
+    let nextStateTs;
+    if (nextStateIdx != null) {
+      nextStateTs = xField.values[nextStateIdx];
+    }
+
+    const stateTs = xField.values[dataIdx!];
+    let duration: string;
+
+    if (nextStateTs) {
+      duration = nextStateTs && fmtDuration(nextStateTs - stateTs);
+      endTime = nextStateTs;
+    } else {
+      const to = timeRange.to.valueOf();
+      duration = fmtDuration(to - stateTs);
+      endTime = to;
+    }
+
+    contentItems.push({ label: 'Duration', value: duration });
   }
 
-  const stateTs = xField.values.get(datapointIdx!);
+  let footer: ReactNode;
 
-  let toFragment = null;
-  let durationFragment = null;
+  if (seriesIdx != null) {
+    const field = series.fields[seriesIdx];
+    const hasOneClickLink = dataLinks.some((dataLink) => dataLink.oneClick === true);
 
-  if (nextStateTs) {
-    const duration = nextStateTs && formattedValueToString(getValueFormat('dtdurationms')(nextStateTs - stateTs, 0));
-    durationFragment = (
-      <>
-        <br />
-        <strong>Duration:</strong> {duration}
-      </>
-    );
-    toFragment = (
-      <>
-        {' to'} <strong>{xFieldFmt(xField.values.get(nextStateIdx!)).text}</strong>
-      </>
-    );
+    if (isPinned || hasOneClickLink) {
+      const visualizationType = pluginContext?.meta?.id ?? 'state-timeline';
+      const dataIdx = dataIdxs[seriesIdx]!;
+      const actions = getFieldActions(series, field, replaceVariables!, dataIdx, visualizationType);
+
+      footer = (
+        <VizTooltipFooter
+          dataLinks={dataLinks}
+          actions={actions}
+          annotate={annotate}
+          filterByGroupedLabels={filterByGroupedLabels}
+        />
+      );
+    }
   }
+
+  const headerItem: VizTooltipItem = {
+    label: xField.type === FieldType.time ? '' : (xField.state?.displayName ?? xField.name),
+    value: endTime ? xVal + ' - \n' + xField.display!(endTime).text : xVal,
+  };
 
   return (
-    <div style={{ fontSize: theme.typography.bodySmall.fontSize }}>
-      {fieldDisplayName}
-      <br />
-      <SeriesTableRow label={display.text} color={display.color || FALLBACK_COLOR} isActive />
-      From <strong>{xFieldFmt(xField.values.get(datapointIdx!)).text}</strong>
-      {toFragment}
-      {durationFragment}
-    </div>
+    <VizTooltipWrapper>
+      <VizTooltipHeader item={headerItem} isPinned={isPinned} />
+      <VizTooltipContent
+        items={contentItems}
+        isPinned={isPinned}
+        scrollable={isTooltipScrollable({ mode, maxHeight })}
+        maxHeight={maxHeight}
+      />
+      {footer}
+    </VizTooltipWrapper>
   );
 };
-
-StateTimelineTooltip.displayName = 'StateTimelineTooltip';

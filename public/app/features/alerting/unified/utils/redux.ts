@@ -1,9 +1,13 @@
-import { isArray } from 'angular';
-import { AsyncThunk, createSlice, Draft, isAsyncThunkAction, PayloadAction, SerializedError } from '@reduxjs/toolkit';
-import { FetchError } from '@grafana/runtime';
-import { AppEvents } from '@grafana/data';
+import { type Draft, type PayloadAction, type SerializedError, createSlice } from '@reduxjs/toolkit';
 
-import { appEvents } from 'app/core/core';
+import { AppEvents } from '@grafana/data';
+import { type FetchError, isFetchError } from '@grafana/runtime';
+import { getLogger } from '@grafana/runtime/unstable';
+import { appEvents } from 'app/core/app_events';
+
+function isErrorLike(error: unknown): error is Error {
+  return Boolean(error && typeof error === 'object' && 'message' in error);
+}
 
 export interface AsyncRequestState<T> {
   result?: T;
@@ -27,12 +31,20 @@ export type AsyncRequestMapSlice<T> = Record<string, AsyncRequestState<T>>;
 
 export type AsyncRequestAction<T> = PayloadAction<Draft<T>, string, any, any>;
 
-function requestStateReducer<T, ThunkArg = void, ThunkApiConfig = {}>(
-  asyncThunk: AsyncThunk<T, ThunkArg, ThunkApiConfig>,
+const asyncActionStatuses = ['pending', 'fulfilled', 'rejected'] as const;
+
+function getAsyncActionStatus(typePrefix: string, action: { type: string }) {
+  return asyncActionStatuses.find((status) => action.type === `${typePrefix}/${status}`);
+}
+
+function requestStateReducer<T>(
+  typePrefix: string,
   state: Draft<AsyncRequestState<T>> = initialAsyncRequestState,
   action: AsyncRequestAction<T>
 ): Draft<AsyncRequestState<T>> {
-  if (asyncThunk.pending.match(action)) {
+  const status = getAsyncActionStatus(typePrefix, action);
+
+  if (status === 'pending') {
     return {
       result: state.result,
       loading: true,
@@ -40,7 +52,7 @@ function requestStateReducer<T, ThunkArg = void, ThunkApiConfig = {}>(
       dispatched: true,
       requestId: action.meta.requestId,
     };
-  } else if (asyncThunk.fulfilled.match(action)) {
+  } else if (status === 'fulfilled') {
     if (state.requestId === undefined || state.requestId === action.meta.requestId) {
       return {
         ...state,
@@ -49,7 +61,7 @@ function requestStateReducer<T, ThunkArg = void, ThunkApiConfig = {}>(
         error: undefined,
       };
     }
-  } else if (asyncThunk.rejected.match(action)) {
+  } else if (status === 'rejected') {
     if (state.requestId === action.meta.requestId) {
       return {
         ...state,
@@ -62,20 +74,17 @@ function requestStateReducer<T, ThunkArg = void, ThunkApiConfig = {}>(
 }
 
 /*
- * createAsyncSlice creates a slice based on a given async action, exposing it's state.
+ * createAsyncSlice creates a slice based on a given async action, exposing its state.
  * takes care to only use state of the latest invocation of the action if there are several in flight.
  */
-export function createAsyncSlice<T, ThunkArg = void, ThunkApiConfig = {}>(
-  name: string,
-  asyncThunk: AsyncThunk<T, ThunkArg, ThunkApiConfig>
-) {
+export function createAsyncSlice<T>(name: string, typePrefix: string) {
   return createSlice({
     name,
     initialState: initialAsyncRequestState as AsyncRequestState<T>,
     reducers: {},
     extraReducers: (builder) =>
       builder.addDefaultCase((state, action) =>
-        requestStateReducer(asyncThunk, state, (action as unknown) as AsyncRequestAction<T>)
+        requestStateReducer(typePrefix, state, action as unknown as AsyncRequestAction<T>)
       ),
   });
 }
@@ -85,9 +94,9 @@ export function createAsyncSlice<T, ThunkArg = void, ThunkApiConfig = {}>(
  * separate requests are uniquely indentified by result of provided getEntityId function
  * takes care to only use state of the latest invocation of the action if there are several in flight.
  */
-export function createAsyncMapSlice<T, ThunkArg = void, ThunkApiConfig = {}>(
+export function createAsyncMapSlice<T, ThunkArg>(
   name: string,
-  asyncThunk: AsyncThunk<T, ThunkArg, ThunkApiConfig>,
+  typePrefix: string,
   getEntityId: (arg: ThunkArg) => string
 ) {
   return createSlice({
@@ -96,12 +105,12 @@ export function createAsyncMapSlice<T, ThunkArg = void, ThunkApiConfig = {}>(
     reducers: {},
     extraReducers: (builder) =>
       builder.addDefaultCase((state, action) => {
-        if (isAsyncThunkAction(asyncThunk)(action)) {
-          const asyncAction = (action as unknown) as AsyncRequestAction<T>;
+        if (getAsyncActionStatus(typePrefix, action)) {
+          const asyncAction = action as unknown as AsyncRequestAction<T>;
           const entityId = getEntityId(asyncAction.meta.arg);
           return {
             ...state,
-            [entityId]: requestStateReducer(asyncThunk, state[entityId], asyncAction),
+            [entityId]: requestStateReducer(typePrefix, state[entityId], asyncAction),
           };
         }
         return state;
@@ -138,11 +147,10 @@ export function withAppEvents<T>(
     });
 }
 
-export function isFetchError(e: unknown): e is FetchError {
-  return typeof e === 'object' && e !== null && 'status' in e && 'data' in e;
-}
-
+export const UNKNOW_ERROR = 'Unknown Error';
 export function messageFromError(e: Error | FetchError | SerializedError): string {
+  const logger = getLogger('features.alerting');
+
   if (isFetchError(e)) {
     if (e.data?.message) {
       let msg = e.data?.message;
@@ -150,7 +158,7 @@ export function messageFromError(e: Error | FetchError | SerializedError): strin
         msg += `; ${e.data.error}`;
       }
       return msg;
-    } else if (isArray(e.data) && e.data.length && e.data[0]?.message) {
+    } else if (Array.isArray(e.data) && e.data.length && e.data[0]?.message) {
       return e.data
         .map((d) => d?.message)
         .filter((m) => !!m)
@@ -159,5 +167,44 @@ export function messageFromError(e: Error | FetchError | SerializedError): strin
       return e.statusText;
     }
   }
-  return (e as Error)?.message || String(e);
+  // message in e object, return message
+  if (isErrorLike(e)) {
+    return e.message;
+  }
+  // for some reason (upstream this code), sometimes we get an object without the message field neither in the e.data and nor in e.message
+  // in this case we want to avoid String(e) printing [object][object]
+  logger.logInfo('unknown messageFromError', { error: JSON.stringify(e) });
+  return UNKNOW_ERROR;
+}
+
+export function isAsyncRequestMapSliceSettled<T>(slice: AsyncRequestMapSlice<T>): boolean {
+  return Object.values(slice).every(isAsyncRequestStateSettled);
+}
+
+function isAsyncRequestStateSettled<T>(state: AsyncRequestState<T>): boolean {
+  return state.dispatched && !state.loading;
+}
+
+function isAsyncRequestStateFulfilled<T>(state: AsyncRequestState<T>): boolean {
+  return state.dispatched && !state.loading && !state.error;
+}
+
+export function isAsyncRequestMapSlicePending<T>(slice: AsyncRequestMapSlice<T>): boolean {
+  return Object.values(slice).some(isAsyncRequestStatePending);
+}
+
+export function isAsyncRequestMapSlicePartiallyDispatched<T>(slice: AsyncRequestMapSlice<T>): boolean {
+  return Object.values(slice).some((state) => state.dispatched);
+}
+
+export function isAsyncRequestMapSlicePartiallyFulfilled<T>(slice: AsyncRequestMapSlice<T>): boolean {
+  return Object.values(slice).some(isAsyncRequestStateFulfilled);
+}
+
+export function isAsyncRequestStatePending<T>(state?: AsyncRequestState<T>): boolean {
+  if (!state) {
+    return false;
+  }
+
+  return state.dispatched && state.loading;
 }

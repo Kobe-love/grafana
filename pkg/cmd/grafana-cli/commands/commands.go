@@ -1,38 +1,52 @@
 package commands
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
-	"github.com/fatih/color"
-	"github.com/grafana/grafana/pkg/bus"
+	"github.com/urfave/cli/v2"
+
 	"github.com/grafana/grafana/pkg/cmd/grafana-cli/commands/datamigrations"
+	"github.com/grafana/grafana/pkg/cmd/grafana-cli/commands/secretsconsolidation"
 	"github.com/grafana/grafana/pkg/cmd/grafana-cli/commands/secretsmigrations"
 	"github.com/grafana/grafana/pkg/cmd/grafana-cli/logger"
-	"github.com/grafana/grafana/pkg/cmd/grafana-cli/runner"
-	"github.com/grafana/grafana/pkg/cmd/grafana-cli/services"
 	"github.com/grafana/grafana/pkg/cmd/grafana-cli/utils"
-	"github.com/grafana/grafana/pkg/services/sqlstore"
-	"github.com/grafana/grafana/pkg/services/sqlstore/migrations"
+	"github.com/grafana/grafana/pkg/infra/db"
+	"github.com/grafana/grafana/pkg/server"
 	"github.com/grafana/grafana/pkg/setting"
-	"github.com/grafana/grafana/pkg/util/errutil"
-	"github.com/urfave/cli/v2"
+
+	// Registers the OSS dependency-injection entrypoints (server.InitializeForCLI etc.)
+	// via bootstrap/wire's init(); without this side-effect import they are nil.
+	_ "github.com/grafana/grafana/pkg/server/bootstrap/wire"
 )
 
-func runRunnerCommand(command func(commandLine utils.CommandLine, runner runner.Runner) error) func(context *cli.Context) error {
+func runRunnerCommand(command func(commandLine utils.CommandLine, runner server.Runner) error) func(context *cli.Context) error {
 	return func(context *cli.Context) error {
 		cmd := &utils.ContextCommandLine{Context: context}
-
-		cfg, err := initCfg(cmd)
+		runner, err := initializeRunner(context.Context, cmd)
 		if err != nil {
-			return errutil.Wrap("failed to load configuration", err)
+			return fmt.Errorf("%v: %w", "failed to initialize runner", err)
+		}
+		if err := command(cmd, runner); err != nil {
+			return err
+		}
+		logger.Info("\n\n")
+		return nil
+	}
+}
+
+func runDbCommand(command func(commandLine utils.CommandLine, cfg *setting.Cfg, sqlStore db.DB) error) func(context *cli.Context) error {
+	return func(context *cli.Context) error {
+		cmd := &utils.ContextCommandLine{Context: context}
+		runner, err := initializeRunner(context.Context, cmd)
+		if err != nil {
+			return fmt.Errorf("%v: %w", "failed to initialize runner", err)
 		}
 
-		r, err := runner.Initialize(cfg)
-		if err != nil {
-			return errutil.Wrap("failed to initialize runner", err)
-		}
-
-		if err := command(cmd, r); err != nil {
+		cfg := runner.Cfg
+		sqlStore := runner.SQLStore
+		if err := command(cmd, cfg, sqlStore); err != nil {
 			return err
 		}
 
@@ -41,46 +55,27 @@ func runRunnerCommand(command func(commandLine utils.CommandLine, runner runner.
 	}
 }
 
-func runDbCommand(command func(commandLine utils.CommandLine, sqlStore *sqlstore.SQLStore) error) func(context *cli.Context) error {
-	return func(context *cli.Context) error {
-		cmd := &utils.ContextCommandLine{Context: context}
-
-		cfg, err := initCfg(cmd)
-		if err != nil {
-			return errutil.Wrap("failed to load configuration", err)
-		}
-
-		sqlStore, err := sqlstore.ProvideService(cfg, nil, bus.GetBus(), &migrations.OSSMigrations{})
-		if err != nil {
-			return errutil.Wrap("failed to initialize SQL store", err)
-		}
-
-		if err := command(cmd, sqlStore); err != nil {
-			return err
-		}
-
-		logger.Info("\n\n")
-		return nil
-	}
-}
-
-func initCfg(cmd *utils.ContextCommandLine) (*setting.Cfg, error) {
+func initializeRunner(ctx context.Context, cmd *utils.ContextCommandLine) (server.Runner, error) {
 	configOptions := strings.Split(cmd.String("configOverrides"), " ")
 	cfg, err := setting.NewCfgFromArgs(setting.CommandLineArgs{
 		Config:   cmd.ConfigFile(),
 		HomePath: cmd.HomePath(),
-		Args:     append(configOptions, cmd.Args().Slice()...), // tailing arguments have precedence over the options string
+		// tailing arguments have precedence over the options string
+		Args: append(configOptions, cmd.Args().Slice()...),
 	})
-
 	if err != nil {
-		return nil, err
+		return server.Runner{}, err
+	}
+
+	runner, err := server.InitializeForCLI(ctx, cfg)
+	if err != nil {
+		return server.Runner{}, fmt.Errorf("%v: %w", "failed to initialize runner", err)
 	}
 
 	if cmd.Bool("debug") {
-		cfg.LogConfigSources()
+		runner.Cfg.LogConfigSources()
 	}
-
-	return cfg, nil
+	return runner, nil
 }
 
 func runPluginCommand(command func(commandLine utils.CommandLine) error) func(context *cli.Context) error {
@@ -89,59 +84,42 @@ func runPluginCommand(command func(commandLine utils.CommandLine) error) func(co
 		if err := command(cmd); err != nil {
 			return err
 		}
-
-		logger.Info(color.GreenString("Please restart Grafana after installing plugins. Refer to Grafana documentation for instructions if necessary.\n\n"))
 		return nil
 	}
-}
-
-func runCueCommand(command func(commandLine utils.CommandLine) error) func(context *cli.Context) error {
-	return func(context *cli.Context) error {
-		return command(&utils.ContextCommandLine{Context: context})
-	}
-}
-
-// Command contains command state.
-type Command struct {
-	Client utils.ApiClient
-}
-
-var cmd Command = Command{
-	Client: &services.GrafanaComClient{},
 }
 
 var pluginCommands = []*cli.Command{
 	{
 		Name:   "install",
 		Usage:  "install <plugin id> <plugin version (optional)>",
-		Action: runPluginCommand(cmd.installCommand),
+		Action: runPluginCommand(installCommand),
 	}, {
 		Name:   "list-remote",
 		Usage:  "list remote available plugins",
-		Action: runPluginCommand(cmd.listRemoteCommand),
+		Action: runPluginCommand(listRemoteCommand),
 	}, {
 		Name:   "list-versions",
 		Usage:  "list-versions <plugin id>",
-		Action: runPluginCommand(cmd.listVersionsCommand),
+		Action: runPluginCommand(listVersionsCommand),
 	}, {
 		Name:    "update",
 		Usage:   "update <plugin id>",
 		Aliases: []string{"upgrade"},
-		Action:  runPluginCommand(cmd.upgradeCommand),
+		Action:  runPluginCommand(upgradeCommand),
 	}, {
 		Name:    "update-all",
 		Aliases: []string{"upgrade-all"},
 		Usage:   "update all your installed plugins",
-		Action:  runPluginCommand(cmd.upgradeAllCommand),
+		Action:  runPluginCommand(upgradeAllCommand),
 	}, {
 		Name:   "ls",
-		Usage:  "list all installed plugins",
-		Action: runPluginCommand(cmd.lsCommand),
+		Usage:  "list installed plugins (excludes core plugins)",
+		Action: runPluginCommand(lsCommand),
 	}, {
 		Name:    "uninstall",
 		Aliases: []string{"remove"},
 		Usage:   "uninstall <plugin id>",
-		Action:  runPluginCommand(cmd.removeCommand),
+		Action:  runPluginCommand(removeCommand),
 	},
 }
 
@@ -149,12 +127,17 @@ var adminCommands = []*cli.Command{
 	{
 		Name:   "reset-admin-password",
 		Usage:  "reset-admin-password <new password>",
-		Action: runDbCommand(resetPasswordCommand),
+		Action: runRunnerCommand(resetPasswordCommand),
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:  "password-from-stdin",
 				Usage: "Read the password from stdin",
 				Value: false,
+			},
+			&cli.IntFlag{
+				Name:  "user-id",
+				Usage: "The admin user's ID",
+				Value: DefaultAdminUserId,
 			},
 		},
 	},
@@ -178,74 +161,111 @@ var adminCommands = []*cli.Command{
 				Usage:  "Re-encrypts secrets by decrypting and re-encrypting them with the currently configured encryption. Returns ok unless there is an error. Safe to execute multiple times.",
 				Action: runRunnerCommand(secretsmigrations.ReEncryptSecrets),
 			},
-		},
-	},
-}
-
-var cueCommands = []*cli.Command{
-	{
-		Name:   "validate-schema",
-		Usage:  "validate known *.cue files in the Grafana project",
-		Action: runCueCommand(cmd.validateScuemata),
-		Description: `validate-schema checks that all CUE schema files are valid with respect
-to basic standards - valid CUE, valid scuemata, etc. Note that this
-command checks only paths that existed when grafana-cli was compiled,
-so must be recompiled to validate newly-added CUE files.`,
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "grafana-root",
-				Usage: "path to the root of a Grafana repository to validate",
+			{
+				Name:   "rollback",
+				Usage:  "Rolls back secrets to legacy encryption. Returns ok unless there is an error. Safe to execute multiple times.",
+				Action: runRunnerCommand(secretsmigrations.RollBackSecrets),
+			},
+			{
+				Name:   "re-encrypt-data-keys",
+				Usage:  "Rotates persisted data encryption keys. Returns ok unless there is an error. Safe to execute multiple times.",
+				Action: runRunnerCommand(secretsmigrations.ReEncryptDEKS),
 			},
 		},
 	},
 	{
-		Name:   "validate-resource",
-		Usage:  "validate resource files (e.g. dashboard JSON) against schema",
-		Action: runCueCommand(cmd.validateResources),
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "dashboard",
-				Usage: "dashboard JSON file to validate",
-			},
-			&cli.BoolFlag{
-				Name:  "base-only",
-				Usage: "validate using only base schema, not dist (includes plugin schema)",
-				Value: false,
+		Name:  "secrets-consolidation",
+		Usage: "Runs an operation that re-encrypts all encrypted values in your database with new data keys",
+		Subcommands: []*cli.Command{
+			{
+				Name:   "consolidate",
+				Usage:  "Re-encrypts all encrypted values with new data keys and deletes the old deactivated data keys. Returns ok unless there is an error. Safe to execute multiple times.",
+				Action: runRunnerCommand(secretsconsolidation.ConsolidateSecrets),
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "config",
+						Usage: "Path to config file",
+					},
+					&cli.StringFlag{
+						Name:  "homepath",
+						Usage: "Path to Grafana install/home path, defaults to working directory",
+					},
+					&cli.StringFlag{
+						Name:  "configOverrides",
+						Usage: "Configuration options to override defaults as a string. e.g. cfg:default.paths.log=/dev/null",
+					},
+					&cli.IntFlag{
+						Name:  "chunk-size",
+						Usage: "Number of encrypted values per bulk update. Defaults to 100. Increase for fewer round-trips, decrease if hitting query size limits.",
+						Value: 100,
+					},
+					&cli.IntFlag{
+						Name:  "threads",
+						Usage: "Number of parallel namespaces to consolidate. For even better performance, increase your database connections alongside this. Defaults to 1.",
+						Value: 1,
+					},
+					&cli.BoolFlag{
+						Name:  "benchmark",
+						Usage: "Print duration and enable high CPU profile rate for profiling (use with --cpuprofile for bottleneck analysis)",
+						Value: false,
+					},
+					&cli.StringFlag{
+						Name:  "cpuprofile",
+						Usage: "Write CPU profile to this file during consolidation (recommended: use with --benchmark for high sample rate)",
+						Value: "",
+					},
+					&cli.StringFlag{
+						Name:  "memprofile",
+						Usage: "Write heap profile to this file after consolidation completes",
+						Value: "",
+					},
+					&cli.IntFlag{
+						Name:  "cpu-profile-rate",
+						Usage: "CPU profile sample rate (samples per second). Default 5000; use 10000+ for high sample rate. Only applies when --cpuprofile is set.",
+						Value: 5000,
+					},
+				},
 			},
 		},
 	},
 	{
-		Name:   "trim-resource",
-		Usage:  "trim schema-specified defaults from a resource",
-		Action: runCueCommand(cmd.trimResource),
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "dashboard",
-				Usage: "path to file containing (valid) dashboard JSON",
-			},
-			&cli.BoolFlag{
-				Name:  "apply",
-				Usage: "invert the operation: apply defaults instead of trimming them",
-				Value: false,
-			},
-		},
+		Name:   "flush-rbac-seed-assignment",
+		Usage:  "Clears RBAC seeding to force re-seeding on next startup. Use after running an Enterprise build, then an OSS build, then an Enterprise build again.",
+		Action: runDbCommand(flushSeedAssignment),
 	},
 	{
-		Name:  "gen-ts",
-		Usage: "generate TypeScript from all known CUE file types",
-		Description: `gen-ts generates TypeScript from all CUE files at
-		expected positions in the filesystem tree of a Grafana repository.`,
-		Action: runCueCommand(cmd.generateTypescript),
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "grafana-root",
-				Usage: "path to the root of a Grafana repository in which to generate TypeScript from CUE files",
-			},
-		},
+		Name:   "db-migrate",
+		Usage:  "Run schema migrations against the database configured in --config.",
+		Action: runDbCommand(logLastMigration),
+	},
+	{
+		Name:   "resource-db-migrate",
+		Usage:  "Run the unified storage resource schema migrations against the database configured in --config. ",
+		Action: resourceDbMigrateCommand,
 	},
 }
 
 var Commands = []*cli.Command{
+	{
+		Name:  "write-openapi",
+		Usage: "write-openapi <manifest.json|pluginID[/version]> -o <path>",
+		Description: "Render the OpenAPI v3 spec served by an app plugin's API server. This uses " +
+			"the same rendering pipeline as /openapi/v3/apis/<group>/<version> on a running " +
+			"Grafana.\n\n" +
+			"   The target is either a path to an app-sdk manifest file, which needs no Grafana " +
+			"config and reads a plugin.json beside it when there is one, or the id of an installed " +
+			"plugin, optionally with the version to render.\n\n" +
+			"   Naming one version writes one spec, to --output or to stdout. Otherwise every served " +
+			"version is written to the --output directory as <group>-<version>.json.",
+		Action: writeOpenAPICommand,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "output",
+				Aliases: []string{"o"},
+				Usage:   "File to write one version to, or directory to write every version to",
+			},
+		},
+	},
 	{
 		Name:        "plugins",
 		Usage:       "Manage plugins for grafana",
@@ -255,10 +275,5 @@ var Commands = []*cli.Command{
 		Name:        "admin",
 		Usage:       "Grafana admin commands",
 		Subcommands: adminCommands,
-	},
-	{
-		Name:        "cue",
-		Usage:       "Cue validation commands",
-		Subcommands: cueCommands,
 	},
 }

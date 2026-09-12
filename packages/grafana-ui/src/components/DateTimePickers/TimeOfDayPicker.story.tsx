@@ -1,54 +1,43 @@
-import React from 'react';
-import { action } from '@storybook/addon-actions';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+import { useId } from 'react';
+import { action } from 'storybook/actions';
+import { useArgs } from 'storybook/preview-api';
 
-import { TimeOfDayPicker } from '@grafana/ui';
-import { UseState } from '../../utils/storybook/UseState';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
 import { dateTime } from '@grafana/data';
 
-export default {
-  title: 'Pickers and Editors/TimePickers/TimeOfDayPicker',
+import { Field } from '../Forms/Field';
+
+import { TimeOfDayPicker } from './TimeOfDayPicker';
+
+const meta: Meta<typeof TimeOfDayPicker> = {
+  title: 'Date time pickers/TimeOfDayPicker',
   component: TimeOfDayPicker,
-  decorators: [withCenteredStory],
+  parameters: {
+    controls: {
+      exclude: ['onChange'],
+    },
+  },
+  args: {
+    value: dateTime(Date.now()),
+  },
+  argTypes: { value: { control: 'date' } },
 };
 
-export const basic = () => {
+export const Basic: StoryFn<typeof TimeOfDayPicker> = (args) => {
+  const [, updateArgs] = useArgs();
+  const id = useId();
   return (
-    <UseState
-      initialState={{
-        value: dateTime(Date.now()),
-      }}
-    >
-      {(value, updateValue) => {
-        return (
-          <TimeOfDayPicker
-            onChange={(newValue) => {
-              action('on selected')(newValue);
-              updateValue({ value: newValue });
-            }}
-            value={value.value}
-          />
-        );
-      }}
-    </UseState>
+    <Field label="Select a time">
+      <TimeOfDayPicker
+        {...args}
+        id={id}
+        onChange={(newValue?) => {
+          action('on selected')(newValue);
+          updateArgs({ value: newValue });
+        }}
+      />
+    </Field>
   );
 };
 
-export const onlyMinutes = () => {
-  return (
-    <UseState initialState={{ value: dateTime(Date.now()) }}>
-      {(value, updateValue) => {
-        return (
-          <TimeOfDayPicker
-            onChange={(newValue) => {
-              action('on selected')(newValue);
-              updateValue({ value: newValue });
-            }}
-            value={value.value}
-            showHour={false}
-          />
-        );
-      }}
-    </UseState>
-  );
-};
+export default meta;

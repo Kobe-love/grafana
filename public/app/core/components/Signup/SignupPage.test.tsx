@@ -1,32 +1,33 @@
-import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { getRouteComponentProps } from 'app/core/navigation/__mocks__/routeProps';
+import { render, fireEvent, screen, waitFor, userEvent } from 'test/test-utils';
+
+import { config, setBackendSrv } from '@grafana/runtime';
+import { setupMockServer } from '@grafana/test-utils/server';
+import { getRouteComponentProps } from 'app/core/navigation/mocks/routeProps';
+import { backendSrv } from 'app/core/services/backend_srv';
+import { captureRequests } from 'app/features/alerting/unified/mocks/server/events';
 
 import { SignupPage } from './SignupPage';
 
-const postMock = jest.fn();
-jest.mock('@grafana/runtime', () => ({
-  getBackendSrv: () => ({
-    post: postMock,
-  }),
-  config: {
-    loginError: false,
-    buildInfo: {
-      version: 'v1.0',
-      commit: '1',
-      env: 'production',
-      edition: 'Open Source',
-    },
-    licenseInfo: {
-      stateInfo: '',
-      licenseUrl: '',
-    },
-    appSubUrl: '',
-    autoAssignOrg: false,
-    verifyEmailEnabled: true,
-  },
-}));
+setBackendSrv(backendSrv);
+setupMockServer();
+
+const originalVerifyEmailEnabled = config.verifyEmailEnabled;
+const originalAutoAssignOrg = config.autoAssignOrg;
+
+const mockLocationAssign = jest.fn();
+const originalLocation = window.location;
+
+beforeAll(() => {
+  config.verifyEmailEnabled = true;
+  config.autoAssignOrg = false;
+  jest.spyOn(window, 'location', 'get').mockReturnValue({ ...originalLocation, assign: mockLocationAssign });
+});
+
+afterAll(() => {
+  config.verifyEmailEnabled = originalVerifyEmailEnabled;
+  config.autoAssignOrg = originalAutoAssignOrg;
+  jest.restoreAllMocks();
+});
 
 const props = {
   email: '',
@@ -58,10 +59,10 @@ describe('Signup Page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     expect(await screen.findByText('Email is required')).toBeInTheDocument();
 
-    userEvent.type(screen.getByRole('textbox', { name: 'Email' }), 'test');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Email' }), 'test');
     await waitFor(() => expect(screen.queryByText('Email is invalid')).toBeInTheDocument());
 
-    userEvent.type(screen.getByRole('textbox', { name: 'Email' }), 'test@gmail.com');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Email' }), 'test@gmail.com');
     await waitFor(() => expect(screen.queryByText('Email is invalid')).not.toBeInTheDocument());
   });
   it('should pass validation checks for password and confirm password field', async () => {
@@ -71,38 +72,33 @@ describe('Signup Page', () => {
     expect(await screen.findByText('Password is required')).toBeInTheDocument();
     expect(await screen.findByText('Confirmed password is required')).toBeInTheDocument();
 
-    userEvent.type(screen.getByLabelText('Password'), 'admin');
-    userEvent.type(screen.getByLabelText('Confirm password'), 'a');
+    await userEvent.type(screen.getByLabelText('Password'), 'admin');
+    await userEvent.type(screen.getByLabelText('Confirm password'), 'a');
     await waitFor(() => expect(screen.queryByText('Passwords must match!')).toBeInTheDocument());
 
-    userEvent.type(screen.getByLabelText('Confirm password'), 'dmin');
+    await userEvent.type(screen.getByLabelText('Confirm password'), 'dmin');
     await waitFor(() => expect(screen.queryByText('Passwords must match!')).not.toBeInTheDocument());
   });
   it('should navigate to default url if signup is successful', async () => {
-    Object.defineProperty(window, 'location', {
-      value: {
-        assign: jest.fn(),
-      },
-    });
-    postMock.mockResolvedValueOnce({ message: 'Logged in' });
+    const capture = captureRequests((r) => r.url.includes('/api/user/signup/step2') && r.method === 'POST');
     render(<SignupPage {...props} />);
 
-    userEvent.type(screen.getByRole('textbox', { name: 'Your name' }), 'test-user');
-    userEvent.type(screen.getByRole('textbox', { name: 'Email' }), 'test@gmail.com');
-    userEvent.type(screen.getByLabelText('Password'), 'admin');
-    userEvent.type(screen.getByLabelText('Confirm password'), 'admin');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Your name' }), 'test-user');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Email' }), 'test@gmail.com');
+    await userEvent.type(screen.getByLabelText('Password'), 'admin');
+    await userEvent.type(screen.getByLabelText('Confirm password'), 'admin');
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
 
-    await waitFor(() =>
-      expect(postMock).toHaveBeenCalledWith('/api/user/signup/step2', {
-        code: '',
-        email: 'test@gmail.com',
-        name: 'test-user',
-        orgName: '',
-        password: 'admin',
-        username: 'test@gmail.com',
-      })
-    );
-    expect(window.location.assign).toHaveBeenCalledWith('/');
+    await waitFor(() => expect(mockLocationAssign).toHaveBeenCalledWith('/'));
+
+    const [signupRequest] = await capture;
+    expect(await signupRequest.clone().json()).toEqual({
+      code: '',
+      email: 'test@gmail.com',
+      name: 'test-user',
+      orgName: '',
+      password: 'admin',
+      username: 'test@gmail.com',
+    });
   });
 });

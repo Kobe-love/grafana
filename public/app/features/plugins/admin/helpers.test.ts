@@ -1,7 +1,7 @@
-import { RemotePlugin, LocalPlugin } from './types';
-import { getLocalPluginMock, getRemotePluginMock, getCatalogPluginMock } from './__mocks__';
-import { PluginSignatureStatus, PluginSignatureType, PluginType } from '@grafana/data';
+import { PluginErrorCode, PluginSignatureStatus, PluginSignatureType, PluginType } from '@grafana/data';
 import { config } from '@grafana/runtime';
+import { setTestFlags } from '@grafana/test-utils/unstable';
+
 import {
   mapToCatalogPlugin,
   mapRemoteToCatalog,
@@ -10,9 +10,21 @@ import {
   mergeLocalsAndRemotes,
   sortPlugins,
   Sorters,
-  isLocalPluginVisible,
-  isRemotePluginVisible,
+  isLocalPluginVisibleByConfig,
+  isRemotePluginVisibleByConfig,
+  isNonAngularVersion,
+  isDisabledAngularPlugin,
+  formatGrafanaDependency,
 } from './helpers';
+import { getLocalPluginMock, getRemotePluginMock, getCatalogPluginMock } from './mocks/mockHelpers';
+import {
+  type RemotePlugin,
+  type LocalPlugin,
+  RemotePluginStatus,
+  type Version,
+  type CatalogPlugin,
+  PluginUpdateStrategy,
+} from './types';
 
 describe('Plugins/Helpers', () => {
   let remotePlugin: RemotePlugin;
@@ -36,7 +48,7 @@ describe('Plugins/Helpers', () => {
     ];
 
     test('adds all available plugins only once', () => {
-      const merged = mergeLocalsAndRemotes(localPlugins, remotePlugins);
+      const merged = mergeLocalsAndRemotes({ local: localPlugins, remote: remotePlugins });
       const mergedIds = merged.map(({ id }) => id);
 
       expect(merged.length).toBe(4);
@@ -47,7 +59,7 @@ describe('Plugins/Helpers', () => {
     });
 
     test('merges all plugins with their counterpart (if available)', () => {
-      const merged = mergeLocalsAndRemotes(localPlugins, remotePlugins);
+      const merged = mergeLocalsAndRemotes({ local: localPlugins, remote: remotePlugins });
       const findMerged = (mergedId: string) => merged.find(({ id }) => id === mergedId);
 
       // Both local & remote counterparts
@@ -63,6 +75,120 @@ describe('Plugins/Helpers', () => {
 
       // Only remote
       expect(findMerged('plugin-4')).toEqual(mergeLocalAndRemote(undefined, getRemotePluginMock({ slug: 'plugin-4' })));
+    });
+
+    test('skips deprecated plugins unless they have a local - installed - counterpart', () => {
+      const merged = mergeLocalsAndRemotes({
+        local: localPlugins,
+        remote: [...remotePlugins, getRemotePluginMock({ slug: 'plugin-5', status: RemotePluginStatus.Deprecated })],
+      });
+      const findMerged = (mergedId: string) => merged.find(({ id }) => id === mergedId);
+
+      expect(merged).toHaveLength(4);
+      expect(findMerged('plugin-5')).toBeUndefined();
+    });
+
+    test('keeps deprecated plugins in case they have a local counterpart', () => {
+      const merged = mergeLocalsAndRemotes({
+        local: [...localPlugins, getLocalPluginMock({ id: 'plugin-5' })],
+        remote: [...remotePlugins, getRemotePluginMock({ slug: 'plugin-5', status: RemotePluginStatus.Deprecated })],
+      });
+      const findMerged = (mergedId: string) => merged.find(({ id }) => id === mergedId);
+
+      expect(merged).toHaveLength(5);
+      expect(findMerged('plugin-5')).not.toBeUndefined();
+      expect(findMerged('plugin-5')?.isDeprecated).toBe(true);
+    });
+
+    test('core plugins should be fullyInstalled in cloud', () => {
+      const corePluginId = 'plugin-core';
+
+      const oldPluginAdminExternalManageEnabled = config.pluginAdminExternalManageEnabled;
+
+      config.pluginAdminExternalManageEnabled = true;
+
+      const merged = mergeLocalsAndRemotes({
+        local: [...localPlugins, getLocalPluginMock({ id: corePluginId, signature: PluginSignatureStatus.internal })],
+        remote: [...remotePlugins, getRemotePluginMock({ slug: corePluginId })],
+      });
+      const findMerged = (mergedId: string) => merged.find(({ id }) => id === mergedId);
+
+      expect(merged).toHaveLength(5);
+      expect(findMerged(corePluginId)).not.toBeUndefined();
+      expect(findMerged(corePluginId)?.isCore).toBe(true);
+      expect(findMerged(corePluginId)?.isFullyInstalled).toBe(true);
+
+      config.pluginAdminExternalManageEnabled = oldPluginAdminExternalManageEnabled;
+    });
+
+    test('plugins should be fully installed if they are installed and it is provisioned', () => {
+      const pluginId = 'plugin-1';
+
+      const oldPluginAdminExternalManageEnabled = config.pluginAdminExternalManageEnabled;
+
+      config.pluginAdminExternalManageEnabled = true;
+
+      const merged = mergeLocalsAndRemotes({
+        local: [...localPlugins, getLocalPluginMock({ id: pluginId })],
+        remote: [...remotePlugins, getRemotePluginMock({ slug: pluginId })],
+        provisioned: [{ slug: pluginId }],
+      });
+      const findMerged = (mergedId: string) => merged.find(({ id }) => id === mergedId);
+
+      expect(merged).toHaveLength(5);
+      expect(findMerged(pluginId)).not.toBeUndefined();
+      expect(findMerged(pluginId)?.isFullyInstalled).toBe(true);
+
+      config.pluginAdminExternalManageEnabled = oldPluginAdminExternalManageEnabled;
+    });
+
+    test('plugins should have update when instance version is different from remote version', () => {
+      const oldPluginAdminExternalManageEnabled = config.pluginAdminExternalManageEnabled;
+
+      config.pluginAdminExternalManageEnabled = true;
+
+      const pluginId = 'plugin-1';
+      const remotePlugin = getRemotePluginMock({ slug: pluginId, version: '1.0.0' });
+      const instancePlugin = {
+        pluginSlug: pluginId,
+        version: '0.0.9',
+      };
+
+      const merged = mergeLocalsAndRemotes({
+        local: [],
+        remote: [remotePlugin],
+        instance: [instancePlugin],
+      });
+      const findMerged = (mergedId: string) => merged.find(({ id }) => id === mergedId);
+
+      expect(merged).toHaveLength(1);
+      expect(findMerged(pluginId)).not.toBeUndefined();
+      expect(findMerged(pluginId)?.hasUpdate).toBe(true);
+
+      config.pluginAdminExternalManageEnabled = oldPluginAdminExternalManageEnabled;
+    });
+
+    test('local plugins without remote counterpart should also also have isProvisioned correctly added', () => {
+      const oldPluginAdminExternalManageEnabled = config.pluginAdminExternalManageEnabled;
+
+      config.pluginAdminExternalManageEnabled = true;
+
+      const merged = mergeLocalsAndRemotes({
+        local: localPlugins,
+        remote: [],
+        provisioned: [{ slug: localPlugins[0].id }],
+      });
+      const findMerged = (mergedId: string) => merged.find(({ id }) => id === mergedId);
+
+      expect(merged).toHaveLength(localPlugins.length);
+      expect(findMerged(localPlugins[0].id)).not.toBeUndefined();
+      expect(findMerged(localPlugins[0].id)?.isProvisioned).toBe(true);
+      expect(findMerged(localPlugins[1].id)).not.toBeUndefined();
+      expect(findMerged(localPlugins[1].id)?.isProvisioned).toBe(false);
+      expect(findMerged(localPlugins[2].id)).not.toBeUndefined();
+      expect(findMerged(localPlugins[2].id)?.isProvisioned).toBe(false);
+
+      config.pluginAdminExternalManageEnabled = oldPluginAdminExternalManageEnabled;
     });
   });
 
@@ -89,9 +215,10 @@ describe('Plugins/Helpers', () => {
         id: 'alexanderzobnin-zabbix-app',
         info: {
           logos: {
-            large: 'https://grafana.com/api/plugins/alexanderzobnin-zabbix-app/versions/4.1.5/logos/large',
-            small: 'https://grafana.com/api/plugins/alexanderzobnin-zabbix-app/versions/4.1.5/logos/small',
+            large: '/api/gnet/plugins/alexanderzobnin-zabbix-app/versions/4.1.5/logos/large',
+            small: '/api/gnet/plugins/alexanderzobnin-zabbix-app/versions/4.1.5/logos/small',
           },
+          keywords: ['zabbix', 'monitoring', 'dashboard'],
         },
         error: undefined,
         isCore: false,
@@ -99,32 +226,60 @@ describe('Plugins/Helpers', () => {
         isDisabled: false,
         isEnterprise: false,
         isInstalled: false,
+        isDeprecated: false,
         isPublished: true,
+        latestVersion: '4.1.5',
+        isPreinstalled: { found: false, withVersion: false },
         name: 'Zabbix',
         orgName: 'Alexander Zobnin',
         popularity: 0.2111,
         publishedAt: '2016-04-06T20:23:41.000Z',
         signature: 'valid',
+        signatureOrg: 'Alexander Zobnin',
+        signatureType: 'community',
         type: 'app',
         updatedAt: '2021-05-18T14:53:01.000Z',
+        isFullyInstalled: false,
+        angularDetected: false,
+        url: 'https://github.com/alexanderzobnin/grafana-zabbix',
+        managed: {
+          enabled: false,
+          strategy: undefined,
+        },
+        distributionType: undefined,
       });
     });
 
     test('adds the correct signature enum', () => {
       const pluginWithoutSignature = { ...remotePlugin, signatureType: '', versionSignatureType: '' } as RemotePlugin;
-      // With only "signatureType" -> valid
-      const pluginWithSignature1 = { ...remotePlugin, signatureType: PluginSignatureType.commercial } as RemotePlugin;
-      // With only "versionSignatureType" -> valid
-      const pluginWithSignature2 = { ...remotePlugin, versionSignatureType: PluginSignatureType.core } as RemotePlugin;
+      // With only "signatureType" -> invalid
+      const pluginWithSignature1 = {
+        ...remotePlugin,
+        signatureType: PluginSignatureType.commercial,
+        versionSignatureType: '',
+      } as RemotePlugin;
+      // With only "versionSignatureType" -> invalid
+      const pluginWithSignature2 = {
+        ...remotePlugin,
+        signatureType: '',
+        versionSignatureType: PluginSignatureType.core,
+      } as RemotePlugin;
+      // With signatureType and versionSignatureType -> valid
+      const pluginWithSignature3 = {
+        ...remotePlugin,
+        signatureType: PluginSignatureType.commercial,
+        versionSignatureType: PluginSignatureType.commercial,
+      } as RemotePlugin;
 
       expect(mapRemoteToCatalog(pluginWithoutSignature).signature).toBe(PluginSignatureStatus.missing);
-      expect(mapRemoteToCatalog(pluginWithSignature1).signature).toBe(PluginSignatureStatus.valid);
-      expect(mapRemoteToCatalog(pluginWithSignature2).signature).toBe(PluginSignatureStatus.valid);
+      expect(mapRemoteToCatalog(pluginWithSignature1).signature).toBe(PluginSignatureStatus.missing);
+      expect(mapRemoteToCatalog(pluginWithSignature2).signature).toBe(PluginSignatureStatus.missing);
+      expect(mapRemoteToCatalog(pluginWithSignature3).signature).toBe(PluginSignatureStatus.valid);
     });
 
     test('adds an "isEnterprise" field', () => {
-      const enterprisePlugin = { ...remotePlugin, status: 'enterprise' } as RemotePlugin;
-      const notEnterprisePlugin = { ...remotePlugin, status: 'unknown' } as RemotePlugin;
+      const enterprisePlugin = { ...remotePlugin, status: RemotePluginStatus.Enterprise } as RemotePlugin;
+      const notEnterprisePlugin = { ...remotePlugin, status: RemotePluginStatus.Active } as RemotePlugin;
 
       expect(mapRemoteToCatalog(enterprisePlugin).isEnterprise).toBe(true);
       expect(mapRemoteToCatalog(notEnterprisePlugin).isEnterprise).toBe(false);
@@ -136,6 +291,75 @@ describe('Plugins/Helpers', () => {
 
       expect(mapRemoteToCatalog(corePlugin).isCore).toBe(true);
       expect(mapRemoteToCatalog(notCorePlugin).isCore).toBe(false);
+    });
+
+    describe('.managed', () => {
+      test('should set managed.enabled to false if feature is not enabled', () => {
+        expect(mapRemoteToCatalog(remotePlugin)).toMatchObject({
+          managed: { enabled: false, strategy: undefined },
+        });
+      });
+
+      test('should use grafana-com managed data when managedPluginsV2 is enabled', () => {
+        setTestFlags({ managedPluginsV2: true });
+
+        expect(
+          mapRemoteToCatalog({
+            ...remotePlugin,
+            managed: { enabled: true, strategy: PluginUpdateStrategy.MajorAligned },
+          })
+        ).toMatchObject({ managed: { enabled: true, strategy: PluginUpdateStrategy.MajorAligned } });
+
+        setTestFlags({});
+      });
+    });
+
+    describe('.managed', () => {
+      test('should return true if plugin is set as managed major-aligned from grafana-com and grafana is in cloud', () => {
+        const oldPluginAdminExternalManageEnabled = config.pluginAdminExternalManageEnabled;
+        config.pluginAdminExternalManageEnabled = true;
+        setTestFlags({ managedPluginsV2: true });
+
+        expect(
+          mapRemoteToCatalog({
+            ...remotePlugin,
+            managed: { enabled: true, strategy: PluginUpdateStrategy.MajorAligned },
+          })
+        ).toMatchObject({ managed: { enabled: true, strategy: PluginUpdateStrategy.MajorAligned } });
+
+        config.pluginAdminExternalManageEnabled = oldPluginAdminExternalManageEnabled;
+        setTestFlags({});
+      });
+
+      test('should return true if plugin is set as managed from grafana-com and grafana is in cloud', () => {
+        const oldPluginAdminExternalManageEnabled = config.pluginAdminExternalManageEnabled;
+        config.pluginAdminExternalManageEnabled = true;
+
+        setTestFlags({ managedPluginsV2: true });
+
+        expect(
+          mapRemoteToCatalog({
+            ...remotePlugin,
+            managed: { enabled: true, strategy: PluginUpdateStrategy.Assigned },
+          })
+        ).toMatchObject({ managed: { enabled: true, strategy: PluginUpdateStrategy.Assigned } });
+
+        config.pluginAdminExternalManageEnabled = oldPluginAdminExternalManageEnabled;
+        setTestFlags({});
+      });
+
+      test('should use grafana-com data directly when managedPluginsV2 is enabled', () => {
+        setTestFlags({ managedPluginsV2: true });
+
+        expect(
+          mapRemoteToCatalog({
+            ...remotePlugin,
+            managed: { enabled: true, strategy: PluginUpdateStrategy.Assigned },
+          })
+        ).toMatchObject({ managed: { enabled: true, strategy: PluginUpdateStrategy.Assigned } });
+
+        setTestFlags({});
+      });
     });
   });
 
@@ -159,6 +383,8 @@ describe('Plugins/Helpers', () => {
         isEnterprise: false,
         isInstalled: true,
         isPublished: false,
+        isDeprecated: false,
+        isPreinstalled: { found: false, withVersion: false },
         name: 'Zabbix',
         orgName: 'Alexander Zobnin',
         popularity: 0,
@@ -169,6 +395,14 @@ describe('Plugins/Helpers', () => {
         type: 'app',
         updatedAt: '2021-08-25',
         installedVersion: '4.2.2',
+        isFullyInstalled: true,
+        angularDetected: false,
+        managed: {
+          enabled: false,
+          strategy: undefined,
+        },
+        category: 'Custom category',
+        distributionType: undefined,
       });
     });
 
@@ -196,9 +430,10 @@ describe('Plugins/Helpers', () => {
         id: 'alexanderzobnin-zabbix-app',
         info: {
           logos: {
-            small: 'https://grafana.com/api/plugins/alexanderzobnin-zabbix-app/versions/4.1.5/logos/small',
-            large: 'https://grafana.com/api/plugins/alexanderzobnin-zabbix-app/versions/4.1.5/logos/large',
+            small: '/api/gnet/plugins/alexanderzobnin-zabbix-app/versions/4.1.5/logos/small',
+            large: '/api/gnet/plugins/alexanderzobnin-zabbix-app/versions/4.1.5/logos/large',
           },
+          keywords: ['zabbix', 'monitoring', 'dashboard'],
         },
         error: undefined,
         isCore: false,
@@ -207,6 +442,9 @@ describe('Plugins/Helpers', () => {
         isEnterprise: false,
         isInstalled: true,
         isPublished: true,
+        latestVersion: '4.1.5',
+        isDeprecated: false,
+        isPreinstalled: { found: false, withVersion: false },
         name: 'Zabbix',
         orgName: 'Alexander Zobnin',
         popularity: 0.2111,
@@ -217,6 +455,15 @@ describe('Plugins/Helpers', () => {
         type: 'app',
         updatedAt: '2021-05-18T14:53:01.000Z',
         installedVersion: '4.2.2',
+        isFullyInstalled: true,
+        angularDetected: false,
+        url: 'https://github.com/alexanderzobnin/grafana-zabbix',
+        managed: {
+          enabled: false,
+          strategy: undefined,
+        },
+        category: 'Custom category',
+        distributionType: undefined,
       });
     });
 
@@ -303,15 +550,17 @@ describe('Plugins/Helpers', () => {
 
     test('`.isEnterprise` - prefers the remote', () => {
       // Local & Remote
-      expect(mapToCatalogPlugin(localPlugin, { ...remotePlugin, status: 'enterprise' })).toMatchObject({
-        isEnterprise: true,
-      });
-      expect(mapToCatalogPlugin(localPlugin, { ...remotePlugin, status: 'unknown' })).toMatchObject({
+      expect(mapToCatalogPlugin(localPlugin, { ...remotePlugin, status: RemotePluginStatus.Enterprise })).toMatchObject(
+        {
+          isEnterprise: true,
+        }
+      );
+      expect(mapToCatalogPlugin(localPlugin, { ...remotePlugin, status: RemotePluginStatus.Active })).toMatchObject({
         isEnterprise: false,
       });
 
       // Remote only
-      expect(mapToCatalogPlugin(undefined, { ...remotePlugin, status: 'enterprise' })).toMatchObject({
+      expect(mapToCatalogPlugin(undefined, { ...remotePlugin, status: RemotePluginStatus.Enterprise })).toMatchObject({
         isEnterprise: true,
       });
 
@@ -320,6 +569,34 @@ describe('Plugins/Helpers', () => {
 
       // No local or remote
       expect(mapToCatalogPlugin()).toMatchObject({ isEnterprise: false });
+    });
+
+    test('`.isDeprecated` - comes from the remote', () => {
+      // Local & Remote
+      expect(mapToCatalogPlugin(localPlugin, { ...remotePlugin, status: RemotePluginStatus.Deprecated })).toMatchObject(
+        {
+          isDeprecated: true,
+        }
+      );
+      expect(mapToCatalogPlugin(localPlugin, { ...remotePlugin, status: RemotePluginStatus.Enterprise })).toMatchObject(
+        {
+          isDeprecated: false,
+        }
+      );
+
+      // Remote only
+      expect(mapToCatalogPlugin(undefined, { ...remotePlugin, status: RemotePluginStatus.Deprecated })).toMatchObject({
+        isDeprecated: true,
+      });
+      expect(mapToCatalogPlugin(undefined, { ...remotePlugin, status: RemotePluginStatus.Enterprise })).toMatchObject({
+        isDeprecated: false,
+      });
+
+      // Local only
+      expect(mapToCatalogPlugin(localPlugin)).toMatchObject({ isDeprecated: false });
+
+      // No local or remote
+      expect(mapToCatalogPlugin()).toMatchObject({ isDeprecated: false });
     });
 
     test('`.isInstalled` - prefers the local', () => {
@@ -569,6 +846,64 @@ describe('Plugins/Helpers', () => {
       // No local or remote
       expect(mapToCatalogPlugin()).toMatchObject({ updatedAt: '' });
     });
+
+    test('`.angularDetected` - prefers the local', () => {
+      // Both false shoul return false
+      expect(
+        mapToCatalogPlugin({ ...localPlugin, angularDetected: false }, { ...remotePlugin, angularDetected: false })
+      ).toMatchObject({ angularDetected: false });
+
+      // Remote version is using angular, local isn't, should prefer local
+      expect(
+        mapToCatalogPlugin({ ...localPlugin, angularDetected: false }, { ...remotePlugin, angularDetected: true })
+      ).toMatchObject({ angularDetected: false });
+
+      // Remote only
+      expect(mapToCatalogPlugin(undefined, remotePlugin)).toMatchObject({ angularDetected: false });
+      expect(mapToCatalogPlugin(undefined, { ...remotePlugin, angularDetected: true })).toMatchObject({
+        angularDetected: true,
+      });
+
+      // Local only
+      expect(mapToCatalogPlugin({ ...localPlugin, angularDetected: false }, undefined)).toMatchObject({
+        angularDetected: false,
+      });
+      expect(mapToCatalogPlugin({ ...localPlugin, angularDetected: true }, undefined)).toMatchObject({
+        angularDetected: true,
+      });
+
+      // No local or remote
+      expect(mapToCatalogPlugin()).toMatchObject({ angularDetected: undefined });
+    });
+
+    describe('.managed', () => {
+      test('should set managed.enabled to false if feature is not enabled', () => {
+        expect(mapToCatalogPlugin(localPlugin)).toMatchObject({
+          managed: { enabled: false, strategy: undefined },
+        });
+      });
+
+      test('should set managed.enabled to false when plugin is not managed', () => {
+        expect(mapToCatalogPlugin(localPlugin, { ...remotePlugin, managed: { enabled: true } })).toMatchObject({
+          managed: { enabled: false, strategy: undefined },
+        });
+      });
+    });
+
+    describe('.managed', () => {
+      test('should return true if plugin is set as managed from grafana-com and grafana is in cloud', () => {
+        const oldPluginAdminExternalManageEnabled = config.pluginAdminExternalManageEnabled;
+        config.pluginAdminExternalManageEnabled = true;
+        setTestFlags({ managedPluginsV2: true });
+
+        expect(mapToCatalogPlugin(localPlugin, { ...remotePlugin, managed: { enabled: true } })).toMatchObject({
+          managed: { enabled: true },
+        });
+
+        config.pluginAdminExternalManageEnabled = oldPluginAdminExternalManageEnabled;
+        setTestFlags({});
+      });
+    });
   });
 
   describe('sortPlugins()', () => {
@@ -655,7 +990,7 @@ describe('Plugins/Helpers', () => {
         id: 'barchart',
       });
 
-      expect(isLocalPluginVisible(plugin)).toBe(true);
+      expect(isLocalPluginVisibleByConfig(plugin)).toBe(true);
     });
 
     test('should return FALSE if the plugin is listed as hidden in the main Grafana configuration', () => {
@@ -664,7 +999,7 @@ describe('Plugins/Helpers', () => {
         id: 'akumuli-datasource',
       });
 
-      expect(isLocalPluginVisible(plugin)).toBe(false);
+      expect(isLocalPluginVisibleByConfig(plugin)).toBe(false);
     });
   });
 
@@ -675,7 +1010,7 @@ describe('Plugins/Helpers', () => {
         slug: 'barchart',
       });
 
-      expect(isRemotePluginVisible(plugin)).toBe(true);
+      expect(isRemotePluginVisibleByConfig(plugin)).toBe(true);
     });
 
     test('should return FALSE if the plugin is listed as hidden in the main Grafana configuration', () => {
@@ -684,7 +1019,90 @@ describe('Plugins/Helpers', () => {
         slug: 'akumuli-datasource',
       });
 
-      expect(isRemotePluginVisible(plugin)).toBe(false);
+      expect(isRemotePluginVisibleByConfig(plugin)).toBe(false);
+    });
+  });
+
+  describe('isNonAngularVersion()', () => {
+    test('should return TRUE if the version is not using angular', () => {
+      expect(isNonAngularVersion({ angularDetected: false } as Version)).toBe(true);
+    });
+
+    test('should return FALSE if the version is using angular', () => {
+      expect(isNonAngularVersion({ angularDetected: true } as Version)).toBe(false);
+    });
+
+    test('should return FALSE if the version is not set', () => {
+      expect(isNonAngularVersion(undefined)).toBe(false);
+    });
+  });
+
+  describe('isDisabledAngularPlugin', () => {
+    it('should return true for disabled angular plugins', () => {
+      const plugin = { isDisabled: true, error: PluginErrorCode.angular } as CatalogPlugin;
+      expect(isDisabledAngularPlugin(plugin)).toBe(true);
+    });
+
+    it('should return false for non-angular plugins', () => {
+      const plugin = { isDisabled: true, error: undefined } as CatalogPlugin;
+      expect(isDisabledAngularPlugin(plugin)).toBe(false);
+    });
+
+    it('should return false for plugins that are not disabled', () => {
+      const plugin = { isDisabled: false, error: undefined } as CatalogPlugin;
+      expect(isDisabledAngularPlugin(plugin)).toBe(false);
+    });
+  });
+
+  describe('formatGrafanaDependency()', () => {
+    it('returns N/A for null', () => {
+      expect(formatGrafanaDependency(null)).toBe('N/A');
+    });
+
+    it('returns N/A for empty string', () => {
+      expect(formatGrafanaDependency('')).toBe('N/A');
+    });
+
+    it('formats simple gte range', () => {
+      expect(formatGrafanaDependency('>=8.0.0')).toBe('8.0.0 or later');
+    });
+
+    it('formats gte with non-zero minor', () => {
+      expect(formatGrafanaDependency('>=9.1.0')).toBe('9.1.0 or later');
+    });
+
+    it('formats gte with non-zero patch', () => {
+      expect(formatGrafanaDependency('>=8.5.20')).toBe('8.5.20 or later');
+    });
+
+    it('formats bounded range', () => {
+      expect(formatGrafanaDependency('>=8.5.20 <9.0.0')).toBe('8.5.20 – 9.0.0');
+    });
+
+    it('formats bounded range with shorthand upper bound', () => {
+      expect(formatGrafanaDependency('>=8.0.0 <9')).toBe('8.0.0 – 9.0.0');
+    });
+
+    it('formats complex OR range', () => {
+      expect(formatGrafanaDependency('>= 8.5.20 < 9 || >= 9.1.0')).toBe('8.5.20 – 9.0.0, 9.1.0 or later');
+    });
+
+    it('formats multiple bounded ranges', () => {
+      expect(formatGrafanaDependency('>=8.0.0 <9.0.0 || >=9.1.0 <10.0.0')).toBe('8.0.0 – 9.0.0, 9.1.0 – 10.0.0');
+    });
+
+    it('formats many adjacent bounded ranges', () => {
+      expect(
+        formatGrafanaDependency('>=11.6.11 <12.0.0 || >=12.0.10 <12.1.0 || >=12.1.7 <12.2.0 || >=12.2.5 <14.0.0')
+      ).toBe('11.6.11 – 12.0.0, 12.0.10 – 12.1.0, 12.1.7 – 12.2.0, 12.2.5 – 14.0.0');
+    });
+
+    it('formats upper-bound-only range', () => {
+      expect(formatGrafanaDependency('<9.0.0')).toBe('before 9.0.0');
+    });
+
+    it('falls back to raw string on parse error', () => {
+      expect(formatGrafanaDependency('not-a-range')).toBe('not-a-range');
     });
   });
 });

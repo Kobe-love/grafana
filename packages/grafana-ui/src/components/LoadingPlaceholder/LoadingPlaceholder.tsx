@@ -1,8 +1,11 @@
-import React, { HTMLAttributes, SFC } from 'react';
 import { css, cx } from '@emotion/css';
-import { GrafanaTheme } from '@grafana/data';
+import { type HTMLAttributes } from 'react';
+import * as React from 'react';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useStyles2 } from '../../themes/ThemeContext';
 import { Spinner } from '../Spinner/Spinner';
-import { useStyles } from '../../themes';
 
 /**
  * @public
@@ -12,10 +15,13 @@ export interface LoadingPlaceholderProps extends HTMLAttributes<HTMLDivElement> 
 }
 
 /**
+ * Loading indicator with a text. Used to alert a user to wait for an activity to complete.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/information-loadingplaceholder--docs
  * @public
  */
-export const LoadingPlaceholder: SFC<LoadingPlaceholderProps> = ({ text, className, ...rest }) => {
-  const styles = useStyles(getStyles);
+export const LoadingPlaceholder = ({ text, className, ...rest }: LoadingPlaceholderProps) => {
+  const styles = useStyles2(getStyles);
   return (
     <div className={cx(styles.container, className)} {...rest}>
       {text} <Spinner inline={true} />
@@ -23,10 +29,10 @@ export const LoadingPlaceholder: SFC<LoadingPlaceholderProps> = ({ text, classNa
   );
 };
 
-const getStyles = (theme: GrafanaTheme) => {
+const getStyles = (theme: GrafanaTheme2) => {
   return {
-    container: css`
-      margin-bottom: ${theme.spacing.xl};
-    `,
+    container: css({
+      marginBottom: theme.spacing(4),
+    }),
   };
 };

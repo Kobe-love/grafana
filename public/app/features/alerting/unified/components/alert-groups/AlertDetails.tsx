@@ -1,8 +1,15 @@
 import { css } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+import { Trans, t } from '@grafana/i18n';
 import { LinkButton, useStyles2 } from '@grafana/ui';
-import { AlertmanagerAlert, AlertState } from 'app/plugins/datasource/alertmanager/types';
-import React, { FC } from 'react';
+import { AlertState, type AlertmanagerAlert } from 'app/plugins/datasource/alertmanager/types';
+
+import { isGranted } from '../../hooks/abilities/abilityUtils';
+import { useSilenceAbility } from '../../hooks/abilities/alertmanager/useSilenceAbility';
+import { useGlobalRuleAbility } from '../../hooks/abilities/rules/ruleAbilities';
+import { RuleAction, SilenceAction } from '../../hooks/abilities/types';
+import { isGrafanaRulesSource } from '../../utils/datasource';
 import { makeAMLink, makeLabelBasedSilenceLink } from '../../utils/misc';
 import { AnnotationDetailsField } from '../AnnotationDetailsField';
 
@@ -11,12 +18,21 @@ interface AmNotificationsAlertDetailsProps {
   alert: AlertmanagerAlert;
 }
 
-export const AlertDetails: FC<AmNotificationsAlertDetailsProps> = ({ alert, alertManagerSourceName }) => {
+export const AlertDetails = ({ alert, alertManagerSourceName }: AmNotificationsAlertDetailsProps) => {
   const styles = useStyles2(getStyles);
+
+  // For Grafana Managed alerts the Generator URL redirects to the alert rule edit page, so update permission is required
+  // For external alert manager the Generator URL redirects to an external service which we don't control
+  const isGrafanaSource = isGrafanaRulesSource(alertManagerSourceName);
+  const viewRuleAbility = useGlobalRuleAbility(RuleAction.View);
+  const isSeeSourceButtonEnabled = isGrafanaSource ? isGranted(viewRuleAbility) : true;
+  const canCreateSilence = isGranted(useSilenceAbility({ action: SilenceAction.Create }));
+  const canUpdateSilence = isGranted(useSilenceAbility({ action: SilenceAction.Update }));
+
   return (
     <>
       <div className={styles.actionsRow}>
-        {alert.status.state === AlertState.Suppressed && (
+        {alert.status.state === AlertState.Suppressed && (canCreateSilence || canUpdateSilence) && (
           <LinkButton
             href={`${makeAMLink(
               '/alerting/silences',
@@ -26,22 +42,24 @@ export const AlertDetails: FC<AmNotificationsAlertDetailsProps> = ({ alert, aler
             icon={'bell'}
             size={'sm'}
           >
-            Manage silences
+            <Trans i18nKey="alerting.alert-details.manage-silences">Manage silences</Trans>
           </LinkButton>
         )}
-        {alert.status.state === AlertState.Active && (
+        {alert.status.state === AlertState.Active && canCreateSilence && (
           <LinkButton
             href={makeLabelBasedSilenceLink(alertManagerSourceName, alert.labels)}
             className={styles.button}
             icon={'bell-slash'}
             size={'sm'}
           >
-            Silence
+            <Trans i18nKey="alerting.alert-details.silence">Silence</Trans>
           </LinkButton>
         )}
-        {alert.generatorURL && (
+        {isSeeSourceButtonEnabled && alert.generatorURL && (
           <LinkButton className={styles.button} href={alert.generatorURL} icon={'chart-line'} size={'sm'}>
-            See source
+            {isGrafanaSource
+              ? t('alerting.alert-details.button-see-rule', 'See alert rule')
+              : t('alerting.alert-details.button-see-source', 'See source')}
           </LinkButton>
         )}
       </div>
@@ -49,27 +67,33 @@ export const AlertDetails: FC<AmNotificationsAlertDetailsProps> = ({ alert, aler
         <AnnotationDetailsField key={annotationKey} annotationKey={annotationKey} value={annotationValue} />
       ))}
       <div className={styles.receivers}>
-        Receivers:{' '}
-        {alert.receivers
-          .map(({ name }) => name)
-          .filter((name) => !!name)
-          .join(', ')}
+        <Trans
+          i18nKey="alerting.alert-details.receivers-list"
+          values={{
+            receivers: alert.receivers
+              .map(({ name }) => name)
+              .filter((name) => !!name)
+              .join(', '),
+          }}
+        >
+          Receivers: {'{{receivers}}'}
+        </Trans>
       </div>
     </>
   );
 };
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  button: css`
-    & + & {
-      margin-left: ${theme.spacing(1)};
-    }
-  `,
-  actionsRow: css`
-    padding: ${theme.spacing(2, 0)} !important;
-    border-bottom: 1px solid ${theme.colors.border.medium};
-  `,
-  receivers: css`
-    padding: ${theme.spacing(1, 0)};
-  `,
+  button: css({
+    '& + &': {
+      marginLeft: theme.spacing(1),
+    },
+  }),
+  actionsRow: css({
+    padding: `${theme.spacing(2, 0)} !important`,
+    borderBottom: `1px solid ${theme.colors.border.medium}`,
+  }),
+  receivers: css({
+    padding: theme.spacing(1, 0),
+  }),
 });

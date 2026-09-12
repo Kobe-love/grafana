@@ -1,28 +1,32 @@
-import React from 'react';
-import { useTheme2, stylesFactory } from '../../../themes';
-import { GrafanaTheme2 } from '@grafana/data';
 import { css } from '@emotion/css';
-import { getPropertiesForButtonSize } from '../commonStyles';
-import { getFocusStyles, getMouseFocusStyles } from '../../../themes/mixins';
-import { StringSelector } from '@grafana/e2e-selectors';
+import { forwardRef, useId, type HTMLProps } from 'react';
 
+import { type GrafanaTheme2 } from '@grafana/data';
+import { type StringSelector, selectors } from '@grafana/e2e-selectors';
+
+import { useStyles2 } from '../../../themes/ThemeContext';
+import { getFocusStyles, getInternalRadius, getMouseFocusStyles } from '../../../themes/mixins';
+import { Tooltip } from '../../Tooltip/Tooltip';
+import { getPropertiesForButtonSize } from '../commonStyles';
+
+export const RADIO_GROUP_PADDING = 2;
 export type RadioButtonSize = 'sm' | 'md';
 
-export interface RadioButtonProps {
+export interface RadioButtonProps extends Omit<HTMLProps<HTMLInputElement>, 'size'> {
   size?: RadioButtonSize;
   disabled?: boolean;
   name?: string;
   description?: string;
   active: boolean;
-  id: string;
   onChange: () => void;
   onClick: () => void;
   fullWidth?: boolean;
+  title?: string;
   'aria-label'?: StringSelector;
   children?: React.ReactNode;
 }
 
-export const RadioButton = React.forwardRef<HTMLInputElement, RadioButtonProps>(
+export const RadioButton = forwardRef<HTMLInputElement, RadioButtonProps>(
   (
     {
       children,
@@ -31,43 +35,60 @@ export const RadioButton = React.forwardRef<HTMLInputElement, RadioButtonProps>(
       size = 'md',
       onChange,
       onClick,
-      id,
       name = undefined,
       description,
       fullWidth,
+      title,
       'aria-label': ariaLabel,
+      ...rest
     },
     ref
   ) => {
-    const theme = useTheme2();
-    const styles = getRadioButtonStyles(theme, size, fullWidth);
+    const styles = useStyles2(getRadioButtonStyles, size, fullWidth);
+    const id = useId();
+    const adjustedTitle = title ?? ariaLabel;
 
-    return (
-      <>
-        <input
-          type="radio"
-          className={styles.radio}
-          onChange={onChange}
-          onClick={onClick}
-          disabled={disabled}
-          id={id}
-          checked={active}
-          name={name}
-          aria-label={ariaLabel}
-          ref={ref}
-        />
-        <label className={styles.radioLabel} htmlFor={id} title={description}>
+    const inputRadioButton = (
+      <input
+        {...rest}
+        type="radio"
+        className={styles.radio}
+        onChange={onChange}
+        onClick={onClick}
+        disabled={disabled}
+        id={id}
+        checked={active}
+        name={name}
+        aria-label={ariaLabel}
+        title={adjustedTitle}
+        ref={ref}
+      />
+    );
+    return description ? (
+      <div className={styles.radioOption} data-testid={selectors.components.RadioButton.container}>
+        <Tooltip content={description} placement="bottom">
+          {inputRadioButton}
+        </Tooltip>
+        <label className={styles.radioLabel} htmlFor={id} title={adjustedTitle}>
           {children}
         </label>
-      </>
+      </div>
+    ) : (
+      <div className={styles.radioOption} data-testid={selectors.components.RadioButton.container}>
+        {inputRadioButton}
+        <label className={styles.radioLabel} htmlFor={id} title={adjustedTitle}>
+          {children}
+        </label>
+      </div>
     );
   }
 );
 
 RadioButton.displayName = 'RadioButton';
 
-const getRadioButtonStyles = stylesFactory((theme: GrafanaTheme2, size: RadioButtonSize, fullWidth?: boolean) => {
+const getRadioButtonStyles = (theme: GrafanaTheme2, size: RadioButtonSize, fullWidth?: boolean) => {
   const { fontSize, height, padding } = getPropertiesForButtonSize(size, theme);
+  const visualRefreshEnabled = theme.flags.visualDesignRefresh;
 
   const textColor = theme.colors.text.secondary;
   const textColorHover = theme.colors.text.primary;
@@ -75,53 +96,81 @@ const getRadioButtonStyles = stylesFactory((theme: GrafanaTheme2, size: RadioBut
   const labelHeight = height * theme.spacing.gridSize - 4 - 2;
 
   return {
-    radio: css`
-      position: absolute;
-      opacity: 0;
-      z-index: -1000;
+    radioOption: css({
+      display: 'flex',
+      justifyContent: 'space-between',
+      position: 'relative',
+      flex: fullWidth ? '1 1 0' : '0 1 auto',
+      minWidth: 0,
+      textAlign: 'center',
+    }),
+    radio: css(
+      {
+        position: 'absolute',
+        opacity: 0,
+        zIndex: 2,
+        width: '100% !important',
+        height: '100%',
+        cursor: 'pointer',
 
-      &:checked + label {
-        color: ${theme.colors.text.primary};
-        font-weight: ${theme.typography.fontWeightMedium};
-        background: ${theme.colors.action.selected};
-        z-index: 3;
-      }
+        '&:checked + label': {
+          color: theme.colors.text.primary,
+          fontWeight: theme.typography.fontWeightMedium,
+          background: theme.colors.action.selected,
+          zIndex: 1,
+          // this ensures the selected radio button is shown when forced colors are active
+          '@media (forced-colors: active)': {
+            outline: '1px solid transparent',
+          },
+        },
 
-      &:focus + label,
-      &:focus-visible + label {
-        ${getFocusStyles(theme)};
-      }
+        '&:focus + label, &:focus-visible + label': getFocusStyles(theme),
 
-      &:focus:not(:focus-visible) + label {
-        ${getMouseFocusStyles(theme)}
-      }
+        '&:focus:not(:focus-visible) + label': getMouseFocusStyles(theme),
 
-      &:disabled + label {
-        color: ${theme.colors.text.disabled};
-        cursor: not-allowed;
+        '&:disabled + label': {
+          color: theme.colors.text.disabled,
+          cursor: 'not-allowed',
+        },
+      },
+      visualRefreshEnabled && {
+        '&:checked + label': {
+          border: `1px solid ${theme.colors.border.medium}`,
+          color: theme.colors.accent.text,
+          fontWeight: 'unset',
+        },
       }
-    `,
-    radioLabel: css`
-      display: inline-block;
-      position: relative;
-      font-size: ${fontSize};
-      height: ${labelHeight}px;
-      // Deduct border from line-height for perfect vertical centering on windows and linux
-      line-height: ${labelHeight}px;
-      color: ${textColor};
-      padding: ${theme.spacing(0, padding)};
-      border-radius: ${theme.shape.borderRadius()};
-      background: ${theme.colors.background.primary};
-      cursor: pointer;
-      z-index: 1;
-      flex: ${fullWidth ? `1 0 0` : 'none'};
-      text-align: center;
-      user-select: none;
-      white-space: nowrap;
+    ),
+    radioLabel: css(
+      {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize,
+        height: `${labelHeight}px`,
+        // Deduct border from line-height for perfect vertical centering on windows and linux
+        lineHeight: `${labelHeight}px`,
+        color: textColor,
+        padding: theme.spacing(0, padding),
+        borderRadius: getInternalRadius(theme, RADIO_GROUP_PADDING),
+        cursor: 'pointer',
+        userSelect: 'none',
+        whiteSpace: 'nowrap',
+        flexGrow: 1,
+        minWidth: 0,
+        overflow: 'hidden',
 
-      &:hover {
-        color: ${textColorHover};
+        '&:hover': {
+          color: textColorHover,
+        },
+      },
+      visualRefreshEnabled && {
+        border: '1px solid transparent',
+
+        '@media (forced-colors: active)': {
+          border: 'none',
+        },
       }
-    `,
+    ),
   };
-});
+};

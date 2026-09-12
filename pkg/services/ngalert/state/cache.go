@@ -2,130 +2,326 @@ package state
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"maps"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/services/ngalert/eval"
 	"github.com/grafana/grafana/pkg/services/ngalert/metrics"
 	ngModels "github.com/grafana/grafana/pkg/services/ngalert/models"
-	prometheusModel "github.com/prometheus/common/model"
+	"github.com/grafana/grafana/pkg/services/ngalert/state/template"
+	"github.com/grafana/grafana/pkg/util"
 )
 
-type cache struct {
-	states      map[int64]map[string]map[string]*State // orgID > alertRuleUID > stateID > state
-	mtxStates   sync.RWMutex
-	log         log.Logger
-	metrics     *metrics.State
-	externalURL *url.URL
+const emptyLabelKeyPrefix = "__empty_label_key__"
+
+type ruleStates struct {
+	states map[data.Fingerprint]*State
 }
 
-func newCache(logger log.Logger, metrics *metrics.State, externalURL *url.URL) *cache {
+type cache struct {
+	states    map[int64]map[string]*ruleStates // orgID > alertRuleUID > stateID > state
+	mtxStates sync.RWMutex
+	metrics   alertMetrics
+}
+
+type alertMetrics struct {
+	lastUpdate  time.Time
+	mtx         sync.RWMutex
+	stateCounts map[eval.State]float64
+}
+
+func newCache() *cache {
 	return &cache{
-		states:      make(map[int64]map[string]map[string]*State),
-		log:         logger,
-		metrics:     metrics,
-		externalURL: externalURL,
+		states: make(map[int64]map[string]*ruleStates),
 	}
 }
 
-func (c *cache) getOrCreate(ctx context.Context, alertRule *ngModels.AlertRule, result eval.Result) *State {
+func (c *cache) reset() {
+	c.metrics.mtx.Lock()
 	c.mtxStates.Lock()
 	defer c.mtxStates.Unlock()
+	defer c.metrics.mtx.Unlock()
 
-	// clone the labels so we don't change eval.Result
-	labels := result.Instance.Copy()
-	attachRuleLabels(labels, alertRule)
-	ruleLabels, annotations := c.expandRuleLabelsAndAnnotations(ctx, alertRule, labels, result)
-
-	// if duplicate labels exist, alertRule label will take precedence
-	lbs := mergeLabels(ruleLabels, result.Instance)
-	attachRuleLabels(lbs, alertRule)
-
-	il := ngModels.InstanceLabels(lbs)
-	id, err := il.StringKey()
-	if err != nil {
-		c.log.Error("error getting cacheId for entry", "err", err.Error())
-	}
-
-	if _, ok := c.states[alertRule.OrgID]; !ok {
-		c.states[alertRule.OrgID] = make(map[string]map[string]*State)
-	}
-	if _, ok := c.states[alertRule.OrgID][alertRule.UID]; !ok {
-		c.states[alertRule.OrgID][alertRule.UID] = make(map[string]*State)
-	}
-
-	if state, ok := c.states[alertRule.OrgID][alertRule.UID][id]; ok {
-		// Annotations can change over time for the same alert.
-		state.Annotations = annotations
-		c.states[alertRule.OrgID][alertRule.UID][id] = state
-		return state
-	}
-
-	// If the first result we get is alerting, set StartsAt to EvaluatedAt because we
-	// do not have data for determining StartsAt otherwise
-	newState := &State{
-		AlertRuleUID:       alertRule.UID,
-		OrgID:              alertRule.OrgID,
-		CacheId:            id,
-		Labels:             lbs,
-		Annotations:        annotations,
-		EvaluationDuration: result.EvaluationDuration,
-	}
-	if result.State == eval.Alerting {
-		newState.StartsAt = result.EvaluatedAt
-	}
-	c.states[alertRule.OrgID][alertRule.UID][id] = newState
-	return newState
+	c.states = make(map[int64]map[string]*ruleStates)
+	c.metrics.stateCounts = nil
+	c.metrics.lastUpdate = time.Time{}
 }
 
-func attachRuleLabels(m map[string]string, alertRule *ngModels.AlertRule) {
-	m[ngModels.RuleUIDLabel] = alertRule.UID
-	m[ngModels.NamespaceUIDLabel] = alertRule.NamespaceUID
-	m[prometheusModel.AlertNameLabel] = alertRule.Title
-}
-
-func (c *cache) expandRuleLabelsAndAnnotations(ctx context.Context, alertRule *ngModels.AlertRule, labels map[string]string, alertInstance eval.Result) (map[string]string, map[string]string) {
-	expand := func(original map[string]string) map[string]string {
-		expanded := make(map[string]string, len(original))
-		for k, v := range original {
-			ev, err := expandTemplate(ctx, alertRule.Title, v, labels, alertInstance, c.externalURL)
-			expanded[k] = ev
-			if err != nil {
-				c.log.Error("error in expanding template", "name", k, "value", v, "err", err.Error())
-				// Store the original template on error.
-				expanded[k] = v
+func (c *cache) calcMetrics(states map[eval.State]struct{}) map[eval.State]float64 {
+	c.mtxStates.RLock()
+	defer c.mtxStates.RUnlock()
+	counts := make(map[eval.State]float64, len(states))
+	for state := range states {
+		counts[state] = 0
+	}
+	for _, orgMap := range c.states {
+		for _, rule := range orgMap {
+			for _, st := range rule.states {
+				for state := range states {
+					if st.State == state {
+						counts[state] += 1
+					}
+				}
 			}
 		}
-
-		return expanded
 	}
-	return expand(alertRule.Labels), expand(alertRule.Annotations)
+	return counts
+}
+
+func (c *cache) updateMetrics() {
+	c.metrics.mtx.Lock()
+	defer c.metrics.mtx.Unlock()
+	if time.Since(c.metrics.lastUpdate) < time.Second {
+		return // avoid updating too frequently
+	}
+	newMetrics := c.calcMetrics(map[eval.State]struct{}{
+		eval.Normal:     {},
+		eval.Alerting:   {},
+		eval.Pending:    {},
+		eval.Error:      {},
+		eval.NoData:     {},
+		eval.Recovering: {},
+	})
+	c.metrics.lastUpdate = time.Now()
+	c.metrics.stateCounts = newMetrics
+}
+
+func (c *cache) countAlertsBy(state eval.State) float64 {
+	c.metrics.mtx.RLock()
+	defer c.metrics.mtx.RUnlock()
+	return c.metrics.stateCounts[state]
+}
+
+// RegisterMetrics registers a set of Gauges in the form of collectors for the alerts in the cache.
+func (c *cache) RegisterMetrics(r prometheus.Registerer) {
+	newAlertCountByState := func(state eval.State) prometheus.GaugeFunc {
+		return prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace:   metrics.Namespace,
+			Subsystem:   metrics.Subsystem,
+			Name:        "alerts",
+			Help:        "How many alerts by state are in the scheduler.",
+			ConstLabels: prometheus.Labels{"state": strings.ToLower(state.String())},
+		}, func() float64 {
+			c.updateMetrics()
+			return c.countAlertsBy(state)
+		})
+	}
+
+	r.MustRegister(newAlertCountByState(eval.Normal))
+	r.MustRegister(newAlertCountByState(eval.Alerting))
+	r.MustRegister(newAlertCountByState(eval.Pending))
+	r.MustRegister(newAlertCountByState(eval.Error))
+	r.MustRegister(newAlertCountByState(eval.NoData))
+	r.MustRegister(newAlertCountByState(eval.Recovering))
+}
+
+func expandAnnotationsAndLabels(ctx context.Context, log log.Logger, alertRule *ngModels.AlertRule, result eval.Result, extraLabels data.Labels, externalURL *url.URL, maxLabelValueSize int, stateMetrics *metrics.State) (data.Labels, data.Labels) {
+	var reserved []string
+	resultLabels := result.Instance
+	if len(resultLabels) > 0 {
+		for key := range ngModels.LabelsUserCannotSpecify {
+			if value, ok := resultLabels[key]; ok {
+				if reserved == nil { // make a copy of labels if we are going to modify it
+					resultLabels = result.Instance.Copy()
+				}
+				reserved = append(reserved, key)
+				delete(resultLabels, key)
+				// we cannot delete the reserved label completely because it can cause alert instances to collide (when this label is only unique across results)
+				// so we just rename it to something that does not collide with reserved labels
+				newKey := strings.TrimSuffix(strings.TrimPrefix(key, "__"), "__")
+				if _, ok = resultLabels[newKey]; newKey == "" || newKey == key || ok { // in the case if in the future the LabelsUserCannotSpecify contains labels that do not have double underscore
+					newKey = key + "_user"
+				}
+				if _, ok = resultLabels[newKey]; !ok { // if it still collides with another existing label, we just drop the label
+					resultLabels[newKey] = value
+				} else {
+					log.Warn("Result contains reserved label, and, after renaming, a new label collides with an existing one. Removing the label completely", "deletedLabel", key, "renamedLabel", newKey)
+				}
+			}
+		}
+		if len(reserved) > 0 {
+			log.Debug("Found collision of result labels and system reserved. Renamed labels with suffix '_user'", "renamedLabels", strings.Join(reserved, ","))
+		}
+	}
+	// Merge both the extra labels and the labels from the evaluation into a common set
+	// of labels that can be expanded in custom labels and annotations.
+	templateData := template.NewData(mergeLabels(extraLabels, resultLabels), result)
+
+	// For now, do nothing with these errors as they are already logged in expand.
+	// In the future, we want to show these errors to the user somehow.
+	labels, _ := expand(ctx, log, alertRule.Title, alertRule.Labels, templateData, externalURL, result.EvaluatedAt)
+	annotations, _ := expand(ctx, log, alertRule.Title, alertRule.Annotations, templateData, externalURL, result.EvaluatedAt)
+	labels = clampExpandedValues(log, labels, "label", maxLabelValueSize, alertRule.Title, alertRule.UID, stateMetrics)
+	annotations = clampExpandedValues(log, annotations, "annotation", maxLabelValueSize, alertRule.Title, alertRule.UID, stateMetrics)
+
+	// If the result contains an error, we want to add the ref_id and datasource_uid labels
+	// to the new state if the alert rule should be in the ErrorErrState.
+	var errorLabels data.Labels
+	if result.State == eval.Error && alertRule.ExecErrState == ngModels.ErrorErrState {
+		refID, datasourceUID := datasourceErrorInfo(result.Error, alertRule)
+		if refID != "" || datasourceUID != "" {
+			errorLabels = data.Labels{
+				"ref_id":         refID,
+				"datasource_uid": datasourceUID,
+			}
+		}
+	}
+
+	lbs := make(data.Labels, len(extraLabels)+len(labels)+len(resultLabels)+len(errorLabels))
+	dupes := make(data.Labels)
+	maps.Copy(lbs, extraLabels)
+	maps.Copy(lbs, errorLabels)
+	for key, val := range labels {
+		ruleVal, ok := lbs[key]
+		// if duplicate labels exist, reserved label will take precedence
+		if ok {
+			if ruleVal != val {
+				dupes[key] = val
+			}
+		} else {
+			lbs[key] = val
+		}
+	}
+	if len(dupes) > 0 {
+		log.Debug("Rule declares one or many reserved labels. Those rules labels will be ignored", "labels", dupes)
+	}
+	dupes = make(data.Labels)
+	for key, val := range resultLabels {
+		_, ok := lbs[key]
+		// if duplicate labels exist, reserved or alert rule label will take precedence
+		if ok {
+			dupes[key] = val
+		} else {
+			lbs[key] = val
+		}
+	}
+	if len(dupes) > 0 {
+		log.Debug("Evaluation result contains either reserved labels or labels declared in the rules. Those labels from the result will be ignored", "labels", dupes)
+	}
+	return lbs, annotations
+}
+
+// clampExpandedValues truncates any value in vals exceeding maxSize bytes.
+// A non-positive maxSize disables the clamp and returns vals unmodified.
+// This bounds what expandAnnotationsAndLabels writes into state.State (and,
+// from there, into the persisted AlertInstance.Labels/Annotations columns)
+// against pathological template expansions; it does not replace the
+// sender-side clamp, which only protects the external-Alertmanager send
+// path and never sees un-fired/resolved instances.
+func clampExpandedValues(log log.Logger, vals map[string]string, kind string, maxSize int, ruleTitle, ruleUID string, stateMetrics *metrics.State) map[string]string {
+	if maxSize <= 0 {
+		return vals
+	}
+	var clamped map[string]string
+	for k, v := range vals {
+		if len(v) <= maxSize {
+			continue
+		}
+		if clamped == nil {
+			clamped = make(map[string]string, len(vals))
+			maps.Copy(clamped, vals)
+		}
+		clamped[k] = util.TruncateUTF8(v, maxSize)
+		log.Warn("Truncating expanded label/annotation value exceeding size cap",
+			"kind", kind, "name", k, "size", len(v), "cap", maxSize, "rule", ruleTitle, "rule_uid", ruleUID)
+		if stateMetrics != nil {
+			stateMetrics.TruncatedStrings.WithLabelValues(kind).Inc()
+		}
+	}
+	if clamped != nil {
+		return clamped
+	}
+	return vals
+}
+
+// expand returns the expanded templates of all annotations or labels for the template data.
+// If a template cannot be expanded due to an error in the template the original template is
+// maintained and an error is added to the multierror. All errors in the multierror are
+// template.ExpandError errors.
+func expand(ctx context.Context, log log.Logger, name string, original map[string]string, data template.Data, externalURL *url.URL, evaluatedAt time.Time) (map[string]string, error) {
+	var (
+		errs     error
+		expanded = make(map[string]string, len(original))
+	)
+	for k, v := range original {
+		safeKey := k
+		if safeKey == "" {
+			safeKey = emptyLabelKeyPrefix
+			log.Warn("Rule contains empty label key, using fallback key", "fallbackKey", safeKey)
+		}
+		result, err := template.Expand(ctx, name, v, data, externalURL, evaluatedAt)
+		if err != nil {
+			log.Error("Error in expanding template", "error", err)
+			errs = errors.Join(errs, err)
+			// keep the original template on error
+			expanded[safeKey] = v
+		} else {
+			expanded[safeKey] = result
+		}
+	}
+	return expanded, errs
+}
+
+func (rs *ruleStates) deleteStates(predicate func(s *State) bool) {
+	for id, state := range rs.states {
+		if predicate(state) {
+			delete(rs.states, id)
+		}
+	}
+}
+
+// deleteRuleStates iterates over all states for the given rule and deletes those where predicate returns true.
+// The predicate function is called once for each state and should return true if the state should be deleted.
+func (c *cache) deleteRuleStates(ruleKey ngModels.AlertRuleKey, predicate func(s *State) bool) {
+	c.mtxStates.Lock()
+	defer c.mtxStates.Unlock()
+	ruleStates, ok := c.states[ruleKey.OrgID][ruleKey.UID]
+	if ok {
+		ruleStates.deleteStates(predicate)
+	}
+}
+
+func (c *cache) setRuleStates(ruleKey ngModels.AlertRuleKey, s ruleStates) {
+	c.mtxStates.Lock()
+	defer c.mtxStates.Unlock()
+	if _, ok := c.states[ruleKey.OrgID]; !ok {
+		c.states[ruleKey.OrgID] = make(map[string]*ruleStates)
+	}
+	c.states[ruleKey.OrgID][ruleKey.UID] = &s
 }
 
 func (c *cache) set(entry *State) {
 	c.mtxStates.Lock()
 	defer c.mtxStates.Unlock()
 	if _, ok := c.states[entry.OrgID]; !ok {
-		c.states[entry.OrgID] = make(map[string]map[string]*State)
+		c.states[entry.OrgID] = make(map[string]*ruleStates)
 	}
 	if _, ok := c.states[entry.OrgID][entry.AlertRuleUID]; !ok {
-		c.states[entry.OrgID][entry.AlertRuleUID] = make(map[string]*State)
+		c.states[entry.OrgID][entry.AlertRuleUID] = &ruleStates{states: make(map[data.Fingerprint]*State)}
 	}
-	c.states[entry.OrgID][entry.AlertRuleUID][entry.CacheId] = entry
+	c.states[entry.OrgID][entry.AlertRuleUID].states[entry.CacheID] = entry
 }
 
-func (c *cache) get(orgID int64, alertRuleUID, stateId string) (*State, error) {
+func (c *cache) get(orgID int64, alertRuleUID string, stateId data.Fingerprint) *State {
 	c.mtxStates.RLock()
 	defer c.mtxStates.RUnlock()
-	if state, ok := c.states[orgID][alertRuleUID][stateId]; ok {
-		return state, nil
+	ruleStates, ok := c.states[orgID][alertRuleUID]
+	if ok {
+		var state *State
+		state, ok = ruleStates.states[stateId]
+		if ok {
+			return state
+		}
 	}
-	return nil, fmt.Errorf("no entry for %s:%s was found", alertRuleUID, stateId)
+	return nil
 }
 
 func (c *cache) getAll(orgID int64) []*State {
@@ -133,7 +329,7 @@ func (c *cache) getAll(orgID int64) []*State {
 	c.mtxStates.RLock()
 	defer c.mtxStates.RUnlock()
 	for _, v1 := range c.states[orgID] {
-		for _, v2 := range v1 {
+		for _, v2 := range v1.states {
 			states = append(states, v2)
 		}
 	}
@@ -141,73 +337,100 @@ func (c *cache) getAll(orgID int64) []*State {
 }
 
 func (c *cache) getStatesForRuleUID(orgID int64, alertRuleUID string) []*State {
-	var ruleStates []*State
 	c.mtxStates.RLock()
 	defer c.mtxStates.RUnlock()
-	for _, state := range c.states[orgID][alertRuleUID] {
-		ruleStates = append(ruleStates, state)
+	orgRules, ok := c.states[orgID]
+	if !ok {
+		return nil
 	}
-	return ruleStates
+	rs, ok := orgRules[alertRuleUID]
+	if !ok {
+		return nil
+	}
+	result := make([]*State, 0, len(rs.states))
+	for _, state := range rs.states {
+		result = append(result, state)
+	}
+	return result
 }
 
-// removeByRuleUID deletes all entries in the state cache that match the given UID.
-func (c *cache) removeByRuleUID(orgID int64, uid string) {
+// removeByRuleUID deletes all entries in the state cache that match the given UID. Returns removed states
+func (c *cache) removeByRuleUID(orgID int64, uid string) []*State {
 	c.mtxStates.Lock()
 	defer c.mtxStates.Unlock()
+	orgStates, ok := c.states[orgID]
+	if !ok {
+		return nil
+	}
+	rs, ok := orgStates[uid]
+	if !ok {
+		return nil
+	}
 	delete(c.states[orgID], uid)
+	if len(rs.states) == 0 {
+		return nil
+	}
+	states := make([]*State, 0, len(rs.states))
+	for _, state := range rs.states {
+		states = append(states, state)
+	}
+	return states
 }
 
-func (c *cache) reset() {
-	c.mtxStates.Lock()
-	defer c.mtxStates.Unlock()
-	c.states = make(map[int64]map[string]map[string]*State)
-}
-
-func (c *cache) recordMetrics() {
+// GetAlertInstances returns the whole content of the cache as a slice of AlertInstance.
+func (c *cache) GetAlertInstances() []ngModels.AlertInstance {
+	var states []ngModels.AlertInstance
 	c.mtxStates.RLock()
 	defer c.mtxStates.RUnlock()
-
-	// Set default values to zero such that gauges are reset
-	// after all values from a single state disappear.
-	ct := map[eval.State]int{
-		eval.Normal:   0,
-		eval.Alerting: 0,
-		eval.Pending:  0,
-		eval.NoData:   0,
-		eval.Error:    0,
-	}
-
-	for org, orgMap := range c.states {
-		c.metrics.GroupRules.WithLabelValues(fmt.Sprint(org)).Set(float64(len(orgMap)))
-		for _, rule := range orgMap {
-			for _, state := range rule {
-				n := ct[state.State]
-				ct[state.State] = n + 1
+	for _, orgStates := range c.states {
+		for _, v1 := range orgStates {
+			for _, v2 := range v1.states {
+				key, err := v2.GetAlertInstanceKey()
+				if err != nil {
+					continue
+				}
+				var lastError string
+				if v2.Error != nil {
+					lastError = v2.Error.Error()
+				}
+				var lastResult ngModels.LastResult
+				if v2.LatestResult != nil {
+					lastResult = ngModels.LastResult{
+						Values:    v2.LatestResult.Values,
+						Condition: v2.LatestResult.Condition,
+					}
+				}
+				states = append(states, ngModels.AlertInstance{
+					AlertInstanceKey:   key,
+					Labels:             ngModels.InstanceLabels(v2.Labels),
+					Annotations:        v2.Annotations,
+					CurrentState:       ngModels.InstanceStateType(v2.State.String()),
+					CurrentReason:      v2.StateReason,
+					LastEvalTime:       v2.LastEvaluationTime,
+					CurrentStateSince:  v2.StartsAt,
+					CurrentStateEnd:    v2.EndsAt,
+					FiredAt:            v2.FiredAt,
+					ResolvedAt:         v2.ResolvedAt,
+					LastSentAt:         v2.LastSentAt,
+					ResultFingerprint:  v2.ResultFingerprint.String(),
+					EvaluationDuration: v2.EvaluationDuration,
+					LastError:          lastError,
+					LastResult:         lastResult,
+				})
 			}
 		}
 	}
-
-	for k, n := range ct {
-		c.metrics.AlertState.WithLabelValues(strings.ToLower(k.String())).Set(float64(n))
-	}
+	return states
 }
 
 // if duplicate labels exist, keep the value from the first set
 func mergeLabels(a, b data.Labels) data.Labels {
-	newLbs := data.Labels{}
-	for k, v := range a {
-		newLbs[k] = v
-	}
+	newLbs := make(data.Labels, len(a)+len(b))
+	maps.Copy(newLbs, a)
 	for k, v := range b {
 		if _, ok := newLbs[k]; !ok {
 			newLbs[k] = v
 		}
 	}
 	return newLbs
-}
-
-func (c *cache) deleteEntry(orgID int64, alertRuleUID, cacheID string) {
-	c.mtxStates.Lock()
-	defer c.mtxStates.Unlock()
-	delete(c.states[orgID][alertRuleUID], cacheID)
 }

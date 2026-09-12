@@ -1,9 +1,23 @@
-import { DataQuery, DataSourceJsonData, TimeRange } from '@grafana/data';
-import { GraphiteDatasource } from './datasource';
-import { TemplateSrv } from '../../../features/templating/template_srv';
+import { type DataSourceJsonData, type TimeRange } from '@grafana/data';
+import { type TemplateSrv } from '@grafana/runtime';
+import { type DataQuery } from '@grafana/schema';
+
+import { type GraphiteDatasource } from './datasource';
+
+export enum GraphiteQueryType {
+  Default = 'Default',
+  Value = 'Value',
+  MetricName = 'Metric Name',
+}
 
 export interface GraphiteQuery extends DataQuery {
+  queryType?: string;
+  textEditor?: boolean;
   target?: string;
+  targetFull?: string;
+  tags?: string[];
+  fromAnnotations?: boolean;
+  isMetricTank?: boolean;
 }
 
 export interface GraphiteOptions extends DataSourceJsonData {
@@ -34,16 +48,16 @@ export interface MetricTankSeriesMeta {
   count: number;
 }
 
-export interface MetricTankMeta {
-  request: MetricTankRequestMeta;
-  info: MetricTankSeriesMeta[];
+export interface GraphiteParserError {
+  message: string;
+  pos: number;
 }
 
 export type GraphiteQueryImportConfiguration = {
   loki: GraphiteToLokiQueryImportConfiguration;
 };
 
-export type GraphiteToLokiQueryImportConfiguration = {
+type GraphiteToLokiQueryImportConfiguration = {
   mappings: GraphiteLokiMapping[];
 };
 
@@ -80,3 +94,10 @@ export type GraphiteQueryEditorDependencies = {
   // schedule onChange/onRunQuery after the reducer actions finishes
   refresh: () => void;
 };
+
+export interface GraphiteEvents {
+  when: number;
+  what: string;
+  tags: string[];
+  data: string;
+}

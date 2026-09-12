@@ -1,16 +1,24 @@
-import React, { FC, useCallback, useState } from 'react';
 import { css, cx } from '@emotion/css';
-import { getTimeZoneInfo, GrafanaTheme2, TimeZone } from '@grafana/data';
-import { stylesFactory, useTheme2 } from '../../../themes';
-import { TimeZoneTitle } from '../TimeZonePicker/TimeZoneTitle';
+import { useCallback, useId, useState } from 'react';
+import * as React from 'react';
+
+import { type GrafanaTheme2, type TimeZone } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { t, Trans } from '@grafana/i18n';
+
+import { useStyles2 } from '../../../themes/ThemeContext';
+import { Button } from '../../Button/Button';
+import { Combobox } from '../../Combobox/Combobox';
+import { Field } from '../../Forms/Field';
+import { Tab } from '../../Tabs/Tab';
+import { TabContent } from '../../Tabs/TabContent';
+import { TabsBar } from '../../Tabs/TabsBar';
+import { TimeZonePicker } from '../TimeZonePicker';
 import { TimeZoneDescription } from '../TimeZonePicker/TimeZoneDescription';
 import { TimeZoneOffset } from '../TimeZonePicker/TimeZoneOffset';
-import { Button } from '../../Button';
-import { TimeZonePicker } from '../TimeZonePicker';
-import { isString } from 'lodash';
-import { selectors } from '@grafana/e2e-selectors';
-import { Field, RadioButtonGroup, Select } from '../..';
-import { monthOptions } from '../options';
+import { getTimeZoneTitle, TimeZoneTitle } from '../TimeZonePicker/TimeZoneTitle';
+import { getTimeZoneDisplayInfo } from '../TimeZonePicker/timeZoneUtils';
+import { getMonthOptions } from '../options';
 
 interface Props {
   timeZone?: TimeZone;
@@ -20,7 +28,7 @@ interface Props {
   onChangeFiscalYearStartMonth?: (month: number) => void;
 }
 
-export const TimePickerFooter: FC<Props> = (props) => {
+export const TimePickerFooter = (props: Props) => {
   const {
     timeZone,
     fiscalYearStartMonth,
@@ -30,6 +38,11 @@ export const TimePickerFooter: FC<Props> = (props) => {
   } = props;
   const [isEditing, setEditing] = useState(false);
   const [editMode, setEditMode] = useState('tz');
+
+  const timeSettingsId = useId();
+  const timeZoneSettingsId = useId();
+  const fiscalYearSettingsId = useId();
+  const fiscalYearStartMonthId = useId();
 
   const onToggleChangeTimeSettings = useCallback(
     (event?: React.MouseEvent) => {
@@ -41,14 +54,13 @@ export const TimePickerFooter: FC<Props> = (props) => {
     [isEditing, setEditing]
   );
 
-  const theme = useTheme2();
-  const style = getStyle(theme);
+  const style = useStyles2(getStyle);
 
-  if (!isString(timeZone)) {
+  if (typeof timeZone !== 'string') {
     return null;
   }
 
-  const info = getTimeZoneInfo(timeZone, timestamp);
+  const info = getTimeZoneDisplayInfo(timeZone, timestamp);
 
   if (!info) {
     return null;
@@ -56,111 +68,139 @@ export const TimePickerFooter: FC<Props> = (props) => {
 
   return (
     <div>
-      <section aria-label="Time zone selection" className={style.container}>
+      <section
+        aria-label={t('time-picker.footer.time-zone-selection', 'Time zone selection')}
+        className={style.container}
+      >
         <div className={style.timeZoneContainer}>
           <div className={style.timeZone}>
-            <TimeZoneTitle title={info.name} />
+            <TimeZoneTitle title={getTimeZoneTitle(info)} />
             <div className={style.spacer} />
             <TimeZoneDescription info={info} />
           </div>
-          <TimeZoneOffset timeZone={timeZone} timestamp={timestamp} />
+          <TimeZoneOffset offset={`UTC${info.offset}`} />
         </div>
         <div className={style.spacer} />
-        <Button variant="secondary" onClick={onToggleChangeTimeSettings} size="sm">
-          Change time settings
+        <Button
+          data-testid={selectors.components.TimeZonePicker.changeTimeSettingsButton}
+          variant="secondary"
+          onClick={onToggleChangeTimeSettings}
+          size="sm"
+          aria-expanded={isEditing}
+          aria-controls={timeSettingsId}
+          icon={isEditing ? 'angle-up' : 'angle-down'}
+        >
+          <Trans i18nKey="time-picker.footer.change-settings-button">Change time settings</Trans>
         </Button>
       </section>
       {isEditing ? (
-        <div className={style.editContainer}>
-          <div>
-            <RadioButtonGroup
-              value={editMode}
-              options={[
-                { label: 'Time Zone', value: 'tz' },
-                { label: 'Fiscal year', value: 'fy' },
-              ]}
-              onChange={setEditMode}
-            ></RadioButtonGroup>
-          </div>
-          {editMode === 'tz' ? (
-            <section
-              data-testid={selectors.components.TimeZonePicker.containerV2}
-              className={cx(style.timeZoneContainer, style.timeSettingContainer)}
-            >
-              <TimeZonePicker
-                includeInternal={true}
-                onChange={(timeZone) => {
-                  onToggleChangeTimeSettings();
-
-                  if (isString(timeZone)) {
-                    onChangeTimeZone(timeZone);
-                  }
-                }}
-                onBlur={onToggleChangeTimeSettings}
-              />
-            </section>
-          ) : (
-            <section
-              aria-label={selectors.components.TimeZonePicker.containerV2}
-              className={cx(style.timeZoneContainer, style.timeSettingContainer)}
-            >
-              <Field className={style.fiscalYearField} label={'Fiscal year start month'}>
-                <Select
-                  value={fiscalYearStartMonth}
-                  options={monthOptions}
-                  onChange={(value) => {
-                    if (onChangeFiscalYearStartMonth) {
-                      onChangeFiscalYearStartMonth(value.value ?? 0);
+        <div className={style.editContainer} id={timeSettingsId}>
+          <TabsBar>
+            <Tab
+              label={t('time-picker.footer.time-zone-option', 'Time zone')}
+              active={editMode === 'tz'}
+              onChangeTab={() => {
+                setEditMode('tz');
+              }}
+              aria-controls={timeZoneSettingsId}
+            />
+            <Tab
+              label={t('time-picker.footer.fiscal-year-option', 'Fiscal year')}
+              active={editMode === 'fy'}
+              onChangeTab={() => {
+                setEditMode('fy');
+              }}
+              aria-controls={fiscalYearSettingsId}
+            />
+          </TabsBar>
+          <TabContent className={style.noBackground}>
+            {editMode === 'tz' ? (
+              <section
+                role="tabpanel"
+                data-testid={selectors.components.TimeZonePicker.containerV2}
+                id={timeZoneSettingsId}
+                className={cx(style.timeZoneContainer, style.timeSettingContainer)}
+              >
+                <TimeZonePicker
+                  includeInternal={true}
+                  onChange={(timeZone) => {
+                    if (typeof timeZone === 'string') {
+                      onChangeTimeZone(timeZone);
                     }
                   }}
+                  menuShouldPortal={false}
                 />
-              </Field>
-            </section>
-          )}
+              </section>
+            ) : (
+              <section
+                role="tabpanel"
+                data-testid={selectors.components.TimeZonePicker.containerV2}
+                id={fiscalYearSettingsId}
+                className={cx(style.timeZoneContainer, style.timeSettingContainer)}
+              >
+                <Field
+                  className={style.fiscalYearField}
+                  label={t('time-picker.footer.fiscal-year-start', 'Fiscal year start month')}
+                >
+                  <Combobox
+                    id={fiscalYearStartMonthId}
+                    value={fiscalYearStartMonth ?? null}
+                    options={getMonthOptions()}
+                    onChange={(value) => {
+                      if (onChangeFiscalYearStartMonth) {
+                        onChangeFiscalYearStartMonth(value?.value ?? 0);
+                      }
+                    }}
+                  />
+                </Field>
+              </section>
+            )}
+          </TabContent>
         </div>
       ) : null}
     </div>
   );
 };
 
-const getStyle = stylesFactory((theme: GrafanaTheme2) => {
-  return {
-    container: css`
-      border-top: 1px solid ${theme.colors.border.weak};
-      padding: 11px;
-      display: flex;
-      flex-direction: row;
-      justify-content: space-between;
-      align-items: center;
-    `,
-    editContainer: css`
-      border-top: 1px solid ${theme.colors.border.weak};
-      padding: 11px;
-      justify-content: space-between;
-      align-items: center;
-      padding: 7px;
-    `,
-    spacer: css`
-      margin-left: 7px;
-    `,
-    timeSettingContainer: css`
-      padding-top: ${theme.spacing(1)};
-    `,
-    fiscalYearField: css`
-      margin-bottom: 0px;
-    `,
-    timeZoneContainer: css`
-      display: flex;
-      flex-direction: row;
-      justify-content: space-between;
-      align-items: center;
-      flex-grow: 1;
-    `,
-    timeZone: css`
-      display: flex;
-      flex-direction: row;
-      align-items: baseline;
-      flex-grow: 1;
-    `,
-  };
+const getStyle = (theme: GrafanaTheme2) => ({
+  container: css({
+    borderTop: `1px solid ${theme.colors.border.weak}`,
+    padding: theme.spacing(1.5),
+    display: 'flex',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  }),
+  editContainer: css({
+    borderTop: `1px solid ${theme.colors.border.weak}`,
+    padding: theme.spacing(1.5),
+    paddingTop: 0,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  }),
+  spacer: css({
+    marginLeft: '7px',
+  }),
+  timeSettingContainer: css({
+    paddingTop: theme.spacing(1),
+  }),
+  noBackground: css({
+    background: 'inherit',
+  }),
+  fiscalYearField: css({
+    marginBottom: 0,
+  }),
+  timeZoneContainer: css({
+    display: 'flex',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexGrow: 1,
+  }),
+  timeZone: css({
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    flexGrow: 1,
+  }),
 });

@@ -1,16 +1,22 @@
-import React, { HTMLProps } from 'react';
 import { cx } from '@emotion/css';
-import { isObject } from 'lodash';
-import { SegmentSelect } from './SegmentSelect';
-import { SelectableValue } from '@grafana/data';
-import { useExpandableLabel, SegmentProps } from '.';
+import { type HTMLProps } from 'react';
+import * as React from 'react';
 import { useAsyncFn } from 'react-use';
-import { AsyncState } from 'react-use/lib/useAsync';
-import { getSegmentStyles } from './styles';
-import { InlineLabel } from '../Forms/InlineLabel';
-import { useStyles } from '../../themes';
+import { type AsyncState } from 'react-use/lib/useAsync';
 
-export interface SegmentAsyncProps<T> extends SegmentProps<T>, Omit<HTMLProps<HTMLDivElement>, 'value' | 'onChange'> {
+import { type SelectableValue } from '@grafana/data';
+import { t } from '@grafana/i18n';
+
+import { useStyles2 } from '../../themes/ThemeContext';
+import { InlineLabel } from '../Forms/InlineLabel';
+import { getLabelFromValue } from '../Select/utils';
+
+import { SegmentSelect } from './SegmentSelect';
+import { getSegmentStyles } from './styles';
+import { type SegmentProps } from './types';
+import { useExpandableLabel } from './useExpandableLabel';
+
+export interface SegmentAsyncProps<T> extends SegmentProps, Omit<HTMLProps<HTMLDivElement>, 'value' | 'onChange'> {
   value?: T | SelectableValue<T>;
   loadOptions: (query?: string) => Promise<Array<SelectableValue<T>>>;
   /**
@@ -23,6 +29,9 @@ export interface SegmentAsyncProps<T> extends SegmentProps<T>, Omit<HTMLProps<HT
   inputMinWidth?: number;
 }
 
+/**
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/inputs-segmentasync--docs
+ */
 export function SegmentAsync<T>({
   value,
   onChange,
@@ -44,10 +53,10 @@ export function SegmentAsync<T>({
   const [state, fetchOptions] = useAsyncFn(loadOptions, [loadOptions]);
   const [Label, labelWidth, expanded, setExpanded] = useExpandableLabel(autofocus, onExpandedChange);
   const width = inputMinWidth ? Math.max(inputMinWidth, labelWidth) : labelWidth;
-  const styles = useStyles(getSegmentStyles);
+  const styles = useStyles2(getSegmentStyles);
 
   if (!expanded) {
-    const label = isObject(value) ? value.label : value;
+    const label = getLabelFromValue(value);
 
     return (
       <Label
@@ -76,7 +85,7 @@ export function SegmentAsync<T>({
   return (
     <SegmentSelect
       {...rest}
-      value={value && !isObject(value) ? { value } : value}
+      value={value && typeof value !== 'object' ? { value } : value}
       placeholder={inputPlaceholder}
       options={state.value ?? []}
       loadOptions={reloadOptionsOnChange ? fetchOptions : undefined}
@@ -97,16 +106,12 @@ export function SegmentAsync<T>({
 
 function mapStateToNoOptionsMessage<T>(state: AsyncState<Array<SelectableValue<T>>>): string {
   if (state.loading) {
-    return 'Loading options...';
+    return t('grafana-ui.segment-async.loading', 'Loading options...');
   }
 
   if (state.error) {
-    return 'Failed to load options';
+    return t('grafana-ui.segment-async.error', 'Failed to load options');
   }
 
-  if (!Array.isArray(state.value) || state.value.length === 0) {
-    return 'No options found';
-  }
-
-  return '';
+  return t('grafana-ui.segment-async.no-options', 'No options found');
 }

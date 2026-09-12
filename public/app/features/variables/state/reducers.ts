@@ -1,20 +1,43 @@
-import { combineReducers } from '@reduxjs/toolkit';
-import { optionsPickerReducer } from '../pickers/OptionsPicker/reducer';
-import { variableEditorReducer } from '../editor/reducer';
+import { type AnyAction, combineReducers, type Reducer } from 'redux';
+
+import { initialVariableInspectState, variableInspectReducer, type VariableInspectState } from '../inspect/reducer';
+import {
+  initialOptionPickerState,
+  optionsPickerReducer,
+  type OptionsPickerState,
+} from '../pickers/OptionsPicker/reducer';
+
+import { initialTransactionState, transactionReducer, type TransactionState } from './transactionReducer';
+import { initialVariablesState, type VariablesState } from './types';
 import { variablesReducer } from './variablesReducer';
-import { transactionReducer } from './transactionReducer';
-import { variableInspectReducer } from '../inspect/reducer';
 
-export const templatingReducers = combineReducers({
-  editor: variableEditorReducer,
-  variables: variablesReducer,
-  optionsPicker: optionsPickerReducer,
-  transaction: transactionReducer,
-  inspect: variableInspectReducer,
-});
+export interface TemplatingState {
+  variables: VariablesState;
+  optionsPicker: OptionsPickerState;
+  transaction: TransactionState;
+  inspect: VariableInspectState;
+}
 
-export type TemplatingState = ReturnType<typeof templatingReducers>;
+let templatingReducers: Reducer<TemplatingState, AnyAction, Partial<TemplatingState>>;
 
-export default {
-  templating: templatingReducers,
-};
+export function getTemplatingReducers() {
+  if (!templatingReducers) {
+    templatingReducers = combineReducers({
+      variables: variablesReducer,
+      optionsPicker: optionsPickerReducer,
+      transaction: transactionReducer,
+      inspect: variableInspectReducer,
+    });
+  }
+
+  return templatingReducers;
+}
+
+export function getInitialTemplatingState() {
+  return {
+    variables: initialVariablesState,
+    optionsPicker: initialOptionPickerState,
+    transaction: initialTransactionState,
+    inspect: initialVariableInspectState,
+  };
+}

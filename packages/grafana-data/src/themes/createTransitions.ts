@@ -33,14 +33,14 @@ const duration = {
 };
 
 /** @alpha */
-export interface CreateTransitionOptions {
+interface CreateTransitionOptions {
   duration?: number | string;
   easing?: string;
   delay?: number | string;
 }
 
 /** @alpha */
-export function create(props: string | string[] = ['all'], options: CreateTransitionOptions = {}) {
+function create(props: string | string[] = ['all'], options: CreateTransitionOptions = {}) {
   const { duration: durationOption = duration.standard, easing: easingOption = easing.easeInOut, delay = 0 } = options;
 
   return (Array.isArray(props) ? props : [props])
@@ -53,7 +53,13 @@ export function create(props: string | string[] = ['all'], options: CreateTransi
     .join(',');
 }
 
-export function getAutoHeightDuration(height: number) {
+type ReducedMotionProps = 'no-preference' | 'reduce';
+
+function handleMotion(...props: ReducedMotionProps[]) {
+  return `@media ${props.map((prop) => `(prefers-reduced-motion: ${prop})`).join(',')}`;
+}
+
+function getAutoHeightDuration(height: number) {
   if (!height) {
     return 0;
   }
@@ -74,6 +80,7 @@ export interface ThemeTransitions {
   duration: typeof duration;
   easing: typeof easing;
   getAutoHeightDuration: typeof getAutoHeightDuration;
+  handleMotion: typeof handleMotion;
 }
 
 /** @internal */
@@ -83,5 +90,6 @@ export function createTransitions(): ThemeTransitions {
     duration,
     easing,
     getAutoHeightDuration,
+    handleMotion,
   };
 }

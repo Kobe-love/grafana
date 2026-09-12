@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/centrifugal/centrifuge"
+
 	"github.com/grafana/grafana/pkg/services/live/managedstream"
 	"github.com/grafana/grafana/pkg/services/secrets"
 )
@@ -15,7 +16,7 @@ type StorageRuleBuilder struct {
 	FrameStorage         *FrameStorage
 	Storage              Storage
 	ChannelHandlerGetter ChannelHandlerGetter
-	SecretsService       secrets.Service
+	SecretsService       secrets.Service //nolint:staticcheck // SA1019: Legacy envelope encryption for single-tenant feature
 }
 
 func (f *StorageRuleBuilder) extractSubscriber(config *SubscriberConfig) (Subscriber, error) {
@@ -58,11 +59,6 @@ func (f *StorageRuleBuilder) extractConverter(config *ConverterConfig) (Converte
 			config.AutoJsonConverterConfig = &AutoJsonConverterConfig{}
 		}
 		return NewAutoJsonConverter(*config.AutoJsonConverterConfig), nil
-	case ConverterTypeJsonExact:
-		if config.ExactJsonConverterConfig == nil {
-			return nil, missingConfiguration
-		}
-		return NewExactJsonConverter(*config.ExactJsonConverterConfig), nil
 	case ConverterTypeJsonFrame:
 		if config.JsonFrameConverterConfig == nil {
 			config.JsonFrameConverterConfig = &JsonFrameConverterConfig{}
@@ -303,23 +299,23 @@ func (f *StorageRuleBuilder) getWriteConfig(uid string, writeConfigs []WriteConf
 	return WriteConfig{}, false
 }
 
-func (f *StorageRuleBuilder) BuildRules(ctx context.Context, orgID int64) ([]*LiveChannelRule, error) {
-	channelRules, err := f.Storage.ListChannelRules(ctx, orgID)
+func (f *StorageRuleBuilder) BuildRules(ctx context.Context, ns string) ([]*LiveChannelRule, error) {
+	channelRules, err := f.Storage.ListChannelRules(ctx, ns)
 	if err != nil {
 		return nil, err
 	}
 
-	writeConfigs, err := f.Storage.ListWriteConfigs(ctx, orgID)
+	writeConfigs, err := f.Storage.ListWriteConfigs(ctx, ns)
 	if err != nil {
 		return nil, err
 	}
 
-	var rules []*LiveChannelRule
+	rules := make([]*LiveChannelRule, 0, len(channelRules))
 
 	for _, ruleConfig := range channelRules {
 		rule := &LiveChannelRule{
-			OrgId:   orgID,
-			Pattern: ruleConfig.Pattern,
+			Namespace: ns,
+			Pattern:   ruleConfig.Pattern,
 		}
 
 		if ruleConfig.Settings.Auth != nil && ruleConfig.Settings.Auth.Subscribe != nil {

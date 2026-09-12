@@ -1,9 +1,9 @@
-import React from 'react';
-import { Meta, Story } from '@storybook/react';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+
 import { FieldValidationMessage } from './FieldValidationMessage';
 import mdx from './FieldValidationMessage.mdx';
 
-const story = {
+const meta: Meta<typeof FieldValidationMessage> = {
   title: 'Forms/FieldValidationMessage',
   component: FieldValidationMessage,
   parameters: {
@@ -23,10 +23,8 @@ const story = {
   },
 };
 
-export default story as Meta;
-
-type Args = typeof story['args'];
-
-export const Basic: Story<Args> = (args) => {
+export const Basic: StoryFn<typeof FieldValidationMessage> = (args) => {
   return <FieldValidationMessage horizontal={args.horizontal}>{args.children}</FieldValidationMessage>;
 };
+
+export default meta;

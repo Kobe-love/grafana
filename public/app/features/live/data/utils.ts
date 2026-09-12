@@ -1,5 +1,4 @@
-import { DataQueryResponseData, isDataFrame } from '@grafana/data';
-import { StreamingDataFrame } from './StreamingDataFrame';
+import { type DataQueryResponseData, isDataFrame, type StreamingDataFrame } from '@grafana/data';
 
 /**
  * @alpha -- experimental
@@ -12,7 +11,7 @@ export enum StreamingResponseDataType {
 /**
  * @alpha -- experimental
  */
-export type StreamingResponseDataTypeToData = {
+type StreamingResponseDataTypeToData = {
   [StreamingResponseDataType.NewValuesSameSchema]: {
     values: unknown[][];
   };
@@ -37,16 +36,6 @@ export const isStreamingResponseData = <T extends StreamingResponseDataType>(
   responseData: DataQueryResponseData,
   type: T
 ): responseData is StreamingResponseData<T> => 'type' in responseData && responseData.type === type;
-
-const AllStreamingResponseDataTypes = Object.values(StreamingResponseDataType);
-
-/**
- * @alpha -- experimental
- */
-export const isAnyStreamingResponseData = (
-  responseData: DataQueryResponseData
-): responseData is StreamingResponseData =>
-  'type' in responseData && AllStreamingResponseDataTypes.includes(responseData.type);
 
 /**
  * @alpha -- experimental

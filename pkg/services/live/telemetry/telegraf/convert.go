@@ -7,9 +7,10 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/data/converters"
+	influx "github.com/influxdata/line-protocol"
+
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/services/live/telemetry"
-	influx "github.com/influxdata/line-protocol"
 )
 
 var (
@@ -137,7 +138,7 @@ func (c *Converter) convertWithLabelsColumn(metrics []influx.Metric) ([]telemetr
 		for i := 2; i < len(frame.fields); i++ {
 			if frame.fields[i].Len() < frame.fields[0].Len() {
 				numNulls := frame.fields[0].Len() - frame.fields[i].Len()
-				for j := 0; j < numNulls; j++ {
+				for range numNulls {
 					frame.fields[i].Append(nil)
 				}
 			}
@@ -212,7 +213,7 @@ func (s *metricFrame) extend(m influx.Metric) error {
 
 func tagsToLabels(tags []*influx.Tag) data.Labels {
 	labels := data.Labels{}
-	for i := 0; i < len(tags); i += 1 {
+	for i := range tags {
 		labels[tags[i].Key] = tags[i].Value
 	}
 	return labels
@@ -236,7 +237,7 @@ func (s *metricFrame) append(m influx.Metric) error {
 		if index, ok := s.fieldCache[f.Key]; ok {
 			field := s.fields[index]
 			if ft != field.Type() {
-				logger.Warn("error appending values", "type", field.Type(), "expect", ft, "value", v, "key", f.Key, "line", m)
+				logger.Warn("Error appending values", "type", field.Type(), "expect", ft, "value", v, "key", f.Key, "line", m)
 				if field.Type() == data.FieldTypeNullableString && v != nil {
 					str := fmt.Sprintf("%v", f.Value)
 					v = &str
@@ -248,7 +249,7 @@ func (s *metricFrame) append(m influx.Metric) error {
 			// we fill it with nulls up to the currently processed index.
 			if field.Len() < s.fields[0].Len()-1 {
 				numNulls := s.fields[0].Len() - 1 - field.Len()
-				for i := 0; i < numNulls; i++ {
+				for range numNulls {
 					field.Append(nil)
 				}
 			}
@@ -260,7 +261,7 @@ func (s *metricFrame) append(m influx.Metric) error {
 			// we fill it with nulls up to the currently processed index.
 			if field.Len() < s.fields[0].Len()-1 {
 				numNulls := s.fields[0].Len() - 1 - field.Len()
-				for i := 0; i < numNulls; i++ {
+				for range numNulls {
 					field.Append(nil)
 				}
 			}
@@ -274,7 +275,7 @@ func (s *metricFrame) append(m influx.Metric) error {
 
 // float64FieldTypeFor converts all numbers to float64.
 // The precision can be lost during big int64 or uint64 conversion to float64.
-func float64FieldTypeFor(t interface{}) data.FieldType {
+func float64FieldTypeFor(t any) data.FieldType {
 	switch t.(type) {
 	case int8:
 		return data.FieldTypeFloat64
@@ -308,7 +309,7 @@ func float64FieldTypeFor(t interface{}) data.FieldType {
 	return data.FieldTypeUnknown
 }
 
-func (s *metricFrame) getFieldTypeAndValue(f *influx.Field) (data.FieldType, interface{}, error) {
+func (s *metricFrame) getFieldTypeAndValue(f *influx.Field) (data.FieldType, any, error) {
 	var ft data.FieldType
 	if s.useFloatNumbers {
 		ft = float64FieldTypeFor(f.Value)
@@ -343,8 +344,8 @@ func (s *metricFrame) getFieldTypeAndValue(f *influx.Field) (data.FieldType, int
 	return ft, v, nil
 }
 
-func getConvertFunc(ft data.FieldType) (func(v interface{}) (interface{}, error), bool) {
-	var convert func(v interface{}) (interface{}, error)
+func getConvertFunc(ft data.FieldType) (func(v any) (any, error), bool) {
+	var convert func(v any) (any, error)
 	switch ft {
 	case data.FieldTypeNullableString:
 		convert = converters.AnyToNullableString.Converter

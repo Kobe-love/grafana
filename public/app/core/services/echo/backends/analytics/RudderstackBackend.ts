@@ -1,20 +1,55 @@
-import $ from 'jquery';
+import { type BuildInfo } from '@grafana/data';
 import {
-  EchoBackend,
+  type EchoBackend,
   EchoEventType,
   isExperimentViewEvent,
   isInteractionEvent,
   isPageviewEvent,
-  PageviewEchoEvent,
+  type PageviewEchoEvent,
 } from '@grafana/runtime';
-import { User } from '../sentry/types';
+
+import { type User } from '../../../context_srv';
+import { loadScript } from '../../utils';
+
+type Properties = Record<string, string | boolean | number>;
+
+interface Rudderstack {
+  identify: (identifier: string, traits: Properties) => void;
+  // load type set to match Rudderstack v3, for global type compatibility with new version.
+  load: (
+    writeKey: string,
+    dataPlaneURL: string,
+    options: {
+      configUrl?: string;
+      destSDKBaseURL?: string;
+      storage?: {
+        encryption?: {
+          version: 'V3' | 'legacy';
+        };
+        migrate?: boolean;
+      };
+    }
+  ) => void;
+  page: () => void;
+  track: (eventName: string, properties?: Properties) => void;
+}
+
+declare global {
+  interface Window {
+    // We say all methods are undefined because we can't be sure they're there
+    // and we should be extra cautious
+    rudderanalytics?: Partial<Rudderstack>;
+  }
+}
 
 export interface RudderstackBackendOptions {
   writeKey: string;
   dataPlaneUrl: string;
+  buildInfo: BuildInfo;
   user?: User;
   sdkUrl?: string;
   configUrl?: string;
+  integrationsUrl?: string;
 }
 
 export class RudderstackBackend implements EchoBackend<PageviewEchoEvent, RudderstackBackendOptions> {
@@ -22,16 +57,11 @@ export class RudderstackBackend implements EchoBackend<PageviewEchoEvent, Rudder
 
   constructor(public options: RudderstackBackendOptions) {
     const url = options.sdkUrl || `https://cdn.rudderlabs.com/v1/rudder-analytics.min.js`;
+    loadScript(url);
 
-    $.ajax({
-      url,
-      dataType: 'script',
-      cache: true,
-    });
+    const tempRudderstack = ((window as any).rudderanalytics = []);
 
-    const rds = ((window as any).rudderanalytics = []);
-
-    var methods = [
+    const methods = [
       'load',
       'page',
       'track',
@@ -46,39 +76,47 @@ export class RudderstackBackend implements EchoBackend<PageviewEchoEvent, Rudder
 
     for (let i = 0; i < methods.length; i++) {
       const method = methods[i];
-      (rds as Record<string, any>)[method] = (function (methodName) {
+      (tempRudderstack as Record<string, any>)[method] = (function (methodName) {
         return function () {
           // @ts-ignore
-          rds.push([methodName].concat(Array.prototype.slice.call(arguments)));
+          tempRudderstack.push([methodName].concat(Array.prototype.slice.call(arguments)));
         };
       })(method);
     }
 
-    (rds as any).load(options.writeKey, options.dataPlaneUrl, { configUrl: options.configUrl });
+    window.rudderanalytics?.load?.(options.writeKey, options.dataPlaneUrl, {
+      configUrl: options.configUrl,
+      destSDKBaseURL: options.integrationsUrl,
+    });
 
     if (options.user) {
-      (rds as any).identify(options.user.email, {
+      const { identifier } = options.user.analytics;
+
+      window.rudderanalytics?.identify?.(identifier, {
         email: options.user.email,
         orgId: options.user.orgId,
+        language: options.user.language,
+        version: options.buildInfo.version,
+        edition: options.buildInfo.edition,
       });
     }
   }
 
   addEvent = (e: PageviewEchoEvent) => {
-    if (!(window as any).rudderanalytics) {
+    if (!window.rudderanalytics) {
       return;
     }
 
     if (isPageviewEvent(e)) {
-      (window as any).rudderanalytics.page();
+      window.rudderanalytics.page?.();
     }
 
     if (isInteractionEvent(e)) {
-      (window as any).rudderanalytics.track(e.payload.interactionName, e.payload.properties);
+      window.rudderanalytics.track?.(e.payload.interactionName, e.payload.properties);
     }
 
     if (isExperimentViewEvent(e)) {
-      (window as any).rudderanalytics.track('experiment_viewed', {
+      window.rudderanalytics.track?.('experiment_viewed', {
         experiment_id: e.payload.experimentId,
         experiment_group: e.payload.experimentGroup,
         experiment_variant: e.payload.experimentVariant,

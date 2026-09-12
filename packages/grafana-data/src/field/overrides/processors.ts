@@ -1,14 +1,14 @@
-import {
-  DataLink,
-  Field,
-  FieldOverrideContext,
-  SelectableValue,
-  SliderMarks,
-  ThresholdsConfig,
-  ValueMapping,
-} from '../../types';
+import { type Action } from '../../types/action';
+import { type Field } from '../../types/dataFrame';
+import { type DataLink } from '../../types/dataLink';
+import { type FieldOverrideContext } from '../../types/fieldOverrides';
+import { type SelectableValue } from '../../types/select';
+import { type SliderMarks } from '../../types/slider';
+import { type Threshold, type ThresholdsConfig } from '../../types/thresholds';
+import { type ValueMapping } from '../../types/valueMapping';
+import { sortThresholds } from '../thresholds';
 
-export const identityOverrideProcessor = <T>(value: T, _context: FieldOverrideContext, _settings: any) => {
+export const identityOverrideProcessor = <T>(value: T) => {
   return value;
 };
 
@@ -21,7 +21,7 @@ export interface NumberFieldConfigSettings {
 }
 
 export const numberOverrideProcessor = (
-  value: any,
+  value: unknown,
   context: FieldOverrideContext,
   settings?: NumberFieldConfigSettings
 ) => {
@@ -29,11 +29,11 @@ export const numberOverrideProcessor = (
     return undefined;
   }
 
-  return parseFloat(value);
+  return parseFloat(String(value));
 };
 
 export const displayNameOverrideProcessor = (
-  value: any,
+  value: unknown,
   context: FieldOverrideContext,
   settings?: StringFieldConfigSettings
 ) => {
@@ -51,14 +51,25 @@ export interface SliderFieldConfigSettings {
   ariaLabelForHandle?: string;
 }
 
-export interface DataLinksFieldConfigSettings {}
+export interface DataLinksFieldConfigSettings {
+  showOneClick?: boolean;
+}
 
 export const dataLinksOverrideProcessor = (
   value: any,
   _context: FieldOverrideContext,
   _settings?: DataLinksFieldConfigSettings
-) => {
-  return value as DataLink[];
+): DataLink[] => {
+  return value;
+};
+
+export const actionsOverrideProcessor = (
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  value: any,
+  _context: FieldOverrideContext,
+  _settings?: DataLinksFieldConfigSettings
+): Action[] => {
+  return value;
 };
 
 export interface ValueMappingFieldConfigSettings {}
@@ -67,12 +78,14 @@ export const valueMappingsOverrideProcessor = (
   value: any,
   _context: FieldOverrideContext,
   _settings?: ValueMappingFieldConfigSettings
-) => {
-  return value as ValueMapping[]; // !!!! likely not !!!!
+): ValueMapping[] => {
+  return value; // !!!! likely not !!!!
 };
 
 export interface SelectFieldConfigSettings<T> {
   allowCustomValue?: boolean;
+
+  isClearable?: boolean;
 
   /** The default options */
   options: Array<SelectableValue<T>>;
@@ -98,14 +111,14 @@ export interface StringFieldConfigSettings {
 }
 
 export const stringOverrideProcessor = (
-  value: any,
+  value: unknown,
   context: FieldOverrideContext,
   settings?: StringFieldConfigSettings
 ) => {
   if (value === null || value === undefined) {
     return value;
   }
-  if (settings && settings.expandTemplateVars && context.replaceVariables) {
+  if (settings && settings.expandTemplateVars && context.replaceVariables && typeof value === 'string') {
     return context.replaceVariables(value, context.field!.state!.scopedVars);
   }
   return `${value}`;
@@ -115,15 +128,68 @@ export interface ThresholdsFieldConfigSettings {
   // Anything?
 }
 
+/**
+ * Resolves a threshold step's optional `valueExpr` (a dashboard-variable expression)
+ * against the current variable values. Falls back to the numeric `value` when the
+ * expression is missing, resolves to something non-numeric, or the variable currently
+ * has more than one value selected. The returned step never carries `valueExpr`.
+ */
+function resolveThreshold(step: Threshold, context: FieldOverrideContext): Threshold {
+  const { valueExpr, ...resolved } = step;
+
+  if (!valueExpr || !context.replaceVariables) {
+    return resolved;
+  }
+
+  // The function format exposes raw variable values at interpolation time:
+  // multi-value selections arrive as arrays and are only valid with exactly one value selected
+  let multiInvalid = false;
+  const text = context.replaceVariables(valueExpr, context.field?.state?.scopedVars, (v: unknown) => {
+    if (Array.isArray(v)) {
+      if (v.length > 1) {
+        multiInvalid = true;
+        return '';
+      }
+      return String(v[0]);
+    }
+    return String(v);
+  });
+
+  // Strict parsing: Number() rejects partial-numeric strings like '80ms';
+  // unknown variables are left uninterpolated and fail parsing the same way
+  const trimmed = text.trim();
+  const num = trimmed === '' ? NaN : Number(trimmed);
+
+  if (multiInvalid || !Number.isFinite(num)) {
+    return resolved;
+  }
+
+  return { ...resolved, value: num };
+}
+
 export const thresholdsOverrideProcessor = (
   value: any,
-  _context: FieldOverrideContext,
+  context: FieldOverrideContext,
   _settings?: ThresholdsFieldConfigSettings
-) => {
-  return value as ThresholdsConfig; // !!!! likely not !!!!
+): ThresholdsConfig => {
+  if (!value || !Array.isArray(value.steps) || !value.steps.some((step: Threshold) => step.valueExpr != null)) {
+    return value;
+  }
+
+  // The base step is always -Infinity (null in JSON); an expression there is meaningless and ignored
+  const [{ valueExpr: baseExpr, ...base }, ...rawRest] = value.steps;
+  const rest: Threshold[] = rawRest.map((step: Threshold) => resolveThreshold(step, context));
+
+  // Edit-time sorting cannot know variable values, so re-sort the resolved copy,
+  // keeping the base step first
+  sortThresholds(rest);
+
+  return { ...value, steps: [base, ...rest] };
 };
 
-export interface UnitFieldConfigSettings {}
+export interface UnitFieldConfigSettings {
+  isClearable?: boolean;
+}
 
 export const unitOverrideProcessor = (
   value: boolean,
@@ -157,6 +223,12 @@ export interface FieldColorConfigSettings {
    * This will enable the Color by series UI option that sets the `color.seriesBy` option.
    */
   bySeriesSupport?: boolean;
+  /**
+   * Set to true if the visualization supports the Gradient color scheme.
+   * When false (default), the Gradient option is hidden from the color picker.
+   * Currently only the pie chart panel supports this mode.
+   */
+  gradientSupport?: boolean;
 }
 
 export interface StatsPickerConfigSettings {
@@ -168,6 +240,12 @@ export interface StatsPickerConfigSettings {
    * Default stats to be use in the stats picker
    */
   defaultStat?: string;
+}
+
+export enum FieldNamePickerBaseNameMode {
+  IncludeAll = 'all',
+  ExcludeBaseNames = 'exclude',
+  OnlyBaseNames = 'only',
 }
 
 export interface FieldNamePickerConfigSettings {
@@ -182,13 +260,21 @@ export interface FieldNamePickerConfigSettings {
    */
   noFieldsMessage?: string;
 
-  /**addFieldNamePicker
+  /**
    * Sets the width to a pixel value.
    */
   width?: number;
 
   /**
+   * Exclude names that can match a collection of values
+   */
+  baseNameMode?: FieldNamePickerBaseNameMode;
+
+  /**
    * Placeholder text to display when nothing is selected.
    */
   placeholderText?: string;
+
+  /** When set to false, the value can not be removed */
+  isClearable?: boolean;
 }

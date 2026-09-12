@@ -1,36 +1,32 @@
-import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { getRouteComponentProps } from 'app/core/navigation/__mocks__/routeProps';
+import { render, fireEvent, screen, waitFor, userEvent } from 'test/test-utils';
 
-import { ChangePasswordPage, Props } from './ChangePasswordPage';
+import { setBackendSrv } from '@grafana/runtime';
+import { setupMockServer } from '@grafana/test-utils/server';
+import { getRouteComponentProps } from 'app/core/navigation/mocks/routeProps';
+import { backendSrv } from 'app/core/services/backend_srv';
+import { captureRequests } from 'app/features/alerting/unified/mocks/server/events';
 
-const postMock = jest.fn();
-jest.mock('@grafana/runtime', () => ({
-  getBackendSrv: () => ({
-    post: postMock,
-  }),
-  config: {
-    loginError: false,
-    buildInfo: {
-      version: 'v1.0',
-      commit: '1',
-      env: 'production',
-      edition: 'Open Source',
-    },
-    licenseInfo: {
-      stateInfo: '',
-      licenseUrl: '',
-    },
-    appSubUrl: '',
-  },
-}));
+import { ChangePasswordPage, type Props } from './ChangePasswordPage';
+
+setBackendSrv(backendSrv);
+setupMockServer();
 
 const props: Props = {
   ...getRouteComponentProps({
     queryParams: { code: 'some code' },
   }),
 };
+
+const mockLocationAssign = jest.fn();
+const originalLocation = window.location;
+
+beforeAll(() => {
+  jest.spyOn(window, 'location', 'get').mockReturnValue({ ...originalLocation, assign: mockLocationAssign });
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+});
 
 describe('ChangePassword Page', () => {
   it('renders correctly', () => {
@@ -48,32 +44,28 @@ describe('ChangePassword Page', () => {
     expect(await screen.findByText('New Password is required')).toBeInTheDocument();
     expect(screen.getByText('Confirmed Password is required')).toBeInTheDocument();
 
-    userEvent.type(screen.getByLabelText('New password'), 'admin');
-    userEvent.type(screen.getByLabelText('Confirm new password'), 'a');
+    await userEvent.type(screen.getByLabelText('New password'), 'admin');
+    await userEvent.type(screen.getByLabelText('Confirm new password'), 'a');
     await waitFor(() => expect(screen.getByText('Passwords must match!')).toBeInTheDocument());
 
-    userEvent.type(screen.getByLabelText('Confirm new password'), 'dmin');
+    await userEvent.type(screen.getByLabelText('Confirm new password'), 'dmin');
     await waitFor(() => expect(screen.queryByText('Passwords must match!')).not.toBeInTheDocument());
   });
   it('should navigate to default url if change password is successful', async () => {
-    Object.defineProperty(window, 'location', {
-      value: {
-        assign: jest.fn(),
-      },
-    });
-    postMock.mockResolvedValueOnce({ message: 'Logged in' });
+    const capture = captureRequests((r) => r.url.includes('/api/user/password/reset') && r.method === 'POST');
     render(<ChangePasswordPage {...props} />);
 
-    userEvent.type(screen.getByLabelText('New password'), 'test');
-    userEvent.type(screen.getByLabelText('Confirm new password'), 'test');
+    await userEvent.type(screen.getByLabelText('New password'), 'test');
+    await userEvent.type(screen.getByLabelText('Confirm new password'), 'test');
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
-    await waitFor(() =>
-      expect(postMock).toHaveBeenCalledWith('/api/user/password/reset', {
-        code: 'some code',
-        confirmPassword: 'test',
-        newPassword: 'test',
-      })
-    );
-    expect(window.location.assign).toHaveBeenCalledWith('/');
+
+    await waitFor(() => expect(mockLocationAssign).toHaveBeenCalledWith('/'));
+
+    const [resetRequest] = await capture;
+    expect(await resetRequest.clone().json()).toEqual({
+      code: 'some code',
+      confirmPassword: 'test',
+      newPassword: 'test',
+    });
   });
 });

@@ -6,18 +6,20 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/grafana/grafana/pkg/models"
-
-	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana-plugin-sdk-go/data"
-	"github.com/grafana/grafana-plugin-sdk-go/live"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/sdk/resource"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/grafana/grafana-plugin-sdk-go/live"
+
+	"github.com/grafana/grafana/pkg/apimachinery/identity"
+	"github.com/grafana/grafana/pkg/services/live/model"
 )
 
 const (
@@ -70,11 +72,11 @@ type ChannelFrame struct {
 
 // Vars has some helpful things pipeline entities could use.
 type Vars struct {
-	OrgID     int64
-	Channel   string
-	Scope     string
-	Namespace string
-	Path      string
+	NS      string // k8s namespace, maps to the Grafana org id or stack ID
+	Channel string
+	Scope   string
+	Stream  string // the thing within a scope, maps to the Grafana live "namespace"
+	Path    string
 }
 
 // DataOutputter can output incoming data before conversion to frames.
@@ -107,23 +109,23 @@ type FrameOutputter interface {
 // Subscriber can handle channel subscribe events.
 type Subscriber interface {
 	Type() string
-	Subscribe(ctx context.Context, vars Vars, data []byte) (models.SubscribeReply, backend.SubscribeStreamStatus, error)
+	Subscribe(ctx context.Context, vars Vars, data []byte) (model.SubscribeReply, backend.SubscribeStreamStatus, error)
 }
 
 // PublishAuthChecker checks whether current user can publish to a channel.
 type PublishAuthChecker interface {
-	CanPublish(ctx context.Context, u *models.SignedInUser) (bool, error)
+	CanPublish(ctx context.Context, u identity.Requester) (bool, error)
 }
 
 // SubscribeAuthChecker checks whether current user can subscribe to a channel.
 type SubscribeAuthChecker interface {
-	CanSubscribe(ctx context.Context, u *models.SignedInUser) (bool, error)
+	CanSubscribe(ctx context.Context, u identity.Requester) (bool, error)
 }
 
 // LiveChannelRule is an in-memory representation of each specific rule to be executed by Pipeline.
 type LiveChannelRule struct {
-	// OrgId this rule belongs to.
-	OrgId int64
+	// The k8s namespace this rule belongs to.
+	Namespace string
 	// Pattern is a pattern for a channel which when matched results in the rule execution
 	// during Subscribe or Publish operations. This is very similar to HTTP router functionality but
 	// adapted for Grafana Live channels.
@@ -140,7 +142,7 @@ type LiveChannelRule struct {
 	Subscribers []Subscriber
 
 	// PublishAuth allows providing authorization logic for publishing into a channel.
-	// If PublishAuth is not set then ROLE_ADMIN is required to publish.
+	// If PublishAuth is not set then RoleAdmin is required to publish.
 	PublishAuth PublishAuthChecker
 	// DataOutputters if set allows doing something useful with raw input data. If not set then
 	// we step further to the converter. Each DataOutputter can optionally return a slice
@@ -170,7 +172,7 @@ type Label struct {
 }
 
 type ChannelRuleGetter interface {
-	Get(orgID int64, channel string) (*LiveChannelRule, bool, error)
+	Get(ns string, channel string) (*LiveChannelRule, bool, error)
 }
 
 // Pipeline allows processing custom input data according to user-defined rules.
@@ -209,22 +211,22 @@ func New(ruleGetter ChannelRuleGetter) (*Pipeline, error) {
 	return p, nil
 }
 
-func (p *Pipeline) Get(orgID int64, channel string) (*LiveChannelRule, bool, error) {
-	return p.ruleGetter.Get(orgID, channel)
+func (p *Pipeline) Get(ns string, channel string) (*LiveChannelRule, bool, error) {
+	return p.ruleGetter.Get(ns, channel)
 }
 
-func (p *Pipeline) ProcessInput(ctx context.Context, orgID int64, channelID string, body []byte) (bool, error) {
+func (p *Pipeline) ProcessInput(ctx context.Context, ns string, channelID string, body []byte) (bool, error) {
 	var span trace.Span
 	if p.tracer != nil {
 		ctx, span = p.tracer.Start(ctx, "live.pipeline.process_input")
 		span.SetAttributes(
-			attribute.Int64("orgId", orgID),
+			attribute.String("ns", ns),
 			attribute.String("channel", channelID),
 			attribute.String("body", string(body)),
 		)
 		defer span.End()
 	}
-	ok, err := p.processInput(ctx, orgID, channelID, body, nil)
+	ok, err := p.processInput(ctx, ns, channelID, body, nil)
 	if err != nil {
 		if p.tracer != nil && span != nil {
 			span.SetStatus(codes.Error, err.Error())
@@ -234,18 +236,18 @@ func (p *Pipeline) ProcessInput(ctx context.Context, orgID int64, channelID stri
 	return ok, err
 }
 
-func (p *Pipeline) processInput(ctx context.Context, orgID int64, channelID string, body []byte, visitedChannels map[string]struct{}) (bool, error) {
+func (p *Pipeline) processInput(ctx context.Context, ns string, channelID string, body []byte, visitedChannels map[string]struct{}) (bool, error) {
 	var span trace.Span
 	if p.tracer != nil {
 		ctx, span = p.tracer.Start(ctx, "live.pipeline.process_input_"+channelID)
 		span.SetAttributes(
-			attribute.Int64("orgId", orgID),
+			attribute.String("ns", ns),
 			attribute.String("channel", channelID),
 			attribute.String("body", string(body)),
 		)
 		defer span.End()
 	}
-	rule, ok, err := p.ruleGetter.Get(orgID, channelID)
+	rule, ok, err := p.ruleGetter.Get(ns, channelID)
 	if err != nil {
 		return false, err
 	}
@@ -257,7 +259,7 @@ func (p *Pipeline) processInput(ctx context.Context, orgID int64, channelID stri
 	}
 	if len(rule.DataOutputters) > 0 {
 		channelDataList := []*ChannelData{{Channel: channelID, Data: body}}
-		err = p.processChannelDataList(ctx, orgID, channelID, channelDataList, visitedChannels)
+		err = p.processChannelDataList(ctx, ns, channelID, channelDataList, visitedChannels)
 		if err != nil {
 			return false, err
 		}
@@ -265,23 +267,23 @@ func (p *Pipeline) processInput(ctx context.Context, orgID int64, channelID stri
 	if rule.Converter == nil {
 		return false, nil
 	}
-	channelFrames, err := p.DataToChannelFrames(ctx, *rule, orgID, channelID, body)
+	channelFrames, err := p.DataToChannelFrames(ctx, *rule, ns, channelID, body)
 	if err != nil {
 		return false, err
 	}
-	err = p.processChannelFrames(ctx, orgID, channelID, channelFrames, nil)
+	err = p.processChannelFrames(ctx, ns, channelID, channelFrames, nil)
 	if err != nil {
 		return false, fmt.Errorf("error processing frame: %w", err)
 	}
 	return true, nil
 }
 
-func (p *Pipeline) DataToChannelFrames(ctx context.Context, rule LiveChannelRule, orgID int64, channelID string, body []byte) ([]*ChannelFrame, error) {
+func (p *Pipeline) DataToChannelFrames(ctx context.Context, rule LiveChannelRule, ns string, channelID string, body []byte) ([]*ChannelFrame, error) {
 	var span trace.Span
 	if p.tracer != nil {
 		ctx, span = p.tracer.Start(ctx, "live.pipeline.convert_"+rule.Converter.Type())
 		span.SetAttributes(
-			attribute.Int64("orgId", orgID),
+			attribute.String("ns", ns),
 			attribute.String("channel", channelID),
 		)
 		defer span.End()
@@ -294,11 +296,11 @@ func (p *Pipeline) DataToChannelFrames(ctx context.Context, rule LiveChannelRule
 	}
 
 	vars := Vars{
-		OrgID:     orgID,
-		Channel:   channelID,
-		Scope:     channel.Scope,
-		Namespace: channel.Namespace,
-		Path:      channel.Path,
+		NS:      ns,
+		Channel: channelID,
+		Scope:   channel.Scope,
+		Stream:  channel.Namespace,
+		Path:    channel.Path,
 	}
 
 	frames, err := rule.Converter.Convert(ctx, vars, body)
@@ -312,7 +314,7 @@ func (p *Pipeline) DataToChannelFrames(ctx context.Context, rule LiveChannelRule
 
 var errChannelRecursion = errors.New("channel recursion")
 
-func (p *Pipeline) processChannelDataList(ctx context.Context, orgID int64, channelID string, channelDataList []*ChannelData, visitedChannels map[string]struct{}) error {
+func (p *Pipeline) processChannelDataList(ctx context.Context, ns string, channelID string, channelDataList []*ChannelData, visitedChannels map[string]struct{}) error {
 	for _, channelData := range channelDataList {
 		var nextChannel = channelID
 		if channelData.Channel != "" {
@@ -322,13 +324,13 @@ func (p *Pipeline) processChannelDataList(ctx context.Context, orgID int64, chan
 			return fmt.Errorf("%w: %s", errChannelRecursion, nextChannel)
 		}
 		visitedChannels[nextChannel] = struct{}{}
-		newChannelDataList, err := p.processData(ctx, orgID, nextChannel, channelData.Data)
+		newChannelDataList, err := p.processData(ctx, ns, nextChannel, channelData.Data)
 		if err != nil {
 			return err
 		}
 		if len(newChannelDataList) > 0 {
 			for _, cd := range newChannelDataList {
-				_, err := p.processInput(ctx, orgID, cd.Channel, cd.Data, visitedChannels)
+				_, err := p.processInput(ctx, ns, cd.Channel, cd.Data, visitedChannels)
 				if err != nil {
 					return err
 				}
@@ -338,7 +340,7 @@ func (p *Pipeline) processChannelDataList(ctx context.Context, orgID int64, chan
 	return nil
 }
 
-func (p *Pipeline) processChannelFrames(ctx context.Context, orgID int64, channelID string, channelFrames []*ChannelFrame, visitedChannels map[string]struct{}) error {
+func (p *Pipeline) processChannelFrames(ctx context.Context, ns string, channelID string, channelFrames []*ChannelFrame, visitedChannels map[string]struct{}) error {
 	if visitedChannels == nil {
 		visitedChannels = map[string]struct{}{}
 	}
@@ -351,12 +353,12 @@ func (p *Pipeline) processChannelFrames(ctx context.Context, orgID int64, channe
 			return fmt.Errorf("%w: %s", errChannelRecursion, processorChannel)
 		}
 		visitedChannels[processorChannel] = struct{}{}
-		frames, err := p.processFrame(ctx, orgID, processorChannel, channelFrame.Frame)
+		frames, err := p.processFrame(ctx, ns, processorChannel, channelFrame.Frame)
 		if err != nil {
 			return err
 		}
 		if len(frames) > 0 {
-			err := p.processChannelFrames(ctx, orgID, processorChannel, frames, visitedChannels)
+			err := p.processChannelFrames(ctx, ns, processorChannel, frames, visitedChannels)
 			if err != nil {
 				return err
 			}
@@ -365,7 +367,7 @@ func (p *Pipeline) processChannelFrames(ctx context.Context, orgID int64, channe
 	return nil
 }
 
-func (p *Pipeline) processFrame(ctx context.Context, orgID int64, channelID string, frame *data.Frame) ([]*ChannelFrame, error) {
+func (p *Pipeline) processFrame(ctx context.Context, ns string, channelID string, frame *data.Frame) ([]*ChannelFrame, error) {
 	var span trace.Span
 	if p.tracer != nil {
 		table, err := frame.StringTable(32, 32)
@@ -374,13 +376,13 @@ func (p *Pipeline) processFrame(ctx context.Context, orgID int64, channelID stri
 		}
 		ctx, span = p.tracer.Start(ctx, "live.pipeline.process_frame_"+channelID)
 		span.SetAttributes(
-			attribute.Int64("orgId", orgID),
+			attribute.String("ns", ns),
 			attribute.String("channel", channelID),
 			attribute.String("frame", table),
 		)
 		defer span.End()
 	}
-	rule, ruleOk, err := p.ruleGetter.Get(orgID, channelID)
+	rule, ruleOk, err := p.ruleGetter.Get(ns, channelID)
 	if err != nil {
 		logger.Error("Error getting rule", "error", err)
 		return nil, err
@@ -397,11 +399,11 @@ func (p *Pipeline) processFrame(ctx context.Context, orgID int64, channelID stri
 	}
 
 	vars := Vars{
-		OrgID:     orgID,
-		Channel:   channelID,
-		Scope:     ch.Scope,
-		Namespace: ch.Namespace,
-		Path:      ch.Path,
+		NS:      ns,
+		Channel: channelID,
+		Scope:   ch.Scope,
+		Stream:  ch.Namespace,
+		Path:    ch.Path,
 	}
 
 	if len(rule.FrameProcessors) > 0 {
@@ -442,7 +444,7 @@ func (p *Pipeline) execProcessor(ctx context.Context, proc FrameProcessor, vars 
 			return nil, err
 		}
 		span.SetAttributes(
-			attribute.Int64("orgId", vars.OrgID),
+			attribute.String("ns", vars.NS),
 			attribute.String("channel", vars.Channel),
 			attribute.String("frame", table),
 			attribute.String("processor", proc.Type()),
@@ -462,7 +464,7 @@ func (p *Pipeline) processFrameOutput(ctx context.Context, out FrameOutputter, v
 			return nil, err
 		}
 		span.SetAttributes(
-			attribute.Int64("orgId", vars.OrgID),
+			attribute.String("ns", vars.NS),
 			attribute.String("channel", vars.Channel),
 			attribute.String("frame", table),
 			attribute.String("output", out.Type()),
@@ -472,18 +474,18 @@ func (p *Pipeline) processFrameOutput(ctx context.Context, out FrameOutputter, v
 	return out.OutputFrame(ctx, vars, frame)
 }
 
-func (p *Pipeline) processData(ctx context.Context, orgID int64, channelID string, data []byte) ([]*ChannelData, error) {
+func (p *Pipeline) processData(ctx context.Context, ns string, channelID string, data []byte) ([]*ChannelData, error) {
 	var span trace.Span
 	if p.tracer != nil {
 		ctx, span = p.tracer.Start(ctx, "live.pipeline.process_data_"+channelID)
 		span.SetAttributes(
-			attribute.Int64("orgId", orgID),
+			attribute.String("ns", ns),
 			attribute.String("channel", channelID),
 			attribute.String("data", string(data)),
 		)
 		defer span.End()
 	}
-	rule, ruleOk, err := p.ruleGetter.Get(orgID, channelID)
+	rule, ruleOk, err := p.ruleGetter.Get(ns, channelID)
 	if err != nil {
 		logger.Error("Error getting rule", "error", err)
 		return nil, err
@@ -500,11 +502,11 @@ func (p *Pipeline) processData(ctx context.Context, orgID int64, channelID strin
 	}
 
 	vars := Vars{
-		OrgID:     orgID,
-		Channel:   channelID,
-		Scope:     ch.Scope,
-		Namespace: ch.Namespace,
-		Path:      ch.Path,
+		NS:      ns,
+		Channel: channelID,
+		Scope:   ch.Scope,
+		Stream:  ch.Namespace,
+		Path:    ch.Path,
 	}
 
 	if len(rule.DataOutputters) > 0 {
@@ -528,7 +530,7 @@ func (p *Pipeline) processDataOutput(ctx context.Context, out DataOutputter, var
 	if p.tracer != nil {
 		ctx, span = p.tracer.Start(ctx, "live.pipeline.data_output_"+out.Type())
 		span.SetAttributes(
-			attribute.Int64("orgId", vars.OrgID),
+			attribute.String("ns", vars.NS),
 			attribute.String("channel", vars.Channel),
 			attribute.String("data", string(data)),
 			attribute.String("output", out.Type()),

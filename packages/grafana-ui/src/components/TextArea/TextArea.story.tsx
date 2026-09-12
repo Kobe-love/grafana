@@ -1,13 +1,13 @@
-import React from 'react';
-import { TextArea } from '@grafana/ui';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
-import { Meta, Story } from '@storybook/react';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+
+import { Field } from '../Forms/Field';
+
+import { TextArea } from './TextArea';
 import mdx from './TextArea.mdx';
 
-export default {
-  title: 'Forms/TextArea',
+const meta: Meta = {
+  title: 'Inputs/TextArea',
   component: TextArea,
-  decorators: [withCenteredStory],
   parameters: {
     controls: {
       exclude: ['cols'],
@@ -19,12 +19,14 @@ export default {
   argTypes: {
     containerWidth: { control: { type: 'range', min: 100, max: 500, step: 10 } },
   },
-} as Meta;
+};
 
-export const Basic: Story = (args) => {
+export const Basic: StoryFn = (args) => {
   return (
     <div style={{ width: args.containerWidth }}>
-      <TextArea invalid={args.invalid} placeholder={args.placeholder} cols={args.cols} disabled={args.disabled} />
+      <Field label="My TextArea" invalid={args.invalid} disabled={args.disabled}>
+        <TextArea placeholder={args.placeholder} cols={args.cols} />
+      </Field>
     </div>
   );
 };
@@ -35,3 +37,5 @@ Basic.args = {
   cols: 30,
   containerWidth: 300,
 };
+
+export default meta;

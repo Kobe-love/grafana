@@ -1,8 +1,10 @@
-import React from 'react';
 import { render } from '@testing-library/react';
-import { DashNavTimeControls } from './DashNavTimeControls';
-import { DashboardModel } from '../../state/DashboardModel';
+
 import { getDashboardModel } from '../../../../../test/helpers/getDashboardModel';
+import { type DashboardModel } from '../../state/DashboardModel';
+import { PanelModel } from '../../state/PanelModel';
+
+import { DashNavTimeControls } from './DashNavTimeControls';
 
 describe('DashNavTimeControls', () => {
   let dashboardModel: DashboardModel;
@@ -19,7 +21,7 @@ describe('DashNavTimeControls', () => {
             y: 8,
           },
           id: 1,
-          type: 'welcome',
+          type: 'text',
         },
       ],
       refresh: '',
@@ -45,7 +47,7 @@ describe('DashNavTimeControls', () => {
   });
 
   it('should not render RefreshPicker interval button in panel edit', () => {
-    const panel: any = { destroy: jest.fn(), isEditing: true };
+    const panel: PanelModel = new PanelModel({ destroy: jest.fn(), isEditing: true });
     dashboardModel.startRefresh = jest.fn();
     dashboardModel.panelInEdit = panel;
     const container = render(
@@ -55,7 +57,7 @@ describe('DashNavTimeControls', () => {
   });
 
   it('should render RefreshPicker run button in panel edit', () => {
-    const panel: any = { destroy: jest.fn(), isEditing: true };
+    const panel: PanelModel = new PanelModel({ destroy: jest.fn(), isEditing: true });
     dashboardModel.startRefresh = jest.fn();
     dashboardModel.panelInEdit = panel;
     const container = render(

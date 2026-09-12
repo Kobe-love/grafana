@@ -1,56 +1,87 @@
-import React, { PureComponent } from 'react';
-import { connect } from 'react-redux';
-import { NavModel } from '@grafana/data';
+import { memo, useEffect } from 'react';
+import { type ConnectedProps, connect } from 'react-redux';
 
-import Page from 'app/core/components/Page/Page';
-import OrgProfile from './OrgProfile';
-import SharedPreferences from 'app/core/components/SharedPreferences/SharedPreferences';
-import { loadOrganization, updateOrganization } from './state/actions';
-import { AccessControlAction, Organization, StoreState } from 'app/types';
+import { t } from '@grafana/i18n';
+import { Stack, Text } from '@grafana/ui';
+import { appEvents } from 'app/core/app_events';
+import { Page } from 'app/core/components/Page/Page';
 import { getNavModel } from 'app/core/selectors/navModel';
+import { contextSrv } from 'app/core/services/context_srv';
+import { AccessControlAction } from 'app/types/accessControl';
+import { ShowConfirmModalEvent } from 'app/types/events';
+import { type StoreState } from 'app/types/store';
+
+import { SharedPreferences } from '../../core/components/SharedPreferences/SharedPreferences';
+
+import OrgProfile from './OrgProfile';
+import { loadOrganization, updateOrganization } from './state/actions';
 import { setOrganizationName } from './state/reducers';
-import { VerticalGroup } from '@grafana/ui';
-import { contextSrv } from 'app/core/core';
 
-export interface Props {
-  navModel: NavModel;
-  organization: Organization;
-  loadOrganization: typeof loadOrganization;
-  setOrganizationName: typeof setOrganizationName;
-  updateOrganization: typeof updateOrganization;
-}
+interface OwnProps {}
 
-export class OrgDetailsPage extends PureComponent<Props> {
-  async componentDidMount() {
-    await this.props.loadOrganization();
-  }
+export const OrgDetailsPage = memo(function OrgDetailsPage({
+  navModel,
+  organization,
+  loadOrganization,
+  setOrganizationName,
+  updateOrganization,
+}: Props) {
+  useEffect(() => {
+    loadOrganization();
+  }, [loadOrganization]);
 
-  onUpdateOrganization = (orgName: string) => {
-    this.props.setOrganizationName(orgName);
-    this.props.updateOrganization();
+  const onUpdateOrganization = (orgName: string) => {
+    setOrganizationName(orgName);
+    updateOrganization();
   };
 
-  render() {
-    const { navModel, organization } = this.props;
-    const isLoading = Object.keys(organization).length === 0;
-    const canReadOrg = contextSrv.hasPermission(AccessControlAction.OrgsRead);
-    const canReadPreferences = contextSrv.hasPermission(AccessControlAction.OrgsPreferencesRead);
-    const canWritePreferences = contextSrv.hasPermission(AccessControlAction.OrgsPreferencesWrite);
+  const handleConfirm = () => {
+    return new Promise<boolean>((resolve) => {
+      appEvents.publish(
+        new ShowConfirmModalEvent({
+          title: t('org.org-details-page.title.confirm-preferences-update', 'Confirm preferences update'),
+          text: 'This will update the preferences for the whole organization. Are you sure you want to update the preferences?',
+          yesText: 'Save',
+          yesButtonVariant: 'primary',
+          onConfirm: async () => resolve(true),
+          onDismiss: async () => resolve(false),
+        })
+      );
+    });
+  };
 
-    return (
-      <Page navModel={navModel}>
-        <Page.Contents isLoading={isLoading}>
-          {!isLoading && (
-            <VerticalGroup spacing="lg">
-              {canReadOrg && <OrgProfile onSubmit={this.onUpdateOrganization} orgName={organization.name} />}
-              {canReadPreferences && <SharedPreferences resourceUri="org" disabled={!canWritePreferences} />}
-            </VerticalGroup>
-          )}
-        </Page.Contents>
-      </Page>
-    );
-  }
-}
+  const isLoading = Object.keys(organization).length === 0;
+  const canReadOrg = contextSrv.hasPermission(AccessControlAction.OrgsRead);
+  const canReadPreferences = contextSrv.hasPermission(AccessControlAction.OrgsPreferencesRead);
+  const canWritePreferences = contextSrv.hasPermission(AccessControlAction.OrgsPreferencesWrite);
+
+  const orgResourceUri = 'namespace';
+
+  return (
+    <Page navModel={navModel}>
+      <Page.Contents isLoading={isLoading}>
+        {!isLoading && (
+          <Stack direction="column" gap={3}>
+            {canReadOrg && <OrgProfile onSubmit={onUpdateOrganization} orgName={organization.name} />}
+            {canReadPreferences && (
+              <SharedPreferences
+                legend={
+                  <Text element="h2" variant="h2">
+                    {t('shared-preferences.title', 'Preferences')}
+                  </Text>
+                }
+                resourceUri={orgResourceUri}
+                disabled={!canWritePreferences}
+                preferenceType="org"
+                onConfirm={handleConfirm}
+              />
+            )}
+          </Stack>
+        )}
+      </Page.Contents>
+    </Page>
+  );
+});
 
 function mapStateToProps(state: StoreState) {
   return {
@@ -65,4 +96,7 @@ const mapDispatchToProps = {
   updateOrganization,
 };
 
-export default connect(mapStateToProps, mapDispatchToProps)(OrgDetailsPage);
+const connector = connect(mapStateToProps, mapDispatchToProps);
+export type Props = OwnProps & ConnectedProps<typeof connector>;
+
+export default connector(OrgDetailsPage);

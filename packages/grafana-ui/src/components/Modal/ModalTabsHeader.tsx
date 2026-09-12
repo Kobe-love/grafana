@@ -1,27 +1,28 @@
-import React from 'react';
-import { IconName } from '../../types';
-import { TabsBar } from '../Tabs/TabsBar';
+import { type NavModelItem } from '@grafana/data';
+
+import { type IconName } from '../../types/icon';
 import { Tab } from '../Tabs/Tab';
+import { TabsBar } from '../Tabs/TabsBar';
+
 import { ModalHeader } from './ModalHeader';
 
 interface ModalTab {
   value: string;
   label: string;
   icon?: IconName;
-  labelSuffix?: () => JSX.Element;
+  tabSuffix?: NavModelItem['tabSuffix'];
 }
 
 interface Props {
-  icon: IconName;
   title: string;
   tabs: ModalTab[];
   activeTab: string;
   onChangeTab(tab: ModalTab): void;
 }
 
-export const ModalTabsHeader: React.FC<Props> = ({ icon, title, tabs, activeTab, onChangeTab }) => {
+export const ModalTabsHeader = ({ title, tabs, activeTab, onChangeTab }: Props) => {
   return (
-    <ModalHeader icon={icon} title={title}>
+    <ModalHeader title={title}>
       <TabsBar hideBorder={true}>
         {tabs.map((t, index) => {
           return (
@@ -29,7 +30,7 @@ export const ModalTabsHeader: React.FC<Props> = ({ icon, title, tabs, activeTab,
               key={`${t.value}-${index}`}
               label={t.label}
               icon={t.icon}
-              suffix={t.labelSuffix}
+              suffix={t.tabSuffix}
               active={t.value === activeTab}
               onChangeTab={() => onChangeTab(t)}
             />

@@ -1,13 +1,14 @@
-import React from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import * as React from 'react';
 
-interface ModalsContextState {
+export interface ModalsContextState {
   component: React.ComponentType<any> | null;
   props: any;
   showModal: <T>(component: React.ComponentType<T>, props: T) => void;
   hideModal: () => void;
 }
 
-const ModalsContext = React.createContext<ModalsContextState>({
+export const ModalsContext = React.createContext<ModalsContextState>({
   component: null,
   props: {},
   showModal: () => {},
@@ -16,40 +17,29 @@ const ModalsContext = React.createContext<ModalsContextState>({
 
 interface ModalsProviderProps {
   children: React.ReactNode;
-  /** Set default component to render as modal. Useful when rendering modals from Angular */
-  component?: React.ComponentType<any> | null;
-  /** Set default component props. Useful when rendering modals from Angular */
-  props?: any;
 }
 
-export class ModalsProvider extends React.Component<ModalsProviderProps, ModalsContextState> {
-  constructor(props: ModalsProviderProps) {
-    super(props);
-    this.state = {
-      component: props.component || null,
-      props: props.props || {},
-      showModal: this.showModal,
-      hideModal: this.hideModal,
-    };
-  }
+/**
+ * @deprecated.
+ * Not the real implementation used by core.
+ */
+export function ModalsProvider({ children }: ModalsProviderProps) {
+  const [component, setComponent] = useState<ModalsContextState['component']>(null);
+  const [props, setProps] = useState<ModalsContextState['props']>({});
 
-  showModal = (component: React.ComponentType<any>, props: any) => {
-    this.setState({
-      component,
-      props,
-    });
-  };
+  const showModal = useCallback(<T,>(component: React.ComponentType<T>, props: T) => {
+    setComponent(() => component);
+    setProps(props);
+  }, []);
 
-  hideModal = () => {
-    this.setState({
-      component: null,
-      props: {},
-    });
-  };
+  const hideModal = useCallback(() => {
+    setComponent(null);
+    setProps({});
+  }, []);
 
-  render() {
-    return <ModalsContext.Provider value={this.state}>{this.props.children}</ModalsContext.Provider>;
-  }
+  const value = useMemo(() => ({ component, props, showModal, hideModal }), [component, props, showModal, hideModal]);
+
+  return <ModalsContext.Provider value={value}>{children}</ModalsContext.Provider>;
 }
 
 export const ModalRoot = () => (

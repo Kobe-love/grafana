@@ -1,24 +1,30 @@
-import React, { PureComponent } from 'react';
+import { css } from '@emotion/css';
+import { memo } from 'react';
 
-import { CanvasElementItem, CanvasElementProps } from '../element';
+import { type GrafanaTheme2 } from '@grafana/data';
+import { Trans } from '@grafana/i18n';
+import { useStyles2 } from '@grafana/ui';
 
-interface NotFoundConfig {
-  orig?: any;
-}
+import { type CanvasElementItem, type CanvasElementProps } from '../element';
 
-class NotFoundDisplay extends PureComponent<CanvasElementProps<NotFoundConfig>> {
-  render() {
-    const { config } = this.props;
-    return (
-      <div>
-        <h3>NOT FOUND:</h3>
-        <pre>{JSON.stringify(config, null, 2)}</pre>
-      </div>
-    );
-  }
-}
+const NotFoundDisplay = memo(({ config }: CanvasElementProps) => {
+  const styles = useStyles2(getStyles);
+  return (
+    <div className={styles.container}>
+      <Trans
+        i18nKey="canvas.not-found-display.not-found"
+        components={{ config: <pre>{JSON.stringify(config, null, 2)}</pre> }}
+      >
+        <span className={styles.heading}>Not found: </span>
+        {'<config />'}
+      </Trans>
+    </div>
+  );
+});
 
-export const notFoundItem: CanvasElementItem<NotFoundConfig> = {
+NotFoundDisplay.displayName = 'NotFoundDisplay';
+
+export const notFoundItem: CanvasElementItem = {
   id: 'not-found',
   name: 'Not found',
   description: 'Display when element type is not found in the registry',
@@ -34,3 +40,8 @@ export const notFoundItem: CanvasElementItem<NotFoundConfig> = {
     config: {},
   }),
 };
+
+const getStyles = (theme: GrafanaTheme2) => ({
+  container: css({ background: theme.colors.background.canvas }),
+  heading: css({ ...theme.typography.h3 }),
+});

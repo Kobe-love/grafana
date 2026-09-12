@@ -1,9 +1,9 @@
-import { DashboardModel } from './DashboardModel';
-import { reportMetaAnalytics, MetaAnalyticsEventName, DashboardViewEventPayload } from '@grafana/runtime';
+import { reportMetaAnalytics, MetaAnalyticsEventName, type DashboardViewEventPayload } from '@grafana/runtime';
 
-export function emitDashboardViewEvent(dashboard: DashboardModel) {
+import { type DashboardModel } from './DashboardModel';
+
+export function emitDashboardViewEvent(dashboard: Pick<DashboardModel, 'title' | 'uid' | 'meta'>) {
   const eventData: DashboardViewEventPayload = {
-    dashboardId: dashboard.id,
     dashboardName: dashboard.title,
     dashboardUid: dashboard.uid,
     folderName: dashboard.meta.folderTitle,

@@ -1,33 +1,33 @@
 // Libraries
-import React, { FC } from 'react';
 import { css } from '@emotion/css';
 
 // Components
-import { UserSignup } from './UserSignup';
-import { LoginServiceButtons } from './LoginServiceButtons';
+import { type GrafanaTheme2, PageLayoutType } from '@grafana/data';
+import { Trans, t } from '@grafana/i18n';
+import { config } from '@grafana/runtime';
+import { Alert, LinkButton, Stack, useStyles2 } from '@grafana/ui';
+import { Branding } from 'app/core/components/Branding/Branding';
+
+import { ChangePassword } from '../ForgottenPassword/ChangePassword';
+import { Page } from '../Page/Page';
+
 import LoginCtrl from './LoginCtrl';
 import { LoginForm } from './LoginForm';
-import { ChangePassword } from '../ForgottenPassword/ChangePassword';
-import { Branding } from 'app/core/components/Branding/Branding';
-import { HorizontalGroup, LinkButton } from '@grafana/ui';
 import { LoginLayout, InnerBox } from './LoginLayout';
-import config from 'app/core/config';
+import { LoginServiceButtons } from './LoginServiceButtons';
+import { UserSignup } from './UserSignup';
 
-const forgottenPasswordStyles = css`
-  padding: 0;
-  margin-top: 4px;
-`;
+const LoginPage = () => {
+  const styles = useStyles2(getStyles);
 
-export const LoginPage: FC = () => {
   document.title = Branding.AppTitle;
+
   return (
-    <LoginLayout>
+    <Page layout={PageLayoutType.Custom}>
       <LoginCtrl>
         {({
           loginHint,
           passwordHint,
-          ldapEnabled,
-          authProxyEnabled,
           disableLoginForm,
           disableUserSignUp,
           login,
@@ -35,10 +35,18 @@ export const LoginPage: FC = () => {
           changePassword,
           skipPasswordChange,
           isChangingPassword,
+          showDefaultPasswordWarning,
+          loginErrorMessage,
         }) => (
-          <>
+          <LoginLayout isChangingPassword={isChangingPassword}>
             {!isChangingPassword && (
               <InnerBox>
+                {loginErrorMessage && (
+                  <Alert className={styles.alert} severity="error" title={t('login.error.title', 'Login failed')}>
+                    {loginErrorMessage}
+                  </Alert>
+                )}
+
                 {!disableLoginForm && (
                   <LoginForm
                     onSubmit={login}
@@ -46,33 +54,51 @@ export const LoginPage: FC = () => {
                     passwordHint={passwordHint}
                     isLoggingIn={isLoggingIn}
                   >
-                    {!(ldapEnabled || authProxyEnabled) ? (
-                      <HorizontalGroup justify="flex-end">
+                    <Stack justifyContent="flex-end">
+                      {!config.auth.disableLogin && (
                         <LinkButton
-                          className={forgottenPasswordStyles}
+                          className={styles.forgottenPassword}
                           fill="text"
                           href={`${config.appSubUrl}/user/password/send-reset-email`}
                         >
-                          Forgot your password?
+                          <Trans i18nKey="login.forgot-password">Forgot your password?</Trans>
                         </LinkButton>
-                      </HorizontalGroup>
-                    ) : (
-                      <></>
-                    )}
+                      )}
+                    </Stack>
                   </LoginForm>
                 )}
                 <LoginServiceButtons />
                 {!disableUserSignUp && <UserSignup />}
               </InnerBox>
             )}
+
             {isChangingPassword && (
               <InnerBox>
-                <ChangePassword onSubmit={changePassword} onSkip={() => skipPasswordChange()} />
+                <ChangePassword
+                  showDefaultPasswordWarning={showDefaultPasswordWarning}
+                  onSubmit={changePassword}
+                  onSkip={() => skipPasswordChange()}
+                />
               </InnerBox>
             )}
-          </>
+          </LoginLayout>
         )}
       </LoginCtrl>
-    </LoginLayout>
+    </Page>
   );
+};
+
+export default LoginPage;
+
+const getStyles = (theme: GrafanaTheme2) => {
+  return {
+    forgottenPassword: css({
+      padding: 0,
+      marginTop: theme.spacing(0.5),
+    }),
+
+    alert: css({
+      width: '100%',
+    }),
+  };
 };

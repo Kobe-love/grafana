@@ -1,18 +1,19 @@
-import React from 'react';
-import uPlot, { Options, AlignedData } from 'uplot';
-import { TimeRange } from '@grafana/data';
-import { UPlotConfigBuilder } from './config/UPlotConfigBuilder';
+import type * as React from 'react';
+import { type default as uPlot, type Options, type AlignedData } from 'uplot';
+
+import { type UPlotConfigBuilder } from './config/UPlotConfigBuilder';
+
+/**
+ * @internal -- not a public API
+ */
+export const FIXED_UNIT = '__fixed';
 
 export type PlotConfig = Pick<
   Options,
   'mode' | 'series' | 'scales' | 'axes' | 'cursor' | 'bands' | 'hooks' | 'select' | 'tzDate' | 'padding'
 >;
 
-export interface PlotPluginProps {
-  id: string;
-}
-
-export type FacetValues = any[];
+type FacetValues = any[];
 export type FacetSeries = FacetValues[];
 export type FacetedData = [_: null, ...series: FacetSeries];
 
@@ -21,7 +22,6 @@ export interface PlotProps {
   width: number;
   height: number;
   config: UPlotConfigBuilder;
-  timeRange: TimeRange;
   children?: React.ReactNode;
   // Reference to uPlot instance
   plotRef?: (u: uPlot) => void;
@@ -32,9 +32,6 @@ export abstract class PlotConfigBuilder<P, T> {
   abstract getConfig(): T;
 }
 
-/**
- * @alpha
- */
 export type PlotTooltipInterpolator = (
   updateActiveSeriesIdx: (sIdx: number | null) => void,
   updateActiveDatapointIdx: (dIdx: number | null) => void,

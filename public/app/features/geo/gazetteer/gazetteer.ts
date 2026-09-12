@@ -1,10 +1,12 @@
-import { DataFrame, Field, FieldType, KeyValue, toDataFrame } from '@grafana/data';
-import { getBackendSrv } from '@grafana/runtime';
-import { loadWorldmapPoints } from './worldmap';
-import { Geometry, Point } from 'ol/geom';
+import { getCenter } from 'ol/extent';
+import { type Geometry, Point } from 'ol/geom';
+
+import { type DataFrame, type Field, FieldType, type KeyValue, toDataFrame } from '@grafana/data';
+
 import { frameFromGeoJSON } from '../format/geojson';
 import { pointFieldFromLonLat, pointFieldFromGeohash } from '../format/utils';
-import { getCenter } from 'ol/extent';
+
+import { loadWorldmapPoints } from './worldmap';
 
 export interface PlacenameInfo {
   point: () => Point | undefined; // lon, lat (WGS84)
@@ -23,12 +25,12 @@ export interface Gazetteer {
 }
 
 // Without knowing the datatype pick a good lookup function
-export function loadGazetteer(path: string, data: any): Gazetteer {
+function loadGazetteer(path: string, data: any): Gazetteer {
   // try loading geojson
   let frame: DataFrame | undefined = undefined;
 
   if (Array.isArray(data)) {
-    const first = data[0] as any;
+    const first = data[0];
     // Check for legacy worldmap syntax
     if (first.latitude && first.longitude && (first.key || first.keys)) {
       return loadWorldmapPoints(path, data);
@@ -57,7 +59,7 @@ export function loadGazetteer(path: string, data: any): Gazetteer {
 
 export function frameAsGazetter(frame: DataFrame, opts: { path: string; keys?: string[] }): Gazetteer {
   const keys: Field[] = [];
-  let geo: Field<Geometry> | undefined = undefined;
+  let geo: Field<Geometry | undefined> | undefined = undefined;
   let lat: Field | undefined = undefined;
   let lng: Field | undefined = undefined;
   let geohash: Field | undefined = undefined;
@@ -129,12 +131,12 @@ export function frameAsGazetter(frame: DataFrame, opts: { path: string; keys?: s
       isPoint = true;
     }
   } else {
-    isPoint = geo.values.get(0).getType() === 'Point';
+    isPoint = geo.values[0]?.getType() === 'Point';
   }
 
   const lookup = new Map<string, number>();
   keys.forEach((f) => {
-    f.values.toArray().forEach((k, idx) => {
+    f.values.forEach((k, idx) => {
       const str = `${k}`;
       lookup.set(str.toUpperCase(), idx);
       lookup.set(str, idx);
@@ -146,7 +148,7 @@ export function frameAsGazetter(frame: DataFrame, opts: { path: string; keys?: s
     find: (k) => {
       const index = lookup.get(k);
       if (index != null) {
-        const g = geo?.values.get(index);
+        const g = geo?.values[index];
         return {
           frame,
           index,
@@ -161,7 +163,16 @@ export function frameAsGazetter(frame: DataFrame, opts: { path: string; keys?: s
       }
       return undefined;
     },
-    examples: (v) => [],
+    examples: (v) => {
+      const ex: string[] = [];
+      for (let k of lookup.keys()) {
+        ex.push(k);
+        if (ex.length > v) {
+          break;
+        }
+      }
+      return ex;
+    },
     frame: () => frame,
     count: frame.length,
   };
@@ -169,7 +180,29 @@ export function frameAsGazetter(frame: DataFrame, opts: { path: string; keys?: s
 
 const registry: KeyValue<Gazetteer> = {};
 
-export const COUNTRIES_GAZETTEER_PATH = 'public/gazetteer/countries.json';
+export const GAZETTEER_OPTIONS = {
+  countries: {
+    label: 'Countries',
+    description: 'Lookup countries by name, two letter code, or three letter code',
+    get path() {
+      return `${window.__grafana_build_path__}gazetteer/countries.json`;
+    },
+  },
+  usaStates: {
+    label: 'USA States',
+    description: 'Lookup states by name or 2-letter code',
+    get path() {
+      return `${window.__grafana_build_path__}gazetteer/usa-states.json`;
+    },
+  },
+  airports: {
+    label: 'Airports',
+    description: 'Lookup airports by id or code',
+    get path() {
+      return `${window.__grafana_build_path__}gazetteer/airports.geojson`;
+    },
+  },
+};
 
 /**
  * Given a path to a file return a cached lookup function
@@ -177,14 +210,21 @@ export const COUNTRIES_GAZETTEER_PATH = 'public/gazetteer/countries.json';
 export async function getGazetteer(path?: string): Promise<Gazetteer> {
   // When not specified, use the default path
   if (!path) {
-    path = COUNTRIES_GAZETTEER_PATH;
+    path = GAZETTEER_OPTIONS.countries.path;
+  }
+
+  // Rewrite legacy relative paths (e.g. "public/gazetteer/usa-states.json") saved by older
+  // dashboards to the correct absolute build URL, matching how geojsonLayer resolves URLs.
+  if (!path.startsWith('http') && path.startsWith('public/gazetteer/')) {
+    path = `${window.__grafana_build_path__}gazetteer/${path.slice('public/gazetteer/'.length)}`;
   }
 
   let lookup = registry[path];
   if (!lookup) {
     try {
       // block the async function
-      const data = await getBackendSrv().get(path!);
+      const response = await fetch(path);
+      const data = await response.json();
       lookup = loadGazetteer(path, data);
     } catch (err) {
       console.warn('Error loading placename lookup', path, err);

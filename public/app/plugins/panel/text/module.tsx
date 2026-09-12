@@ -1,32 +1,10 @@
-import { PanelPlugin } from '@grafana/data';
+import { getFeatureFlagClient } from '@grafana/runtime/internal';
 
-import { TextPanel } from './TextPanel';
-import { textPanelMigrationHandler } from './textPanelMigrationHandler';
-import { TextPanelEditor } from './TextPanelEditor';
-import { defaultPanelOptions, PanelOptions, TextMode } from './models.gen';
+import { plugin as pluginV1 } from './v1/module';
+import { plugin as pluginV2 } from './v2/module';
 
-export const plugin = new PanelPlugin<PanelOptions>(TextPanel)
-  .setPanelOptions((builder) => {
-    builder
-      .addRadio({
-        path: 'mode',
-        name: 'Mode',
-        description: 'text mode of the panel',
-        settings: {
-          options: [
-            { value: TextMode.Markdown, label: 'Markdown' },
-            { value: TextMode.HTML, label: 'HTML' },
-          ],
-        },
-        defaultValue: defaultPanelOptions.mode,
-      })
-      .addCustomEditor({
-        id: 'content',
-        path: 'content',
-        name: 'Content',
-        description: 'Content of the panel',
-        editor: TextPanelEditor,
-        defaultValue: defaultPanelOptions.content,
-      });
-  })
-  .setMigrationHandler(textPanelMigrationHandler);
+// Both versions register under the same plugin id, so dashboards always persist type "text"
+// and no migration is needed when v2 becomes the default.
+export const plugin = (
+  getFeatureFlagClient().getBooleanValue('grafana.newTextPanel', false) ? pluginV2 : pluginV1
+).setFitContentSupport();

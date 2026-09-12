@@ -1,10 +1,14 @@
-import { reducerTester } from '../../../../test/core/redux/reducerTester';
 import { cloneDeep } from 'lodash';
+
+import { type ConstantVariableModel } from '@grafana/data';
+
+import { reducerTester } from '../../../../test/core/redux/reducerTester';
 import { getVariableTestContext } from '../state/helpers';
-import { toVariablePayload, VariablesState } from '../state/types';
-import { constantVariableReducer, createConstantOptionsFromQuery } from './reducer';
-import { ConstantVariableModel } from '../types';
+import { type VariablesState } from '../state/types';
+import { toVariablePayload } from '../utils';
+
 import { createConstantVariableAdapter } from './adapter';
+import { constantVariableReducer, createConstantOptionsFromQuery } from './reducer';
 
 describe('constantVariableReducer', () => {
   const adapter = createConstantVariableAdapter();

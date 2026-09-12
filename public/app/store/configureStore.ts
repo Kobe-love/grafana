@@ -1,10 +1,22 @@
-import { configureStore as reduxConfigureStore } from '@reduxjs/toolkit';
-import { setStore } from './store';
-import { StoreState } from 'app/types/store';
-import { addReducer, createRootReducer } from '../core/reducers/root';
+import { configureStore as reduxConfigureStore, createListenerMiddleware } from '@reduxjs/toolkit';
+import { setupListeners } from '@reduxjs/toolkit/query';
+import { type Middleware } from 'redux';
+
+import { generatedAPI as migrateToCloudAPI } from '@grafana/api-clients/internal/rtkq/legacy/migrate-to-cloud';
+import { generatedAPI as preferencesUserAPI } from '@grafana/api-clients/internal/rtkq/legacy/preferences/user';
+import { allMiddleware as allApiClientMiddleware } from '@grafana/api-clients/rtkq';
+import { generatedAPI as preferencesAPI, type Preferences } from '@grafana/api-clients/rtkq/preferences/v1';
+import { legacyAPI } from 'app/api/clients/legacy';
+import { scopeAPIv0alpha1 } from 'app/api/clients/scope/v0alpha1';
+import { browseDashboardsAPI } from 'app/features/browse-dashboards/api/browseDashboardsAPI';
+import { publicDashboardApi } from 'app/features/dashboard/api/publicDashboardApi';
+import { type StoreState } from 'app/types/store';
+
 import { buildInitialState } from '../core/reducers/navModel';
-import { ThunkMiddlewareFor } from '@reduxjs/toolkit/src/getDefaultMiddleware';
-import { AnyAction } from 'redux';
+import { addReducer, createRootReducer } from '../core/reducers/root';
+import { alertingApi } from '../features/alerting/unified/api/alertingApi';
+
+import { setStore } from './store';
 
 export function addRootReducer(reducers: any) {
   // this is ok now because we add reducers before configureStore is called
@@ -13,15 +25,50 @@ export function addRootReducer(reducers: any) {
   addReducer(reducers);
 }
 
-export function configureStore(initialState?: Partial<StoreState>) {
-  const store = reduxConfigureStore<
-    StoreState,
-    AnyAction,
-    ReadonlyArray<ThunkMiddlewareFor<StoreState, { thunk: true }>>
-  >({
+const listenerMiddleware = createListenerMiddleware();
+const extraMiddleware: Middleware[] = [];
+
+export function addExtraMiddleware(middleware: Middleware) {
+  extraMiddleware.push(middleware);
+}
+
+export interface ConfigureStoreOptions {
+  // Preferences fetched during boot (see initPreferences). Seeded into the RTK
+  // Query cache so useMergedPreferencesQuery serves the cached entry instead of
+  // issuing a duplicate preferences/merged request.
+  mergedPreferences?: Preferences;
+}
+
+export function configureStore(initialState?: Partial<StoreState>, options?: ConfigureStoreOptions) {
+  const store = reduxConfigureStore({
     reducer: createRootReducer(),
     middleware: (getDefaultMiddleware) =>
-      getDefaultMiddleware({ thunk: true, serializableCheck: false, immutableCheck: false }),
+      getDefaultMiddleware({ thunk: true, serializableCheck: false, immutableCheck: false }).concat(
+        listenerMiddleware.middleware,
+
+        // older internal alerting API client
+        alertingApi.middleware,
+
+        // API clients that are not in the api-clients package
+        // Anything here is likely to be deprecated
+        publicDashboardApi.middleware,
+        browseDashboardsAPI.middleware,
+
+        // Legacy API clients that come from the api-clients package
+        // (these are not exported in the same way as we avoid including them in the published package)
+        legacyAPI.middleware,
+        migrateToCloudAPI.middleware,
+        preferencesUserAPI.middleware,
+
+        // Enterprise API clients from the api-clients package
+        scopeAPIv0alpha1.middleware,
+
+        // All api-clients from the api-clients package
+        ...allApiClientMiddleware,
+
+        // Any additional other middleware, configured from enterprise
+        ...extraMiddleware
+      ),
     devTools: process.env.NODE_ENV !== 'production',
     preloadedState: {
       navIndex: buildInitialState(),
@@ -29,44 +76,16 @@ export function configureStore(initialState?: Partial<StoreState>) {
     },
   });
 
+  // this enables "refetchOnFocus" and "refetchOnReconnect" for RTK Query
+  setupListeners(store.dispatch);
+
+  if (options?.mergedPreferences) {
+    store.dispatch(preferencesAPI.util.upsertQueryData('mergedPreferences', undefined, options.mergedPreferences));
+  }
+
   setStore(store);
   return store;
 }
 
-/*
-function getActionsToIgnoreSerializableCheckOn() {
-  return [
-    'dashboard/setPanelAngularComponent',
-    'dashboard/panelModelAndPluginReady',
-    'dashboard/dashboardInitCompleted',
-    'plugins/panelPluginLoaded',
-    'explore/initializeExplore',
-    'explore/changeRange',
-    'explore/updateDatasourceInstance',
-    'explore/queryStoreSubscription',
-    'explore/queryStreamUpdated',
-  ];
-}
-
-function getPathsToIgnoreMutationAndSerializableCheckOn() {
-  return [
-    'plugins.panels',
-    'dashboard.panels',
-    'dashboard.getModel',
-    'payload.plugin',
-    'panelEditorNew.getPanel',
-    'panelEditorNew.getSourcePanel',
-    'panelEditorNew.getData',
-    'explore.left.queryResponse',
-    'explore.right.queryResponse',
-    'explore.left.datasourceInstance',
-    'explore.right.datasourceInstance',
-    'explore.left.range',
-    'explore.left.eventBridge',
-    'explore.right.eventBridge',
-    'explore.right.range',
-    'explore.left.querySubscription',
-    'explore.right.querySubscription',
-  ];
-}
-*/
+export type RootState = ReturnType<ReturnType<typeof configureStore>['getState']>;
+export type AppDispatch = ReturnType<typeof configureStore>['dispatch'];

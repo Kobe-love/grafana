@@ -1,7 +1,18 @@
-import { getBackendSrv } from '@grafana/runtime';
-import { Role } from 'app/types';
+/**
+ * @deprecated These functions are legacy API calls. For new code, use the RTK Query API from:
+ * `app/api/clients/roles` which provides:
+ * - useListTeamRolesQuery
+ * - useSetTeamRolesMutation
+ * - useListUserRolesQuery
+ * - useSetUserRolesMutation
+ * - useListRolesQuery
+ */
 
-export const fetchRoleOptions = async (orgId?: number, query?: string): Promise<Role[]> => {
+import { getBackendSrv } from '@grafana/runtime';
+import { addDisplayNameForFixedRole, addFilteredDisplayName } from 'app/core/utils/roles';
+import { type Role } from 'app/types/accessControl';
+
+export const fetchRoleOptions = async (orgId?: number): Promise<Role[]> => {
   let rolesUrl = '/api/access-control/roles?delegatable=true';
   if (orgId) {
     rolesUrl += `&targetOrgId=${orgId}`;
@@ -10,68 +21,17 @@ export const fetchRoleOptions = async (orgId?: number, query?: string): Promise<
   if (!roles || !roles.length) {
     return [];
   }
-  return roles;
+  return roles.map(addDisplayNameForFixedRole).map(addFilteredDisplayName);
 };
 
-export const fetchBuiltinRoles = (orgId?: number): Promise<{ [key: string]: Role[] }> => {
-  let builtinRolesUrl = '/api/access-control/builtin-roles';
-  if (orgId) {
-    builtinRolesUrl += `?targetOrgId=${orgId}`;
-  }
-  return getBackendSrv().get(builtinRolesUrl);
-};
-
-export const fetchUserRoles = async (userId: number, orgId?: number): Promise<Role[]> => {
+export const updateUserRoles = (roles: Role[], userId: number, orgId?: number) => {
   let userRolesUrl = `/api/access-control/users/${userId}/roles`;
   if (orgId) {
     userRolesUrl += `?targetOrgId=${orgId}`;
   }
-  try {
-    const roles = await getBackendSrv().get(userRolesUrl);
-    if (!roles || !roles.length) {
-      return [];
-    }
-    return roles;
-  } catch (error) {
-    error.isHandled = true;
-    return [];
-  }
-};
-
-export const updateUserRoles = (roleUids: string[], userId: number, orgId?: number) => {
-  let userRolesUrl = `/api/access-control/users/${userId}/roles`;
-  if (orgId) {
-    userRolesUrl += `?targetOrgId=${orgId}`;
-  }
+  const filteredRoles = roles.filter((role) => !role.mapped);
+  const roleUids = filteredRoles.flatMap((x) => x.uid);
   return getBackendSrv().put(userRolesUrl, {
-    orgId,
-    roleUids,
-  });
-};
-
-export const fetchTeamRoles = async (teamId: number, orgId?: number): Promise<Role[]> => {
-  let teamRolesUrl = `/api/access-control/teams/${teamId}/roles`;
-  if (orgId) {
-    teamRolesUrl += `?targetOrgId=${orgId}`;
-  }
-  try {
-    const roles = await getBackendSrv().get(teamRolesUrl);
-    if (!roles || !roles.length) {
-      return [];
-    }
-    return roles;
-  } catch (error) {
-    error.isHandled = true;
-    return [];
-  }
-};
-
-export const updateTeamRoles = (roleUids: string[], teamId: number, orgId?: number) => {
-  let teamRolesUrl = `/api/access-control/teams/${teamId}/roles`;
-  if (orgId) {
-    teamRolesUrl += `?targetOrgId=${orgId}`;
-  }
-  return getBackendSrv().put(teamRolesUrl, {
     orgId,
     roleUids,
   });

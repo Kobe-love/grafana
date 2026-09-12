@@ -1,8 +1,10 @@
-import React, { memo } from 'react';
-import Calendar from 'react-calendar';
 import { css } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
-import { useStyles2 } from '../../../themes';
+import { memo } from 'react';
+import Calendar from 'react-calendar';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useStyles2 } from '../../../themes/ThemeContext';
 import { ClickOutsideWrapper } from '../../ClickOutsideWrapper/ClickOutsideWrapper';
 import { Icon } from '../../Icon/Icon';
 import { getBodyStyles } from '../TimeRangePicker/CalendarBody';
@@ -13,9 +15,16 @@ export interface DatePickerProps {
   onClose: () => void;
   onChange: (value: Date) => void;
   value?: Date;
+  minDate?: Date;
+  maxDate?: Date;
 }
 
-/** @public */
+/**
+ * A component with a calendar view for selecting a date.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/date-time-pickers-datepicker--docs
+ * @public
+ * */
 export const DatePicker = memo<DatePickerProps>((props) => {
   const styles = useStyles2(getStyles);
   const { isOpen, onClose } = props;
@@ -35,7 +44,7 @@ export const DatePicker = memo<DatePickerProps>((props) => {
 
 DatePicker.displayName = 'DatePicker';
 
-const Body = memo<DatePickerProps>(({ value, onChange }) => {
+const Body = memo<DatePickerProps>(({ value, minDate, maxDate, onChange }) => {
   const styles = useStyles2(getBodyStyles);
 
   return (
@@ -43,10 +52,12 @@ const Body = memo<DatePickerProps>(({ value, onChange }) => {
       className={styles.body}
       tileClassName={styles.title}
       value={value || new Date()}
+      minDate={minDate}
+      maxDate={maxDate}
       nextLabel={<Icon name="angle-right" />}
       prevLabel={<Icon name="angle-left" />}
-      onChange={(ev: Date | Date[]) => {
-        if (!Array.isArray(ev)) {
+      onChange={(ev) => {
+        if (ev && !Array.isArray(ev)) {
           onChange(ev);
         }
       }}
@@ -57,15 +68,19 @@ const Body = memo<DatePickerProps>(({ value, onChange }) => {
 
 Body.displayName = 'Body';
 
-export const getStyles = (theme: GrafanaTheme2) => {
+const getStyles = (theme: GrafanaTheme2) => {
   return {
-    modal: css`
-      z-index: ${theme.zIndex.modal};
-      position: absolute;
-      box-shadow: ${theme.shadows.z3};
-      background-color: ${theme.colors.background.primary};
-      border: 1px solid ${theme.colors.border.weak};
-      border-radius: 2px 0 0 2px;
-    `,
+    modal: css({
+      zIndex: theme.zIndex.modal,
+      boxShadow: theme.flags.visualDesignRefresh ? theme.shadows.z2 : theme.shadows.z3,
+      backgroundColor: theme.colors.background.primary,
+      border: `1px solid ${theme.colors.border.weak}`,
+      borderTopLeftRadius: theme.shape.radius.default,
+      borderBottomLeftRadius: theme.shape.radius.default,
+
+      'button:disabled': {
+        color: theme.colors.text.disabled,
+      },
+    }),
   };
 };

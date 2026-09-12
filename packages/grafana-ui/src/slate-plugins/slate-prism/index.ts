@@ -1,8 +1,9 @@
-import Prism, { LanguageMap } from 'prismjs';
-import { Block, Text, Decoration } from 'slate';
-import { Plugin } from '@grafana/slate-react';
-import Options, { OptionsFormat } from './options';
+import Prism, { type LanguageMap } from 'prismjs';
+import { Block, type Text, type Decoration } from 'slate';
+import { type Plugin } from 'slate-react';
+
 import TOKEN_MARK from './TOKEN_MARK';
+import Options, { type OptionsFormat } from './options';
 
 export interface Token {
   content: string;
@@ -54,7 +55,7 @@ export function SlatePrism(optsParam: OptionsFormat = {}, prismLanguages = Prism
           children: props.children,
           decoration: props.decoration,
         },
-        editor as any,
+        editor,
         next
       ),
   };

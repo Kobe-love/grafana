@@ -1,61 +1,163 @@
-import React, { createRef, FC } from 'react';
-import { VirtualElement } from '@popperjs/core';
-import { Popover } from './Popover';
-import { PopoverController, UsingPopperProps } from './PopoverController';
-import { closePopover } from '../../utils/closePopover';
+import {
+  arrow,
+  autoUpdate,
+  FloatingArrow,
+  offset,
+  useDismiss,
+  useFloating,
+  useFocus,
+  useHover,
+  useInteractions,
+  safePolygon,
+} from '@floating-ui/react';
+import { forwardRef, cloneElement, isValidElement, useCallback, useId, useRef, useState, type JSX } from 'react';
 
-export interface TooltipProps extends UsingPopperProps {
+import { type GrafanaTheme2 } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+
+import { useStyles2 } from '../../themes/ThemeContext';
+import { getPositioningMiddleware } from '../../utils/floating';
+import { buildTooltipTheme, getPlacement } from '../../utils/tooltipUtils';
+import { Portal } from '../Portal/Portal';
+
+import { type PopoverContent, type TooltipPlacement } from './types';
+
+export interface TooltipProps {
   theme?: 'info' | 'error' | 'info-alt';
+  show?: boolean;
+  placement?: TooltipPlacement;
+  content: PopoverContent;
+  children: JSX.Element;
+  /**
+   * Set to true if you want the tooltip to stay long enough so the user can move mouse over content to select text or click a link
+   */
+  interactive?: boolean;
 }
 
-export interface PopoverContentProps {
-  updatePopperPosition?: () => void;
-}
+/**
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/overlays-tooltip--docs
+ */
+export const Tooltip = forwardRef<HTMLElement, TooltipProps>(
+  ({ children, theme, interactive, show, placement, content }, forwardedRef) => {
+    const arrowRef = useRef(null);
+    const [controlledVisible, setControlledVisible] = useState(show);
+    const isOpen = show ?? controlledVisible;
+    const floatingUIPlacement = getPlacement(placement);
 
-export type PopoverContent = string | React.ReactElement<any> | ((props: PopoverContentProps) => JSX.Element);
+    // the order of middleware is important!
+    // `arrow` should almost always be at the end
+    // see https://floating-ui.com/docs/arrow#order
+    const middleware = [
+      offset(8),
+      ...getPositioningMiddleware(floatingUIPlacement),
+      arrow({
+        element: arrowRef,
+        padding: 12,
+      }),
+    ];
 
-export const Tooltip: FC<TooltipProps> = React.memo(({ children, theme, ...controllerProps }: TooltipProps) => {
-  const tooltipTriggerRef = createRef<HTMLElement | VirtualElement>();
-  const popperBackgroundClassName = 'popper__background' + (theme ? ' popper__background--' + theme : '');
+    const { context, refs, floatingStyles } = useFloating({
+      open: isOpen,
+      placement: floatingUIPlacement,
+      onOpenChange: setControlledVisible,
+      middleware,
+      whileElementsMounted: autoUpdate,
+    });
+    const tooltipId = useId();
 
-  return (
-    <PopoverController {...controllerProps}>
-      {(showPopper, hidePopper, popperProps) => {
-        {
-          /* Override internal 'show' state if passed in as prop */
+    const hover = useHover(context, {
+      handleClose: interactive ? safePolygon() : undefined,
+      move: false,
+    });
+    const focus = useFocus(context);
+    const dismiss = useDismiss(context);
+
+    const { getReferenceProps, getFloatingProps } = useInteractions([dismiss, hover, focus]);
+
+    const contentIsFunction = typeof content === 'function';
+
+    const styles = useStyles2(getStyles);
+    const style = styles[theme ?? 'info'];
+
+    const handleRef = useCallback(
+      (ref: HTMLElement | null) => {
+        refs.setReference(ref);
+
+        if (typeof forwardedRef === 'function') {
+          forwardedRef(ref);
+        } else if (forwardedRef) {
+          forwardedRef.current = ref;
         }
-        const payloadProps = {
-          ...popperProps,
-          show: controllerProps.show !== undefined ? controllerProps.show : popperProps.show,
-        };
-        return (
-          <>
-            {tooltipTriggerRef.current && controllerProps.content && (
-              <Popover
-                {...payloadProps}
-                onMouseEnter={showPopper}
-                onMouseLeave={hidePopper}
-                referenceElement={tooltipTriggerRef.current}
-                wrapperClassName="popper"
-                className={popperBackgroundClassName}
-                renderArrow={({ arrowProps, placement }) => (
-                  <div className="popper__arrow" data-placement={placement} {...arrowProps} />
-                )}
+      },
+      [forwardedRef, refs]
+    );
+
+    // if the child has a matching aria-label, this should take precedence over the tooltip content
+    // otherwise we end up double announcing things in e.g. IconButton
+    const childHasMatchingAriaLabel = 'aria-label' in children.props && children.props['aria-label'] === content;
+
+    return (
+      <>
+        {cloneElement(children, {
+          ref: handleRef,
+          tabIndex: 0, // tooltip trigger should be keyboard focusable
+          'aria-describedby': !childHasMatchingAriaLabel && isOpen ? tooltipId : undefined,
+          ...getReferenceProps(),
+        })}
+        {isOpen && (
+          <Portal>
+            <div
+              ref={refs.setFloating}
+              style={floatingStyles}
+              data-testid={selectors.components.Tooltip.container}
+              id={tooltipId}
+              role="tooltip"
+              className={style.container}
+              {...getFloatingProps()}
+            >
+              <FloatingArrow
+                strokeWidth={0.3}
+                stroke={style.borderColor}
+                width={8}
+                height={4}
+                tipRadius={2}
+                className={style.arrow}
+                ref={arrowRef}
+                context={context}
               />
-            )}
-            {React.cloneElement(children, {
-              ref: tooltipTriggerRef,
-              onMouseEnter: showPopper,
-              onMouseLeave: hidePopper,
-              onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => closePopover(event, hidePopper),
-              onFocus: showPopper,
-              onBlur: hidePopper,
-            })}
-          </>
-        );
-      }}
-    </PopoverController>
-  );
-});
+              {typeof content === 'string' && content}
+              {isValidElement(content) && cloneElement(content)}
+              {contentIsFunction && content({})}
+            </div>
+          </Portal>
+        )}
+      </>
+    );
+  }
+);
 
 Tooltip.displayName = 'Tooltip';
+
+const getStyles = (theme: GrafanaTheme2) => {
+  const visualRefreshEnabled = theme.flags.visualDesignRefresh;
+  const info = buildTooltipTheme(
+    theme,
+    theme.components.tooltip.background,
+    theme.components.tooltip.borderColor,
+    theme.components.tooltip.text,
+    { topBottom: 0.5, rightLeft: 1 }
+  );
+  const error = buildTooltipTheme(
+    theme,
+    theme.colors.error[visualRefreshEnabled ? 'background' : 'main'],
+    theme.colors.error[visualRefreshEnabled ? 'border' : 'main'],
+    theme.colors.error[visualRefreshEnabled ? 'text' : 'contrastText'],
+    { topBottom: 0.5, rightLeft: 1 }
+  );
+
+  return {
+    info,
+    ['info-alt']: info,
+    error,
+  };
+};

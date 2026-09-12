@@ -2,23 +2,37 @@ package dashboards
 
 import (
 	"context"
-	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
 
-	"github.com/grafana/grafana/pkg/bus"
-	dboards "github.com/grafana/grafana/pkg/dashboards"
-	"github.com/grafana/grafana/pkg/models"
-	"github.com/grafana/grafana/pkg/services/dashboards"
-	"github.com/grafana/grafana/pkg/util"
-
-	"github.com/grafana/grafana/pkg/infra/log"
-
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
+	"github.com/grafana/grafana/pkg/apimachinery/identity"
+	"github.com/grafana/grafana/pkg/apimachinery/utils"
+	"github.com/grafana/grafana/pkg/infra/db"
+	"github.com/grafana/grafana/pkg/infra/log"
+	"github.com/grafana/grafana/pkg/infra/tracing"
+	"github.com/grafana/grafana/pkg/services/accesscontrol/actest"
+	"github.com/grafana/grafana/pkg/services/apiserver"
+	"github.com/grafana/grafana/pkg/services/dashboards"
+	"github.com/grafana/grafana/pkg/services/featuremgmt"
+	"github.com/grafana/grafana/pkg/services/folder"
+	"github.com/grafana/grafana/pkg/services/folder/folderimpl"
+	"github.com/grafana/grafana/pkg/services/folder/foldertest"
+	"github.com/grafana/grafana/pkg/services/search/sort"
+	"github.com/grafana/grafana/pkg/services/supportbundles/supportbundlestest"
+	"github.com/grafana/grafana/pkg/setting"
+	"github.com/grafana/grafana/pkg/storage/unified/resource"
+	resourcepb "github.com/grafana/grafana/pkg/storage/unified/resourcepb"
+	"github.com/grafana/grafana/pkg/tests/testsuite"
+	"github.com/grafana/grafana/pkg/util"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
 const (
@@ -28,9 +42,38 @@ const (
 	containingID              = "testdata/test-dashboards/containing-id"
 	unprovision               = "testdata/test-dashboards/unprovision"
 	foldersFromFilesStructure = "testdata/test-dashboards/folders-from-files-structure"
+	configName                = "default"
 )
 
-var fakeService *fakeDashboardProvisioningService
+// folderServiceForFoldersFromFilesStructure returns a fake folder service for tests using foldersFromFilesStructure.
+// The real folderimpl requires Kubernetes REST config (apiserver);
+// the test setup uses WithoutRestConfig which causes "rest config will not be available".
+// Get falls back to ExpectedError (ErrFolderNotFound) when no folder matches title+parent,
+// so folders are created via SaveFolderForProvisionedDashboards—typical for fresh provisioning.
+func folderServiceForFoldersFromFilesStructure() folder.Service {
+	fakeFolder := foldertest.NewFakeService()
+	fakeFolder.ExpectedFolder = nil
+	fakeFolder.ExpectedError = dashboards.ErrFolderNotFound
+	return fakeFolder
+}
+
+// folderServiceWithPreexistingFilesStructureHierarchy seeds folders that mirror testdata/folders-from-files-structure
+// with UIDs that are not derived from any path hash, so tests can assert reuse by title+parent.
+func folderServiceWithPreexistingFilesStructureHierarchy() folder.Service {
+	fakeFolder := foldertest.NewFakeService()
+	const orgID int64 = 1
+	fakeFolder.AddFolder(&folder.Folder{OrgID: orgID, UID: "preexist-folderOne", Title: "folderOne", ParentUID: ""})
+	fakeFolder.AddFolder(&folder.Folder{OrgID: orgID, UID: "preexist-folderTwo", Title: "folderTwo", ParentUID: ""})
+	fakeFolder.AddFolder(&folder.Folder{OrgID: orgID, UID: "preexist-folderThree", Title: "folderThree", ParentUID: "preexist-folderTwo"})
+	fakeFolder.AddFolder(&folder.Folder{OrgID: orgID, UID: "preexist-folderFour", Title: "folderFour", ParentUID: "preexist-folderThree"})
+	fakeFolder.ExpectedFolder = nil
+	fakeFolder.ExpectedError = dashboards.ErrFolderNotFound
+	return fakeFolder
+}
+
+func TestMain(m *testing.M) {
+	testsuite.Run(m)
+}
 
 func TestCreatingNewDashboardFileReader(t *testing.T) {
 	setup := func() *config {
@@ -39,14 +82,14 @@ func TestCreatingNewDashboardFileReader(t *testing.T) {
 			Type:    "file",
 			OrgID:   1,
 			Folder:  "",
-			Options: map[string]interface{}{},
+			Options: map[string]any{},
 		}
 	}
 
 	t.Run("using path parameter", func(t *testing.T) {
 		cfg := setup()
 		cfg.Options["path"] = defaultDashboards
-		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil)
+		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil, nil, nil, setting.NewCfg())
 		require.NoError(t, err)
 		require.NotEqual(t, reader.Path, "")
 	})
@@ -54,7 +97,7 @@ func TestCreatingNewDashboardFileReader(t *testing.T) {
 	t.Run("using folder as options", func(t *testing.T) {
 		cfg := setup()
 		cfg.Options["folder"] = defaultDashboards
-		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil)
+		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil, nil, nil, setting.NewCfg())
 		require.NoError(t, err)
 		require.NotEqual(t, reader.Path, "")
 	})
@@ -63,7 +106,7 @@ func TestCreatingNewDashboardFileReader(t *testing.T) {
 		cfg := setup()
 		cfg.Options["path"] = foldersFromFilesStructure
 		cfg.Options["foldersFromFilesStructure"] = true
-		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil)
+		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil, nil, nil, setting.NewCfg())
 		require.NoError(t, err)
 		require.NotEqual(t, reader.Path, "")
 	})
@@ -76,7 +119,7 @@ func TestCreatingNewDashboardFileReader(t *testing.T) {
 		}
 
 		cfg.Options["folder"] = fullPath
-		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil)
+		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil, nil, nil, setting.NewCfg())
 		require.NoError(t, err)
 
 		require.Equal(t, reader.Path, fullPath)
@@ -86,7 +129,7 @@ func TestCreatingNewDashboardFileReader(t *testing.T) {
 	t.Run("using relative path", func(t *testing.T) {
 		cfg := setup()
 		cfg.Options["folder"] = defaultDashboards
-		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil)
+		reader, err := NewDashboardFileReader(cfg, log.New("test-logger"), nil, nil, nil, setting.NewCfg())
 		require.NoError(t, err)
 
 		resolvedPath := reader.resolvedPath()
@@ -94,27 +137,33 @@ func TestCreatingNewDashboardFileReader(t *testing.T) {
 	})
 }
 
-func TestDashboardFileReader(t *testing.T) {
-	logger := log.New("test.logger")
+func TestIntegrationDashboardFileReader(t *testing.T) {
+	testutil.SkipIntegrationTestInShortMode(t)
+
+	logger := log.New("test-logger")
 	cfg := &config{}
 
-	origNewDashboardProvisioningService := dashboards.NewProvisioningService
-	defer func() {
-		dashboards.NewProvisioningService = origNewDashboardProvisioningService
-	}()
-
+	fakeService := &dashboards.FakeDashboardProvisioning{}
+	defer fakeService.AssertExpectations(t)
+	fakeStore := &fakeDashboardStore{}
 	setup := func() {
-		bus.ClearBusHandlers()
-		fakeService = mockDashboardProvisioningService()
-		bus.AddHandler("test", mockGetDashboardQuery)
 		cfg = &config{
-			Name:    "Default",
+			Name:    configName,
 			Type:    "file",
 			OrgID:   1,
 			Folder:  "",
-			Options: map[string]interface{}{},
+			Options: map[string]any{},
 		}
 	}
+
+	_, cfgT := db.InitTestDBWithCfg(t) //nolint:staticcheck // legacy shared-DB test setup; migrate to NewTestStore
+	searchMock := resource.NewMockResourceClient(t)
+	searchMock.On("Search", mock.Anything, mock.Anything, mock.Anything).
+		Return(&resourcepb.ResourceSearchResponse{TotalHits: 0}, nil).Maybe()
+	searchMock.On("GetStats", mock.Anything, mock.Anything, mock.Anything).
+		Return(&resourcepb.ResourceStatsResponse{}, nil).Maybe()
+	folderSvc := folderimpl.ProvideService(actest.FakeAccessControl{}, nil, featuremgmt.WithFeatures(),
+		supportbundlestest.NewFakeBundleService(), nil, cfgT, nil, tracing.InitializeTracerForTest(), searchMock, sort.ProvideService(), apiserver.WithoutRestConfig)
 
 	t.Run("Reading dashboards from disk", func(t *testing.T) {
 		t.Run("Can read default dashboard", func(t *testing.T) {
@@ -122,45 +171,35 @@ func TestDashboardFileReader(t *testing.T) {
 			cfg.Options["path"] = defaultDashboards
 			cfg.Folder = "Team A"
 
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(nil, nil).Once()
+			fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.Anything, configName).Return(&folder.Folder{ID: 1}, nil).Once()
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{ID: 2}, nil).Times(2)
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
-
-			folders := 0
-			dashboards := 0
-
-			for _, i := range fakeService.inserted {
-				if i.Dashboard.IsFolder {
-					folders++
-				} else {
-					dashboards++
-				}
-			}
-
-			require.Equal(t, folders, 1)
-			require.Equal(t, dashboards, 2)
 		})
 
 		t.Run("Can read default dashboard and replace old version in database", func(t *testing.T) {
 			setup()
 			cfg.Options["path"] = oneDashboard
 
-			stat, _ := os.Stat(oneDashboard + "/dashboard1.json")
+			inserted := 0
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(nil, nil).Once()
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).
+				Return(&dashboards.Dashboard{}, nil).Once().
+				Run(func(args mock.Arguments) {
+					inserted++
+				})
 
-			fakeService.getDashboard = append(fakeService.getDashboard, &models.Dashboard{
-				Updated: stat.ModTime().AddDate(0, 0, -1),
-				Slug:    "grafana",
-			})
-
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
 
-			require.Equal(t, len(fakeService.inserted), 1)
+			assert.Equal(t, inserted, 1)
 		})
 
 		t.Run("Dashboard with older timestamp and the same checksum will not replace imported dashboard", func(t *testing.T) {
@@ -179,23 +218,22 @@ func TestDashboardFileReader(t *testing.T) {
 			checksum, err := util.Md5Sum(file)
 			require.NoError(t, err)
 
-			fakeService.provisioned = map[string][]*models.DashboardProvisioning{
-				"Default": {
-					{
-						Name:       "Default",
-						ExternalId: absPath,
-						Updated:    stat.ModTime().AddDate(0, 0, +1).Unix(),
-						CheckSum:   checksum,
-					},
+			provisionedDashboard := []*dashboards.DashboardProvisioning{
+				{
+					Name:       "Default",
+					ExternalID: absPath,
+					Updated:    stat.ModTime().AddDate(0, 0, +1).Unix(),
+					CheckSum:   checksum,
 				},
 			}
 
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(provisionedDashboard, nil).Once()
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
-			require.Equal(t, len(fakeService.inserted), 0)
 		})
 
 		t.Run("Dashboard with older timestamp and different checksum will replace imported dashboard", func(t *testing.T) {
@@ -206,23 +244,23 @@ func TestDashboardFileReader(t *testing.T) {
 			stat, err := os.Stat(oneDashboard + "/dashboard1.json")
 			require.NoError(t, err)
 
-			fakeService.provisioned = map[string][]*models.DashboardProvisioning{
-				"Default": {
-					{
-						Name:       "Default",
-						ExternalId: absPath,
-						Updated:    stat.ModTime().AddDate(0, 0, +1).Unix(),
-						CheckSum:   "fakechecksum",
-					},
+			provisionedDashboard := []*dashboards.DashboardProvisioning{
+				{
+					Name:       "Default",
+					ExternalID: absPath,
+					Updated:    stat.ModTime().AddDate(0, 0, +1).Unix(),
+					CheckSum:   "fakechecksum",
 				},
 			}
 
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(provisionedDashboard, nil).Once()
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Once()
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
-			require.Equal(t, len(fakeService.inserted), 1)
 		})
 
 		t.Run("Dashboard with newer timestamp and the same checksum will not replace imported dashboard", func(t *testing.T) {
@@ -241,23 +279,22 @@ func TestDashboardFileReader(t *testing.T) {
 			checksum, err := util.Md5Sum(file)
 			require.NoError(t, err)
 
-			fakeService.provisioned = map[string][]*models.DashboardProvisioning{
-				"Default": {
-					{
-						Name:       "Default",
-						ExternalId: absPath,
-						Updated:    stat.ModTime().AddDate(0, 0, -1).Unix(),
-						CheckSum:   checksum,
-					},
+			provisionedDashboard := []*dashboards.DashboardProvisioning{
+				{
+					Name:       "Default",
+					ExternalID: absPath,
+					Updated:    stat.ModTime().AddDate(0, 0, -1).Unix(),
+					CheckSum:   checksum,
 				},
 			}
 
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(provisionedDashboard, nil).Once()
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
-			require.Equal(t, len(fakeService.inserted), 0)
 		})
 
 		t.Run("Dashboard with newer timestamp and different checksum should replace imported dashboard", func(t *testing.T) {
@@ -268,36 +305,37 @@ func TestDashboardFileReader(t *testing.T) {
 			stat, err := os.Stat(oneDashboard + "/dashboard1.json")
 			require.NoError(t, err)
 
-			fakeService.provisioned = map[string][]*models.DashboardProvisioning{
-				"Default": {
-					{
-						Name:       "Default",
-						ExternalId: absPath,
-						Updated:    stat.ModTime().AddDate(0, 0, -1).Unix(),
-						CheckSum:   "fakechecksum",
-					},
+			provisionedDashboard := []*dashboards.DashboardProvisioning{
+				{
+					Name:       "Default",
+					ExternalID: absPath,
+					Updated:    stat.ModTime().AddDate(0, 0, -1).Unix(),
+					CheckSum:   "fakechecksum",
 				},
 			}
 
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(provisionedDashboard, nil).Once()
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Once()
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
-			require.Equal(t, len(fakeService.inserted), 1)
 		})
 
 		t.Run("Overrides id from dashboard.json files", func(t *testing.T) {
 			setup()
 			cfg.Options["path"] = containingID
 
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(nil, nil).Once()
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Once()
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
-
-			require.Equal(t, len(fakeService.inserted), 1)
 		})
 
 		t.Run("Get folder from files structure", func(t *testing.T) {
@@ -305,40 +343,148 @@ func TestDashboardFileReader(t *testing.T) {
 			cfg.Options["path"] = foldersFromFilesStructure
 			cfg.Options["foldersFromFilesStructure"] = true
 
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(nil, nil).Once()
+			fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.Anything, configName).Return(&folder.Folder{}, nil).Times(4)
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Times(5)
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderServiceForFoldersFromFilesStructure(), cfgT)
+			require.NoError(t, err)
+
+			err = reader.walkDisk(context.Background())
+			require.NoError(t, err)
+		})
+
+		t.Run("Get nested folders from files structure", func(t *testing.T) {
+			setup()
+			cfg.Options["path"] = foldersFromFilesStructure
+			cfg.Options["foldersFromFilesStructure"] = true
+
+			// root.json, folderOne/dashboard1, folderTwo/dashboard2, folderTwo/folderThree/dashboard3, folderTwo/folderThree/folderFour/dashboard4.
+			// Cache: folderTwo and folderThree reused for dashboard4.
+			const folderOneUID = "folderOne-uid"
+			const folderTwoUID = "folderTwo-uid"
+			const folderThreeUID = "folderThree-uid"
+
+			var folderCreateCalls []*folder.CreateFolderCommand
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(nil, nil).Once()
+			fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.MatchedBy(func(cmd *folder.CreateFolderCommand) bool {
+				return cmd.Title == "folderOne" && cmd.ParentUID == ""
+			}), configName).Run(func(args mock.Arguments) {
+				folderCreateCalls = append(folderCreateCalls, args[1].(*folder.CreateFolderCommand))
+			}).Return(&folder.Folder{ID: 1, UID: folderOneUID, Title: "folderOne"}, nil).Once()
+			fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.MatchedBy(func(cmd *folder.CreateFolderCommand) bool {
+				return cmd.Title == "folderTwo" && cmd.ParentUID == ""
+			}), configName).Run(func(args mock.Arguments) {
+				folderCreateCalls = append(folderCreateCalls, args[1].(*folder.CreateFolderCommand))
+			}).Return(&folder.Folder{ID: 2, UID: folderTwoUID, Title: "folderTwo"}, nil).Once()
+			fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.MatchedBy(func(cmd *folder.CreateFolderCommand) bool {
+				return cmd.Title == "folderThree" && cmd.ParentUID == folderTwoUID
+			}), configName).Run(func(args mock.Arguments) {
+				folderCreateCalls = append(folderCreateCalls, args[1].(*folder.CreateFolderCommand))
+			}).Return(&folder.Folder{ID: 3, UID: folderThreeUID, Title: "folderThree"}, nil).Once()
+			fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.MatchedBy(func(cmd *folder.CreateFolderCommand) bool {
+				return cmd.Title == "folderFour" && cmd.ParentUID == folderThreeUID
+			}), configName).Run(func(args mock.Arguments) {
+				folderCreateCalls = append(folderCreateCalls, args[1].(*folder.CreateFolderCommand))
+			}).Return(&folder.Folder{ID: 4, UID: "folderFour-uid", Title: "folderFour"}, nil).Once()
+
+			// Map iteration order is undefined; record FolderUID/FolderID per provisioned file (ExternalID).
+			savedFolderByExternalID := make(map[string]struct {
+				folderUID string
+				folderID  int64
+			})
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).
+				Run(func(args mock.Arguments) {
+					dto := args.Get(1).(*dashboards.SaveDashboardDTO)
+					dp := args.Get(2).(*dashboards.DashboardProvisioning)
+					require.NotNil(t, dto)
+					require.NotNil(t, dto.Dashboard)
+					require.NotNil(t, dp)
+					savedFolderByExternalID[dp.ExternalID] = struct {
+						folderUID string
+						folderID  int64
+					}{folderUID: dto.Dashboard.FolderUID, folderID: dto.Dashboard.FolderID} // nolint:staticcheck
+				}).
+				Return(&dashboards.Dashboard{}, nil).
+				Times(5)
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderServiceForFoldersFromFilesStructure(), cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
 
-			require.Equal(t, len(fakeService.inserted), 5)
+			basePath := reader.resolvedPath()
+			dashboard3Path := filepath.Join(basePath, "folderTwo", "folderThree", "dashboard3.json")
+			dashboard4Path := filepath.Join(basePath, "folderTwo", "folderThree", "folderFour", "dashboard4.json")
+			require.Contains(t, savedFolderByExternalID, dashboard3Path)
+			require.Equal(t, folderThreeUID, savedFolderByExternalID[dashboard3Path].folderUID)
+			require.Equal(t, int64(3), savedFolderByExternalID[dashboard3Path].folderID)
+			require.Contains(t, savedFolderByExternalID, dashboard4Path)
+			require.Equal(t, "folderFour-uid", savedFolderByExternalID[dashboard4Path].folderUID)
+			require.Equal(t, int64(4), savedFolderByExternalID[dashboard4Path].folderID)
 
-			foldersCount := 0
-			for _, d := range fakeService.inserted {
-				if d.Dashboard.IsFolder {
-					foldersCount++
-				}
+			require.Len(t, folderCreateCalls, 4, "cache: folderOne, folderTwo, folderThree created; folderFour reuses ancestors")
+			folderByTitle := make(map[string]*folder.CreateFolderCommand)
+			for _, c := range folderCreateCalls {
+				folderByTitle[c.Title] = c
 			}
-			require.Equal(t, foldersCount, 2)
+			require.Equal(t, folderTwoUID, folderByTitle["folderThree"].ParentUID, "folderThree must be nested under folderTwo")
+			require.Equal(t, folderThreeUID, folderByTitle["folderFour"].ParentUID, "folderFour must be nested under folderThree")
+		})
 
-			foldersAndDashboards := make(map[string]struct{}, 5)
-			for _, d := range fakeService.inserted {
-				title := d.Dashboard.Title
-				if _, ok := foldersAndDashboards[title]; ok {
-					require.Nil(t, fmt.Errorf("dashboard title %q already exists", title))
-				}
+		t.Run("Reuses existing folders by title and parent across walks", func(t *testing.T) {
+			setup()
+			cfg.Options["path"] = foldersFromFilesStructure
+			cfg.Options["foldersFromFilesStructure"] = true
 
-				switch title {
-				case "folderOne", "folderTwo":
-					require.True(t, d.Dashboard.IsFolder)
-				case "Grafana1", "Grafana2", "RootDashboard":
-					require.False(t, d.Dashboard.IsFolder)
-				default:
-					require.Nil(t, fmt.Errorf("unknown dashboard title %q", title))
-				}
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(nil, nil).Twice()
+			// Folders are pre-seeded in the fake with non-hash UIDs; provisioning must not create folders.
+			// UpdateFolderWithManagedByAnnotation is called for each pre-existing folder that lacks ManagedBy.
+			fakeService.On("UpdateFolderWithManagedByAnnotation", mock.Anything, mock.Anything, configName).
+				Return(func(ctx context.Context, f *folder.Folder, name string) (*folder.Folder, error) {
+					updated := *f
+					updated.ManagedBy = utils.ManagerKind(name)
+					return &updated, nil
+				})
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Times(10)
 
-				foldersAndDashboards[title] = struct{}{}
-			}
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderServiceWithPreexistingFilesStructureHierarchy(), cfgT)
+			require.NoError(t, err)
+
+			err = reader.walkDisk(context.Background())
+			require.NoError(t, err)
+			err = reader.walkDisk(context.Background())
+			require.NoError(t, err)
+		})
+
+		t.Run("Single-level and nested folders from files structure", func(t *testing.T) {
+			setup()
+			cfg.Options["path"] = foldersFromFilesStructure
+			cfg.Options["foldersFromFilesStructure"] = true
+
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(nil, nil).Once()
+			fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.Anything, configName).Return(&folder.Folder{}, nil).Times(4)
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Times(5)
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderServiceForFoldersFromFilesStructure(), cfgT)
+			require.NoError(t, err)
+
+			err = reader.walkDisk(context.Background())
+			require.NoError(t, err)
+		})
+
+		t.Run("Nested folder depth exceeds maximum returns error", func(t *testing.T) {
+			setup()
+			cfg.Options["path"] = oneDashboard
+			cfg.Options["foldersFromFilesStructure"] = true
+			// We test getOrCreateFolderFullpath directly; depth check runs before folder service is called.
+			reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderServiceForFoldersFromFilesStructure(), cfgT)
+			require.NoError(t, err)
+
+			_, _, err = reader.getOrCreateFolderFullpath(context.Background(), "a/b/c/d/e", 1, nil)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "exceeds maximum")
 		})
 
 		t.Run("Invalid configuration should return error", func(t *testing.T) {
@@ -350,7 +496,7 @@ func TestDashboardFileReader(t *testing.T) {
 				Folder: "",
 			}
 
-			_, err := NewDashboardFileReader(cfg, logger, nil)
+			_, err := NewDashboardFileReader(cfg, logger, nil, nil, folderSvc, cfgT)
 			require.NotNil(t, err)
 		})
 
@@ -358,39 +504,30 @@ func TestDashboardFileReader(t *testing.T) {
 			setup()
 			cfg.Options["path"] = brokenDashboards
 
-			_, err := NewDashboardFileReader(cfg, logger, nil)
+			_, err := NewDashboardFileReader(cfg, logger, nil, nil, folderSvc, cfgT)
 			require.NoError(t, err)
 		})
 
 		t.Run("Two dashboard providers should be able to provisioned the same dashboard without uid", func(t *testing.T) {
 			setup()
-			cfg1 := &config{Name: "1", Type: "file", OrgID: 1, Folder: "f1", Options: map[string]interface{}{"path": containingID}}
-			cfg2 := &config{Name: "2", Type: "file", OrgID: 1, Folder: "f2", Options: map[string]interface{}{"path": containingID}}
+			cfg1 := &config{Name: "1", Type: "file", OrgID: 1, Folder: "f1", Options: map[string]any{"path": containingID}}
+			cfg2 := &config{Name: "2", Type: "file", OrgID: 1, Folder: "f2", Options: map[string]any{"path": containingID}}
 
-			reader1, err := NewDashboardFileReader(cfg1, logger, nil)
+			fakeService.On("GetProvisionedDashboardData", mock.Anything, mock.AnythingOfType("string")).Return(nil, nil).Times(2)
+			fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.Anything, mock.Anything).Return(&folder.Folder{}, nil).Times(2)
+			fakeService.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Times(2)
+
+			reader1, err := NewDashboardFileReader(cfg1, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader1.walkDisk(context.Background())
 			require.NoError(t, err)
 
-			reader2, err := NewDashboardFileReader(cfg2, logger, nil)
+			reader2, err := NewDashboardFileReader(cfg2, logger, fakeService, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader2.walkDisk(context.Background())
 			require.NoError(t, err)
-
-			var folderCount int
-			var dashCount int
-			for _, o := range fakeService.inserted {
-				if o.Dashboard.IsFolder {
-					folderCount++
-				} else {
-					dashCount++
-				}
-			}
-
-			require.Equal(t, folderCount, 2)
-			require.Equal(t, dashCount, 2)
 		})
 	})
 
@@ -401,12 +538,14 @@ func TestDashboardFileReader(t *testing.T) {
 			Type:   "file",
 			OrgID:  1,
 			Folder: "",
-			Options: map[string]interface{}{
+			Options: map[string]any{
 				"folder": defaultDashboards,
 			},
 		}
+		r, err := NewDashboardFileReader(cfg, logger, nil, nil, folderSvc, cfgT)
+		require.NoError(t, err)
 
-		_, err := getOrCreateFolderID(context.Background(), cfg, fakeService, cfg.Folder)
+		_, _, err = r.getOrCreateFolder(context.Background(), cfg, cfg.Folder)
 		require.Equal(t, err, ErrFolderNameMissing)
 	})
 
@@ -417,21 +556,70 @@ func TestDashboardFileReader(t *testing.T) {
 			Type:   "file",
 			OrgID:  1,
 			Folder: "TEAM A",
-			Options: map[string]interface{}{
+			Options: map[string]any{
+				"folder": defaultDashboards,
+			},
+		}
+		fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.Anything, cfg.Name).Return(&folder.Folder{ID: 1}, nil).Once()
+
+		r, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		ctx, _ = identity.WithServiceIdentity(ctx, 1)
+		_, _, err = r.getOrCreateFolder(ctx, cfg, cfg.Folder)
+		require.NoError(t, err)
+	})
+
+	t.Run("transient folder update failure preserves the API error for retry", func(t *testing.T) {
+		setup()
+		cfg := &config{
+			Name:    configName,
+			Type:    "file",
+			OrgID:   1,
+			Folder:  "TEAM A",
+			Options: map[string]any{"folder": defaultDashboards},
+		}
+
+		// Pre-existing folder without a ManagedBy annotation triggers the update path.
+		fakeFolder := foldertest.NewFakeService()
+		fakeFolder.ExpectedFolder = &folder.Folder{UID: "team-a"}
+		// Dedicated mock: the shared fakeService has a broader UpdateFolderWithManagedByAnnotation
+		// expectation from another subtest that would otherwise swallow this call.
+		localFake := &dashboards.FakeDashboardProvisioning{}
+		localFake.On("UpdateFolderWithManagedByAnnotation", mock.Anything, mock.Anything, configName).
+			Return(nil, apierrors.NewServiceUnavailable("folder API unavailable"))
+
+		r, err := NewDashboardFileReader(cfg, logger, localFake, fakeStore, fakeFolder, cfgT)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		ctx, _ = identity.WithServiceIdentity(ctx, 1)
+		_, _, err = r.getOrCreateFolder(ctx, cfg, cfg.Folder)
+		require.Error(t, err)
+		require.True(t, apierrors.IsServiceUnavailable(err), "underlying 503 must survive for retry classification")
+	})
+
+	t.Run("should not create dashboard folder with uid general", func(t *testing.T) {
+		setup()
+		cfg := &config{
+			Name:      "DefaultB",
+			Type:      "file",
+			OrgID:     1,
+			Folder:    "TEAM B",
+			FolderUID: "general",
+			Options: map[string]any{
 				"folder": defaultDashboards,
 			},
 		}
 
-		folderID, err := getOrCreateFolderID(context.Background(), cfg, fakeService, cfg.Folder)
+		r, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
 		require.NoError(t, err)
-		inserted := false
-		for _, d := range fakeService.inserted {
-			if d.Dashboard.IsFolder && d.Dashboard.Id == folderID {
-				inserted = true
-			}
-		}
-		require.Equal(t, len(fakeService.inserted), 1)
-		require.True(t, inserted)
+
+		ctx := context.Background()
+		ctx, _ = identity.WithServiceIdentity(ctx, 1)
+		_, _, err = r.getOrCreateFolder(ctx, cfg, cfg.Folder)
+		require.ErrorIs(t, err, folder.ErrInvalidUID)
 	})
 
 	t.Run("Walking the folder with dashboards", func(t *testing.T) {
@@ -449,6 +637,26 @@ func TestDashboardFileReader(t *testing.T) {
 		})
 	})
 
+	t.Run("Should resolve relative ExternalID paths to absolute paths", func(t *testing.T) {
+		setup()
+		cfg.Options["path"] = defaultDashboards
+		provisionedDashboard := []*dashboards.DashboardProvisioning{
+			{
+				Name:       configName,
+				ExternalID: "dashboard1.json",
+			},
+		}
+
+		fakeService.On("GetProvisionedDashboardData", mock.Anything, configName).Return(provisionedDashboard, nil).Once()
+		reader, err := NewDashboardFileReader(cfg, logger, fakeService, fakeStore, folderSvc, cfgT)
+		require.NoError(t, err)
+		resolvedPath := reader.resolvedPath()
+		dashboards, err := reader.getProvisionedDashboardsByPath(context.Background(), fakeService, configName)
+		require.NoError(t, err)
+		expectedPath := filepath.Join(resolvedPath, "dashboard1.json")
+		require.Equal(t, expectedPath, dashboards[expectedPath].ExternalID)
+	})
+
 	t.Run("Given missing dashboard file", func(t *testing.T) {
 		absPath1, err := filepath.Abs(unprovision + "/dashboard1.json")
 		require.NoError(t, err)
@@ -456,58 +664,103 @@ func TestDashboardFileReader(t *testing.T) {
 		absPath2, err := filepath.Abs(unprovision + "/dashboard2.json")
 		require.NoError(t, err)
 
+		provisionedDashboard := []*dashboards.DashboardProvisioning{
+			{DashboardID: 1, Name: "Default", ExternalID: absPath1},
+			{DashboardID: 2, Name: "Default", ExternalID: absPath2},
+		}
+
 		setupFakeService := func() {
 			setup()
 			cfg = &config{
-				Name:  "Default",
+				Name:  configName,
 				Type:  "file",
 				OrgID: 1,
-				Options: map[string]interface{}{
+				Options: map[string]any{
 					"folder": unprovision,
-				},
-			}
-
-			fakeService.inserted = []*dashboards.SaveDashboardDTO{
-				{Dashboard: &models.Dashboard{Id: 1}},
-				{Dashboard: &models.Dashboard{Id: 2}},
-			}
-
-			fakeService.provisioned = map[string][]*models.DashboardProvisioning{
-				"Default": {
-					{DashboardId: 1, Name: "Default", ExternalId: absPath1},
-					{DashboardId: 2, Name: "Default", ExternalId: absPath2},
 				},
 			}
 		}
 
 		t.Run("Missing dashboard should be unprovisioned if DisableDeletion = true", func(t *testing.T) {
 			setupFakeService()
+
+			fakeForUnprovision := &dashboards.FakeDashboardProvisioning{}
+			defer fakeForUnprovision.AssertExpectations(t)
+			fakeForUnprovision.On("GetProvisionedDashboardData", mock.Anything, configName).Return(provisionedDashboard, nil).Once()
+			fakeForUnprovision.On("UnprovisionDashboard", mock.Anything, mock.Anything).Return(nil).Once()
+			fakeForUnprovision.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Once()
+
 			cfg.DisableDeletion = true
 
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+			reader, err := NewDashboardFileReader(cfg, logger, nil, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
+			reader.dashboardProvisioningService = fakeForUnprovision
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
-
-			require.Equal(t, len(fakeService.provisioned["Default"]), 1)
-			require.Equal(t, fakeService.provisioned["Default"][0].ExternalId, absPath1)
 		})
 
 		t.Run("Missing dashboard should be deleted if DisableDeletion = false", func(t *testing.T) {
 			setupFakeService()
-			reader, err := NewDashboardFileReader(cfg, logger, nil)
+
+			fakeForDelete := &dashboards.FakeDashboardProvisioning{}
+			defer fakeForDelete.AssertExpectations(t)
+			fakeForDelete.On("GetProvisionedDashboardData", mock.Anything, configName).Return(provisionedDashboard, nil).Once()
+			fakeForDelete.On("SaveProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(&dashboards.Dashboard{}, nil).Once()
+			fakeForDelete.On("DeleteProvisionedDashboard", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+
+			reader, err := NewDashboardFileReader(cfg, logger, fakeForDelete, fakeStore, folderSvc, cfgT)
 			require.NoError(t, err)
 
 			err = reader.walkDisk(context.Background())
 			require.NoError(t, err)
-
-			require.Equal(t, len(fakeService.provisioned["Default"]), 1)
-			require.Equal(t, fakeService.provisioned["Default"][0].ExternalId, absPath1)
-			require.Equal(t, len(fakeService.inserted), 1)
-			require.Equal(t, fakeService.inserted[0].Dashboard.Id, int64(1))
 		})
 	})
+}
+
+func TestSplitFolderFullpath(t *testing.T) {
+	require.Equal(t, []string{"folderOne", "folderTwo"}, splitFolderFullpath("folderOne/folderTwo"))
+	require.Equal(t, []string{"folderTwo", "folderThree", "folderFour"}, splitFolderFullpath("folderTwo/folderThree/folderFour"))
+	require.Equal(t, []string{"folderOne", "folderTwo"}, splitFolderFullpath("folderOne//folderTwo"))
+	require.Equal(t, []string{"folderOne"}, splitFolderFullpath("folderOne"))
+	require.Empty(t, splitFolderFullpath(""))
+	require.Empty(t, splitFolderFullpath("///"))
+}
+
+func TestIntegrationFolderPathCacheReuse(t *testing.T) {
+	testutil.SkipIntegrationTestInShortMode(t)
+
+	fakeService := &dashboards.FakeDashboardProvisioning{}
+	defer fakeService.AssertExpectations(t)
+	fakeStore := &fakeDashboardStore{}
+
+	cfg := &config{
+		Name:    "cache-test",
+		Type:    "file",
+		OrgID:   1,
+		Folder:  "",
+		Options: map[string]any{"path": foldersFromFilesStructure},
+	}
+	reader, err := NewDashboardFileReader(cfg, log.New("test"), fakeService, fakeStore, folderServiceForFoldersFromFilesStructure(), setting.NewCfg())
+	require.NoError(t, err)
+
+	fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.Anything, "cache-test").
+		Return(&folder.Folder{ID: 1, UID: "folderTwo-uid", Title: "folderTwo"}, nil).Once()
+	fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.Anything, "cache-test").
+		Return(&folder.Folder{ID: 2, UID: "folderThree-uid", Title: "folderThree"}, nil).Once()
+	fakeService.On("SaveFolderForProvisionedDashboards", mock.Anything, mock.Anything, "cache-test").
+		Return(&folder.Folder{ID: 3, UID: "folderFour-uid", Title: "folderFour"}, nil).Once()
+
+	cache := make(map[string]folderPathCacheEntry)
+	ctx := context.Background()
+
+	_, _, err = reader.getOrCreateFolderFullpath(ctx, "folderTwo/folderThree", 1, cache)
+	require.NoError(t, err)
+	_, _, err = reader.getOrCreateFolderFullpath(ctx, "folderTwo/folderThree/folderFour", 1, cache)
+	require.NoError(t, err)
+
+	// Second call must only create folderFour (folderTwo and folderThree from cache).
+	fakeService.AssertExpectations(t)
 }
 
 type FakeFileInfo struct {
@@ -535,115 +788,12 @@ func (ffi FakeFileInfo) ModTime() time.Time {
 	return time.Time{}
 }
 
-func (ffi FakeFileInfo) Sys() interface{} {
+func (ffi FakeFileInfo) Sys() any {
 	return nil
 }
 
-func mockDashboardProvisioningService() *fakeDashboardProvisioningService {
-	mock := fakeDashboardProvisioningService{
-		provisioned: map[string][]*models.DashboardProvisioning{},
-	}
-	dashboards.NewProvisioningService = func(dboards.Store) dashboards.DashboardProvisioningService {
-		return &mock
-	}
-	return &mock
-}
+type fakeDashboardStore struct{}
 
-type fakeDashboardProvisioningService struct {
-	dashboards.DashboardProvisioningService
-
-	inserted     []*dashboards.SaveDashboardDTO
-	provisioned  map[string][]*models.DashboardProvisioning
-	getDashboard []*models.Dashboard
-}
-
-func (s *fakeDashboardProvisioningService) GetProvisionedDashboardData(name string) ([]*models.DashboardProvisioning, error) {
-	if _, ok := s.provisioned[name]; !ok {
-		s.provisioned[name] = []*models.DashboardProvisioning{}
-	}
-
-	return s.provisioned[name], nil
-}
-
-func (s *fakeDashboardProvisioningService) SaveProvisionedDashboard(ctx context.Context, dto *dashboards.SaveDashboardDTO,
-	provisioning *models.DashboardProvisioning) (*models.Dashboard, error) {
-	// Copy the structs as we need to change them but do not want to alter outside world.
-	var copyProvisioning = &models.DashboardProvisioning{}
-	*copyProvisioning = *provisioning
-
-	var copyDto = &dashboards.SaveDashboardDTO{}
-	*copyDto = *dto
-
-	if copyDto.Dashboard.Id == 0 {
-		copyDto.Dashboard.Id = rand.Int63n(1000000)
-	} else {
-		err := s.DeleteProvisionedDashboard(context.Background(), dto.Dashboard.Id, dto.Dashboard.OrgId)
-		// Lets delete existing so we do not have duplicates
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	s.inserted = append(s.inserted, dto)
-
-	if _, ok := s.provisioned[provisioning.Name]; !ok {
-		s.provisioned[provisioning.Name] = []*models.DashboardProvisioning{}
-	}
-
-	for _, val := range s.provisioned[provisioning.Name] {
-		if val.DashboardId == dto.Dashboard.Id && val.Name == provisioning.Name {
-			// Do not insert duplicates
-			return dto.Dashboard, nil
-		}
-	}
-
-	copyProvisioning.DashboardId = copyDto.Dashboard.Id
-
-	s.provisioned[provisioning.Name] = append(s.provisioned[provisioning.Name], copyProvisioning)
-	return dto.Dashboard, nil
-}
-
-func (s *fakeDashboardProvisioningService) SaveFolderForProvisionedDashboards(ctx context.Context, dto *dashboards.SaveDashboardDTO) (*models.Dashboard, error) {
-	s.inserted = append(s.inserted, dto)
-	return dto.Dashboard, nil
-}
-
-func (s *fakeDashboardProvisioningService) UnprovisionDashboard(ctx context.Context, dashboardID int64) error {
-	for key, val := range s.provisioned {
-		for index, dashboard := range val {
-			if dashboard.DashboardId == dashboardID {
-				s.provisioned[key] = append(s.provisioned[key][:index], s.provisioned[key][index+1:]...)
-			}
-		}
-	}
-	return nil
-}
-
-func (s *fakeDashboardProvisioningService) DeleteProvisionedDashboard(ctx context.Context, dashboardID int64, orgID int64) error {
-	err := s.UnprovisionDashboard(ctx, dashboardID)
-	if err != nil {
-		return err
-	}
-
-	for index, val := range s.inserted {
-		if val.Dashboard.Id == dashboardID {
-			s.inserted = append(s.inserted[:index], s.inserted[util.MinInt(index+1, len(s.inserted)):]...)
-		}
-	}
-	return nil
-}
-
-func (s *fakeDashboardProvisioningService) GetProvisionedDashboardDataByDashboardID(dashboardID int64) (*models.DashboardProvisioning, error) {
-	return nil, nil
-}
-
-func mockGetDashboardQuery(ctx context.Context, cmd *models.GetDashboardQuery) error {
-	for _, d := range fakeService.getDashboard {
-		if d.Slug == cmd.Slug {
-			cmd.Result = d
-			return nil
-		}
-	}
-
-	return models.ErrDashboardNotFound
+func (fds *fakeDashboardStore) GetDashboard(_ context.Context, _ *dashboards.GetDashboardQuery) (*dashboards.Dashboard, error) {
+	return nil, dashboards.ErrDashboardNotFound
 }

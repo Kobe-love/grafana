@@ -1,23 +1,24 @@
 import {
-  LiveChannelStatusEvent,
-  LiveChannelEvent,
+  type Subscription,
+  type JoinContext,
+  type LeaveContext,
+  type PublicationContext,
+  type SubscriptionErrorContext,
+  type SubscribedContext,
+  type UnsubscribedContext,
+} from 'centrifuge';
+import { Subject, Observable } from 'rxjs';
+
+import {
+  type LiveChannelStatusEvent,
+  type LiveChannelEvent,
   LiveChannelEventType,
   LiveChannelConnectionState,
-  LiveChannelPresenceStatus,
-  LiveChannelAddress,
-  DataFrameJSON,
+  type LiveChannelPresenceStatus,
+  type LiveChannelAddress,
+  type DataFrameJSON,
   isValidLiveChannelAddress,
 } from '@grafana/data';
-import Centrifuge, {
-  JoinLeaveContext,
-  PublicationContext,
-  SubscribeErrorContext,
-  SubscribeSuccessContext,
-  SubscriptionEvents,
-  UnsubscribeContext,
-} from 'centrifuge/dist/centrifuge';
-
-import { Subject, of, Observable } from 'rxjs';
 
 /**
  * Internal class that maps Centrifuge support to GrafanaLive
@@ -34,7 +35,7 @@ export class CentrifugeLiveChannel<T = any> {
   // Hold on to the last header with schema
   lastMessageWithSchema?: DataFrameJSON;
 
-  subscription?: Centrifuge.Subscription;
+  subscription?: Subscription;
   shutdownCallback?: () => void;
   initalized?: boolean;
 
@@ -54,73 +55,75 @@ export class CentrifugeLiveChannel<T = any> {
   }
 
   // This should only be called when centrifuge is connected
-  initalize(): SubscriptionEvents {
+  initalize(): void {
     if (this.initalized) {
       throw new Error('Channel already initalized: ' + this.id);
     }
     this.initalized = true;
 
-    const events: SubscriptionEvents = {
-      // Called when a message is recieved from the socket
-      publish: (ctx: PublicationContext) => {
-        try {
-          if (ctx.data) {
-            if (ctx.data.schema) {
-              this.lastMessageWithSchema = ctx.data as DataFrameJSON;
-            }
-
-            this.stream.next({
-              type: LiveChannelEventType.Message,
-              message: ctx.data,
-            });
+    this.subscription!.on('publication', (ctx: PublicationContext) => {
+      try {
+        if (ctx.data) {
+          if (ctx.data.schema) {
+            this.lastMessageWithSchema = ctx.data;
           }
 
-          // Clear any error messages
-          if (this.currentStatus.error) {
-            this.currentStatus.timestamp = Date.now();
-            delete this.currentStatus.error;
-            this.sendStatus();
-          }
-        } catch (err) {
-          console.log('publish error', this.addr, err);
-          this.currentStatus.error = err;
+          this.stream.next({
+            type: LiveChannelEventType.Message,
+            message: ctx.data,
+          });
+        }
+
+        // Clear any error messages
+        if (this.currentStatus.error) {
           this.currentStatus.timestamp = Date.now();
+          delete this.currentStatus.error;
           this.sendStatus();
         }
-      },
-      error: (ctx: SubscribeErrorContext) => {
+      } catch (err) {
+        console.log('publish error', this.addr, err);
+        this.currentStatus.error = err;
         this.currentStatus.timestamp = Date.now();
-        this.currentStatus.error = ctx.error;
         this.sendStatus();
-      },
-      subscribe: (ctx: SubscribeSuccessContext) => {
+      }
+    })
+      .on('error', (ctx: SubscriptionErrorContext) => {
+        this.currentStatus.timestamp = Date.now();
+        this.currentStatus.error = ctx.error.message;
+        this.sendStatus();
+      })
+      .on('subscribed', (ctx: SubscribedContext) => {
         this.currentStatus.timestamp = Date.now();
         this.currentStatus.state = LiveChannelConnectionState.Connected;
         delete this.currentStatus.error;
 
         if (ctx.data?.schema) {
-          this.lastMessageWithSchema = ctx.data as DataFrameJSON;
+          this.lastMessageWithSchema = ctx.data;
         }
-
         this.sendStatus(ctx.data);
-      },
-      unsubscribe: (ctx: UnsubscribeContext) => {
+      })
+      .on('unsubscribed', (ctx: UnsubscribedContext) => {
         this.currentStatus.timestamp = Date.now();
         this.currentStatus.state = LiveChannelConnectionState.Disconnected;
+        if (ctx.code >= 100) {
+          this.currentStatus.error = ctx.reason;
+        }
         this.sendStatus();
-      },
-    };
-
-    events.join = (ctx: JoinLeaveContext) => {
-      this.stream.next({ type: LiveChannelEventType.Join, user: ctx.info.user });
-    };
-    events.leave = (ctx: JoinLeaveContext) => {
-      this.stream.next({ type: LiveChannelEventType.Leave, user: ctx.info.user });
-    };
-    return events;
+      })
+      .on('subscribing', () => {
+        this.currentStatus.timestamp = Date.now();
+        this.currentStatus.state = LiveChannelConnectionState.Connecting;
+        this.sendStatus();
+      })
+      .on('join', (ctx: JoinContext) => {
+        this.stream.next({ type: LiveChannelEventType.Join, user: ctx.info.user });
+      })
+      .on('leave', (ctx: LeaveContext) => {
+        this.stream.next({ type: LiveChannelEventType.Leave, user: ctx.info.user });
+      });
   }
 
-  private sendStatus(message?: any) {
+  private sendStatus(message?: unknown) {
     const copy = { ...this.currentStatus };
     if (message) {
       copy.message = message;
@@ -139,7 +142,7 @@ export class CentrifugeLiveChannel<T = any> {
    * Get the stream of events and
    */
   getStream() {
-    return new Observable((subscriber) => {
+    return new Observable<LiveChannelEvent<T>>((subscriber) => {
       const initialMessage = { ...this.currentStatus };
       if (this.lastMessageWithSchema?.schema) {
         // send just schema instead of schema+data to avoid having data gaps
@@ -158,7 +161,7 @@ export class CentrifugeLiveChannel<T = any> {
           setTimeout(this.disconnectIfNoListeners, 250);
         }
       };
-    }) as Observable<LiveChannelEvent<T>>;
+    });
   }
 
   /**
@@ -171,10 +174,12 @@ export class CentrifugeLiveChannel<T = any> {
 
     return this.subscription!.presence().then((v) => {
       return {
-        users: Object.keys(v.presence),
+        users: Object.keys(v.clients),
       };
     });
   }
+
+  publish = (data: unknown) => this.subscription?.publish(data);
 
   /**
    * This will close and terminate all streams for this channel
@@ -204,25 +209,4 @@ export class CentrifugeLiveChannel<T = any> {
     this.sendStatus();
     this.disconnect();
   }
-}
-
-export function getErrorChannel<TMessage>(msg: string, id: string, addr: LiveChannelAddress) {
-  return {
-    id,
-    opened: Date.now(),
-    addr,
-
-    // return an error
-    getStream: () =>
-      of({
-        type: LiveChannelEventType.Status,
-        id,
-        timestamp: Date.now(),
-        state: LiveChannelConnectionState.Invalid,
-        error: msg,
-      }),
-
-    // already disconnected
-    disconnect: () => {},
-  };
 }

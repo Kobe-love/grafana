@@ -1,223 +1,394 @@
-import React, { PureComponent } from 'react';
-import Page from 'app/core/components/Page/Page';
-import { DeleteButton, LinkButton, FilterInput, VerticalGroup, HorizontalGroup, Pagination } from '@grafana/ui';
-import { NavModel } from '@grafana/data';
-import EmptyListCTA from 'app/core/components/EmptyListCTA/EmptyListCTA';
-import { AccessControlAction, Role, StoreState, Team } from 'app/types';
-import { deleteTeam, loadTeams } from './state/actions';
-import { getSearchQuery, getTeams, getTeamsCount, getTeamsSearchPage, isPermissionTeamAdmin } from './state/selectors';
-import { getNavModel } from 'app/core/selectors/navModel';
-import { config } from 'app/core/config';
-import { contextSrv, User } from 'app/core/services/context_srv';
-import { connectWithCleanUp } from '../../core/components/connectWithCleanUp';
-import { setSearchQuery, setTeamsSearchPage } from './state/reducers';
-import { TeamRolePicker } from 'app/core/components/RolePicker/TeamRolePicker';
+import { css } from '@emotion/css';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Skeleton from 'react-loading-skeleton';
+import { type SortingRule } from 'react-table';
+
+import { type DashboardHit } from '@grafana/api-clients/rtkq/dashboard/v0alpha1';
+import { Trans, t } from '@grafana/i18n';
+import { reportInteraction } from '@grafana/runtime';
+import {
+  Avatar,
+  type CellProps,
+  type Column,
+  EmptyState,
+  FilterInput,
+  Button,
+  InlineField,
+  InteractiveTable,
+  LinkButton,
+  LoadingPlaceholder,
+  Pagination,
+  Stack,
+  Tag,
+  TextLink,
+  useStyles2,
+} from '@grafana/ui';
+import { useLazySearchDashboardsAndFoldersQuery } from 'app/api/clients/dashboard/v0alpha1';
+import { Page } from 'app/core/components/Page/Page';
 import { fetchRoleOptions } from 'app/core/components/RolePicker/api';
+import { useAppNotification } from 'app/core/copy/appNotification';
+import { contextSrv } from 'app/core/services/context_srv';
+import { type Role, AccessControlAction } from 'app/types/accessControl';
+import { type TeamWithRoles } from 'app/types/teams';
 
-const pageLimit = 30;
+import { appEvents } from '../../core/app_events';
+import { TeamRolePicker } from '../../core/components/RolePicker/TeamRolePicker';
+import { ShowModalReactEvent } from '../../types/events';
+import { EnterpriseAuthFeaturesCard } from '../admin/EnterpriseAuthFeaturesCard';
 
-export interface Props {
-  navModel: NavModel;
-  teams: Team[];
-  searchQuery: string;
-  searchPage: number;
-  teamsCount: number;
-  hasFetched: boolean;
-  loadTeams: typeof loadTeams;
-  deleteTeam: typeof deleteTeam;
-  setSearchQuery: typeof setSearchQuery;
-  setTeamsSearchPage: typeof setTeamsSearchPage;
-  editorsCanAdmin: boolean;
-  signedInUser: User;
-}
+import { TeamDeleteModal } from './TeamDeleteModal';
+import { useDeleteTeam, useGetTeams } from './hooks';
+
+type Cell<T extends keyof TeamWithRoles = keyof TeamWithRoles> = CellProps<TeamWithRoles, TeamWithRoles[T]>;
 
 export interface State {
   roleOptions: Role[];
 }
 
-export class TeamList extends PureComponent<Props, State> {
-  constructor(props: Props) {
-    super(props);
-    this.state = { roleOptions: [] };
-  }
+// this is dummy data to pass to the table while the real data is loading
+const skeletonData: TeamWithRoles[] = new Array(3).fill(null).map((_, index) => ({
+  id: index,
+  uid: '',
+  memberCount: 0,
+  name: '',
+  orgId: 0,
+  isProvisioned: false,
+}));
 
-  componentDidMount() {
-    this.fetchTeams();
-    if (contextSrv.accessControlEnabled()) {
-      this.fetchRoleOptions();
+const TeamList = () => {
+  const canCreate = contextSrv.hasPermission(AccessControlAction.ActionTeamsCreate);
+  const displayRolePicker = shouldDisplayRolePicker();
+  const pageSize = 20;
+
+  const [roleOptions, setRoleOptions] = useState<Role[]>([]);
+  const styles = useStyles2(getStyles);
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState<string>();
+  const { data: teamData, isLoading } = useGetTeams({ query, pageSize, page, sort });
+  const [deleteTeam] = useDeleteTeam();
+  const [triggerFoldersQuery] = useLazySearchDashboardsAndFoldersQuery();
+  const notifyApp = useAppNotification();
+  const foldersQueryRef = useRef<ReturnType<typeof triggerFoldersQuery> | null>(null);
+
+  const teams = teamData?.teams || [];
+  const totalPages = Math.ceil((teamData?.totalCount || 0) / pageSize) || 0;
+  const noTeams = teams?.length === 0;
+  const changeSort = useCallback(
+    (sort: SortingRule<unknown>) => {
+      setSort(`${sort.id}-${sort.desc ? 'desc' : 'asc'}`);
+    },
+    [setSort]
+  );
+  const changePage = (page: number) => {
+    setPage(page);
+  };
+
+  useEffect(() => {
+    if (contextSrv.licensedAccessControlEnabled() && contextSrv.hasPermission(AccessControlAction.ActionRolesList)) {
+      fetchRoleOptions().then((roles) => setRoleOptions(roles));
     }
-  }
+  }, []);
 
-  async fetchTeams() {
-    await this.props.loadTeams();
-  }
+  useEffect(() => {
+    return () => {
+      if (foldersQueryRef.current) {
+        foldersQueryRef.current.abort();
+      }
+    };
+  }, []);
 
-  async fetchRoleOptions() {
-    const roleOptions = await fetchRoleOptions();
-    this.setState({ roleOptions });
-  }
+  const columns: Array<Column<TeamWithRoles>> = useMemo(
+    () => [
+      {
+        id: 'avatarUrl',
+        header: '',
+        disableGrow: true,
+        cell: ({ cell: { value } }: Cell<'avatarUrl'>) => {
+          if (isLoading) {
+            return <Skeleton containerClassName={styles.blockSkeleton} width={24} height={24} circle />;
+          }
 
-  deleteTeam = (team: Team) => {
-    this.props.deleteTeam(team.id);
-  };
+          return value && <Avatar src={value} alt="User avatar" />;
+        },
+      },
+      {
+        id: 'name',
+        header: 'Name',
+        cell: ({ cell: { value }, row: { original } }: Cell<'name'>) => {
+          if (isLoading) {
+            return <Skeleton width={100} />;
+          }
 
-  onSearchQueryChange = (value: string) => {
-    this.props.setSearchQuery(value);
-  };
+          const canReadTeam = contextSrv.hasPermissionInMetadata(AccessControlAction.ActionTeamsRead, original);
+          if (!canReadTeam) {
+            return value;
+          }
 
-  renderTeam(team: Team) {
-    const { editorsCanAdmin, signedInUser } = this.props;
-    const permission = team.permission;
-    const teamUrl = `org/teams/edit/${team.id}`;
-    const canDelete = isPermissionTeamAdmin({ permission, editorsCanAdmin, signedInUser });
+          return (
+            <TextLink
+              color="primary"
+              inline={false}
+              href={`/org/teams/edit/${original.uid}`}
+              title={t('teams.team-list.columns.title-edit-team', 'Edit team')}
+            >
+              {value}
+            </TextLink>
+          );
+        },
+        sortType: 'string',
+      },
+      {
+        id: 'email',
+        header: 'Email',
+        cell: ({ cell: { value } }: Cell<'email'>) => {
+          if (isLoading) {
+            return <Skeleton width={60} />;
+          }
+          return value;
+        },
+        sortType: 'string',
+      },
+      {
+        id: 'memberCount',
+        header: 'Members',
+        disableGrow: true,
+        cell: ({ cell: { value } }: Cell<'memberCount'>) => {
+          if (isLoading) {
+            return <Skeleton width={40} />;
+          }
+          return value;
+        },
+      },
+      ...(displayRolePicker
+        ? [
+            {
+              id: 'role',
+              header: 'Role',
+              cell: ({ row: { original } }: Cell<'memberCount'>) => {
+                if (isLoading) {
+                  return <Skeleton width={320} height={32} containerClassName={styles.blockSkeleton} />;
+                }
+                const canSeeTeamRoles = contextSrv.hasPermissionInMetadata(
+                  AccessControlAction.ActionTeamsRolesList,
+                  original
+                );
+                return (
+                  canSeeTeamRoles && (
+                    <TeamRolePicker
+                      teamId={original.id}
+                      roles={original.roles || []}
+                      isLoading={isLoading}
+                      roleOptions={roleOptions}
+                      width={40}
+                    />
+                  )
+                );
+              },
+            },
+          ]
+        : []),
+      {
+        id: 'isProvisioned',
+        header: '',
+        cell: ({ cell: { value } }: Cell<'isProvisioned'>) => {
+          if (isLoading) {
+            return <Skeleton width={240} />;
+          }
+          return !!value && <Tag colorIndex={14} name={'Provisioned'} />;
+        },
+      },
+      {
+        id: 'actions',
+        header: '',
+        disableGrow: true,
+        cell: ({ row: { original } }: Cell) => {
+          if (isLoading) {
+            return (
+              <Stack direction="row" justifyContent="flex-end" alignItems="center">
+                <Skeleton containerClassName={styles.blockSkeleton} width={16} height={16} />
+                <Skeleton containerClassName={styles.blockSkeleton} width={22} height={24} />
+              </Stack>
+            );
+          }
 
-    return (
-      <tr key={team.id}>
-        <td className="width-4 text-center link-td">
-          <a href={teamUrl}>
-            <img className="filter-table__avatar" src={team.avatarUrl} alt="Team avatar" />
-          </a>
-        </td>
-        <td className="link-td">
-          <a href={teamUrl}>{team.name}</a>
-        </td>
-        <td className="link-td">
-          <a href={teamUrl} aria-label={team.email?.length > 0 ? undefined : 'Empty email cell'}>
-            {team.email}
-          </a>
-        </td>
-        <td className="link-td">
-          <a href={teamUrl}>{team.memberCount}</a>
-        </td>
-        {contextSrv.accessControlEnabled() && (
-          <td>
-            <TeamRolePicker teamId={team.id} getRoleOptions={async () => this.state.roleOptions} />
-          </td>
-        )}
-        <td className="text-right">
-          <DeleteButton
-            aria-label="Delete team"
-            size="sm"
-            disabled={!canDelete}
-            onConfirm={() => this.deleteTeam(team)}
-          />
-        </td>
-      </tr>
-    );
-  }
+          const canReadTeam = contextSrv.hasPermissionInMetadata(AccessControlAction.ActionTeamsRead, original);
+          const canDelete = contextSrv.hasPermissionInMetadata(AccessControlAction.ActionTeamsDelete, original);
 
-  renderEmptyList() {
-    return (
-      <EmptyListCTA
-        title="You haven't created any teams yet."
-        buttonIcon="users-alt"
-        buttonLink="org/teams/new"
-        buttonTitle=" New team"
-        proTip="Assign folder and dashboard permissions to teams instead of users to ease administration."
-        proTipLink=""
-        proTipLinkTitle=""
-        proTipTarget="_blank"
-      />
-    );
-  }
+          const showDeleteModal = async () => {
+            let ownedFolders: DashboardHit[] = [];
+            foldersQueryRef.current = triggerFoldersQuery({
+              type: 'folder',
+              ownerReference: [`iam.grafana.app/Team/${original.uid}`],
+              limit: 1,
+            });
 
-  getPaginatedTeams = (teams: Team[]) => {
-    const offset = (this.props.searchPage - 1) * pageLimit;
-    return teams.slice(offset, offset + pageLimit);
-  };
+            const { data: foldersData, isError, error } = await foldersQueryRef.current;
 
-  renderTeamList() {
-    const { teams, searchQuery, editorsCanAdmin, searchPage, setTeamsSearchPage } = this.props;
-    const teamAdmin = contextSrv.hasRole('Admin') || (editorsCanAdmin && contextSrv.hasRole('Editor'));
-    const canCreate = contextSrv.hasAccess(AccessControlAction.ActionTeamsCreate, teamAdmin);
-    const newTeamHref = canCreate ? 'org/teams/new' : '#';
-    const paginatedTeams = this.getPaginatedTeams(teams);
-    const totalPages = Math.ceil(teams.length / pageLimit);
+            const isAbortError = error && typeof error === 'object' && 'name' in error && error.name === 'AbortError';
 
-    return (
-      <>
-        <div className="page-action-bar">
-          <div className="gf-form gf-form--grow">
-            <FilterInput placeholder="Search teams" value={searchQuery} onChange={this.onSearchQueryChange} />
-          </div>
+            if (isError && !isAbortError) {
+              notifyApp.error(
+                t(
+                  'teams.team-list.failed-to-check-folders',
+                  'Failed to check if the team owns folders. Please try again.'
+                )
+              );
+              console.error(error);
+              return;
+            }
 
-          <LinkButton href={newTeamHref} disabled={!canCreate}>
-            New Team
-          </LinkButton>
-        </div>
+            if (isAbortError) {
+              return;
+            }
 
-        <div className="admin-list-table">
-          <VerticalGroup spacing="md">
-            <table className="filter-table filter-table--hover form-inline">
-              <thead>
-                <tr>
-                  <th />
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Members</th>
-                  {contextSrv.accessControlEnabled() && <th>Roles</th>}
-                  <th style={{ width: '1%' }} />
-                </tr>
-              </thead>
-              <tbody>{paginatedTeams.map((team) => this.renderTeam(team))}</tbody>
-            </table>
-            <HorizontalGroup justify="flex-end">
-              <Pagination
-                onNavigate={setTeamsSearchPage}
-                currentPage={searchPage}
-                numberOfPages={totalPages}
-                hideWhenSinglePage={true}
+            if (foldersData?.hits) {
+              ownedFolders = foldersData.hits;
+            }
+
+            reportInteraction('grafana_teams_list_delete_button_clicked', {
+              ownedFolder: ownedFolders && ownedFolders.length > 0,
+            });
+            appEvents.publish(
+              new ShowModalReactEvent({
+                component: TeamDeleteModal,
+                props: {
+                  onConfirm: async () => {
+                    reportInteraction('grafana_teams_list_delete_modal_confirm_clicked');
+                    await deleteTeam({ uid: original.uid }).unwrap();
+                  },
+                  teamName: original.name,
+                  ownedFolder: ownedFolders && ownedFolders.length > 0,
+                },
+              })
+            );
+          };
+          return (
+            <Stack direction="row" justifyContent="flex-end" gap={2}>
+              {canReadTeam && (
+                <a href={`org/teams/edit/${original.uid}`} style={{ display: 'inline-flex' }}>
+                  <Button
+                    icon="pen"
+                    size="sm"
+                    variant="secondary"
+                    aria-label={t('teams.team-list.columns.aria-label-edit-team', 'Edit team {{teamName}}', {
+                      teamName: original.name,
+                    })}
+                    tooltip={t('teams.team-list.columns.tooltip-edit-team', 'Edit team')}
+                  />
+                </a>
+              )}
+              <Button
+                onClick={showDeleteModal}
+                variant="secondary"
+                disabled={!canDelete}
+                icon="trash-alt"
+                size="sm"
+                tooltip={t('teams.team-list.columns.tooltip-delete-button', 'Delete {{teamName}}', {
+                  teamName: original.name,
+                })}
+                aria-label={t('teams.team-list.columns.aria-label-delete-button', 'Delete team {{teamName}}', {
+                  teamName: original.name,
+                })}
               />
-            </HorizontalGroup>
-          </VerticalGroup>
-        </div>
-      </>
-    );
-  }
+            </Stack>
+          );
+        },
+      },
+    ],
+    [displayRolePicker, isLoading, styles.blockSkeleton, roleOptions, deleteTeam, triggerFoldersQuery, notifyApp]
+  );
 
-  renderList() {
-    const { teamsCount, hasFetched } = this.props;
-
-    if (!hasFetched) {
-      return null;
-    }
-
-    if (teamsCount > 0) {
-      return this.renderTeamList();
-    } else {
-      return this.renderEmptyList();
-    }
-  }
-
-  render() {
-    const { hasFetched, navModel } = this.props;
-
-    return (
-      <Page navModel={navModel}>
-        <Page.Contents isLoading={!hasFetched}>{this.renderList()}</Page.Contents>
-      </Page>
-    );
-  }
-}
-
-function mapStateToProps(state: StoreState) {
-  return {
-    navModel: getNavModel(state.navIndex, 'teams'),
-    teams: getTeams(state.teams),
-    searchQuery: getSearchQuery(state.teams),
-    searchPage: getTeamsSearchPage(state.teams),
-    teamsCount: getTeamsCount(state.teams),
-    hasFetched: state.teams.hasFetched,
-    editorsCanAdmin: config.editorsCanAdmin, // this makes the feature toggle mockable/controllable from tests,
-    signedInUser: contextSrv.user, // this makes the feature toggle mockable/controllable from tests,
-  };
-}
-
-const mapDispatchToProps = {
-  loadTeams,
-  deleteTeam,
-  setSearchQuery,
-  setTeamsSearchPage,
+  return (
+    <Page
+      navId="teams"
+      actions={
+        !noTeams ? (
+          <LinkButton href={canCreate ? 'org/teams/new' : '#'} disabled={!canCreate}>
+            <Trans i18nKey="teams.team-list.new-team">New team</Trans>
+          </LinkButton>
+        ) : undefined
+      }
+    >
+      <Page.Contents>
+        {!isLoading && !query && teams.length === 0 ? (
+          <EmptyState
+            variant="call-to-action"
+            button={
+              <LinkButton disabled={!canCreate} href="org/teams/new" icon="users-alt" size="lg">
+                <Trans i18nKey="teams.empty-state.button-title">New team</Trans>
+              </LinkButton>
+            }
+            message={t('teams.empty-state.title', "You haven't created any teams yet")}
+          >
+            <Trans i18nKey="teams.empty-state.pro-tip">
+              Assign folder and dashboard permissions to teams instead of users to ease administration.{' '}
+              <TextLink external href="https://grafana.com/docs/grafana/latest/administration/team-management">
+                Learn more
+              </TextLink>
+            </Trans>
+          </EmptyState>
+        ) : (
+          <>
+            <div className="page-action-bar">
+              <InlineField grow>
+                <FilterInput
+                  placeholder={t('teams.team-list.placeholder-search-teams', 'Search teams')}
+                  value={query}
+                  escapeRegex={false}
+                  onChange={setQuery}
+                />
+              </InlineField>
+            </div>
+            {!isLoading && teams.length === 0 && (
+              <EmptyState variant="not-found" message={t('teams.empty-state.message', 'No teams found')} />
+            )}
+            {isLoading && <LoadingPlaceholder text={t('teams.team-list.loading-teams', 'Loading teams...')} />}
+            {!isLoading && teams.length > 0 && (
+              <Stack direction={'column'} gap={2}>
+                <InteractiveTable
+                  columns={columns}
+                  data={isLoading ? skeletonData : teams}
+                  getRowId={(team) => String(team.uid)}
+                  fetchData={({ sortBy }) => {
+                    const sortingRule = sortBy.at(0);
+                    if (sortingRule) {
+                      return changeSort(sortingRule);
+                    }
+                  }}
+                />
+                <Stack justifyContent="flex-end">
+                  <Pagination
+                    hideWhenSinglePage
+                    currentPage={page}
+                    numberOfPages={totalPages}
+                    onNavigate={changePage}
+                  />
+                </Stack>
+              </Stack>
+            )}
+          </>
+        )}
+        {!query && <EnterpriseAuthFeaturesCard page="teams" />}
+      </Page.Contents>
+    </Page>
+  );
 };
 
-export default connectWithCleanUp(mapStateToProps, mapDispatchToProps, (state) => state.teams)(TeamList);
+function shouldDisplayRolePicker(): boolean {
+  return (
+    contextSrv.licensedAccessControlEnabled() &&
+    contextSrv.hasPermission(AccessControlAction.ActionTeamsRolesList) &&
+    contextSrv.hasPermission(AccessControlAction.ActionRolesList)
+  );
+}
+
+export default TeamList;
+
+const getStyles = () => ({
+  blockSkeleton: css({
+    lineHeight: 1,
+    // needed for things to align properly in the table
+    display: 'flex',
+  }),
+});

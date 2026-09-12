@@ -1,52 +1,49 @@
-import config from 'app/core/config';
-import * as grafanaData from '@grafana/data';
-import { getPanelPluginLoadError } from '../panel/components/PanelPluginError';
-import { importPluginModule } from './plugin_loader';
-interface PanelCache {
-  [key: string]: Promise<grafanaData.PanelPlugin>;
-}
-const panelCache: PanelCache = {};
+import { type PanelPlugin } from '@grafana/data';
+import { getPanelPluginMeta } from '@grafana/runtime/internal';
 
-export function importPanelPlugin(id: string): Promise<grafanaData.PanelPlugin> {
-  const loaded = panelCache[id];
+import { pluginImporter } from './importer/pluginImporter';
+
+const promiseCache: Record<string, Promise<PanelPlugin>> = {};
+
+export async function importPanelPlugin(id: string): Promise<PanelPlugin> {
+  const loaded = promiseCache[id];
   if (loaded) {
     return loaded;
   }
 
-  const meta = config.panels[id];
+  // we need to make sure this continues to handle concurrent calls
+  promiseCache[id] = getPanelPluginMeta(id)
+    .then((meta) => {
+      if (!meta) {
+        throw new Error(`Plugin ${id} not found`);
+      }
 
-  if (!meta) {
-    throw new Error(`Plugin ${id} not found`);
+      const promise = pluginImporter.importPanel(meta);
+      if (id !== meta.type) {
+        promiseCache[meta.type] = promise;
+      }
+
+      return promise;
+    })
+    .catch((error) => {
+      // clear cache on error
+      delete promiseCache[id];
+      throw error;
+    });
+
+  return promiseCache[id];
+}
+
+export function syncGetPanelPlugin(id: string): PanelPlugin | undefined {
+  return pluginImporter.getPanel(id);
+}
+
+export function clearPanelPluginCache(): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('clearPanelPluginCache() function can only be called from tests.');
   }
 
-  panelCache[id] = getPanelPlugin(meta);
-
-  return panelCache[id];
-}
-
-export function importPanelPluginFromMeta(meta: grafanaData.PanelPluginMeta): Promise<grafanaData.PanelPlugin> {
-  return getPanelPlugin(meta);
-}
-
-function getPanelPlugin(meta: grafanaData.PanelPluginMeta): Promise<grafanaData.PanelPlugin> {
-  return importPluginModule(meta.module, meta.info?.version)
-    .then((pluginExports) => {
-      if (pluginExports.plugin) {
-        return pluginExports.plugin as grafanaData.PanelPlugin;
-      } else if (pluginExports.PanelCtrl) {
-        const plugin = new grafanaData.PanelPlugin(null);
-        plugin.angularPanelCtrl = pluginExports.PanelCtrl;
-        return plugin;
-      }
-      throw new Error('missing export: plugin or PanelCtrl');
-    })
-    .then((plugin) => {
-      plugin.meta = meta;
-      return plugin;
-    })
-    .catch((err) => {
-      // TODO, maybe a different error plugin
-      console.warn('Error loading panel plugin: ' + meta.id, err);
-      return getPanelPluginLoadError(meta, err);
-    });
+  for (const key of Object.keys(promiseCache)) {
+    delete promiseCache[key];
+  }
 }

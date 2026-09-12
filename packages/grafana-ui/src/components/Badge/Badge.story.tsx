@@ -1,24 +1,32 @@
-import React from 'react';
-import { Story } from '@storybook/react';
-import { Badge, BadgeProps } from '@grafana/ui';
-import { iconOptions } from '../../utils/storybook/knobs';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
 
-export default {
-  title: 'Data Display/Badge',
+import { iconOptions } from '../../utils/storybook/icons';
+import { Stack } from '../Layout/Stack/Stack';
+
+import { Badge } from './Badge';
+import mdx from './Badge.mdx';
+
+const meta: Meta<typeof Badge> = {
+  title: 'Information/Badge',
   component: Badge,
-  decorators: [withCenteredStory],
   parameters: {
-    docs: {},
+    docs: { page: mdx },
   },
   argTypes: {
-    icon: { options: iconOptions, control: { type: 'select' } },
+    icon: {
+      options: Object.keys(iconOptions),
+      control: {
+        type: 'select',
+        labels: iconOptions,
+      },
+    },
     color: { control: 'select' },
     text: { control: 'text' },
+    tooltip: { control: 'text' },
   },
 };
 
-const Template: Story<BadgeProps> = (args) => <Badge {...args} />;
+const Template: StoryFn<typeof Badge> = (args) => <Badge {...args} />;
 
 export const Basic = Template.bind({});
 
@@ -27,3 +35,26 @@ Basic.args = {
   color: 'blue',
   icon: 'rocket',
 };
+
+export const Examples: StoryFn<typeof Badge> = () => (
+  <Stack direction="column" alignItems="flex-start">
+    <Badge text="Blue" color="blue" icon="check" />
+    <Badge text="Red" color="red" icon="check" />
+    <Badge text="Green" color="green" icon="check" />
+    <Badge text="Orange" color="orange" icon="check" />
+    <Badge text="Purple" color="purple" icon="check" />
+    <Badge text="Dark Grey" color="darkgrey" icon="check" />
+    <Badge text="Brand" color="brand" icon="check" />
+  </Stack>
+);
+
+export const LongTextWrapping: StoryFn<typeof Badge> = () => (
+  <div style={{ width: 180 }}>
+    <Badge
+      text="Badge label that is long enough to wrap to a second line to demonstrate the alignment of the icon"
+      color="blue"
+      icon="clock-nine"
+    />
+  </div>
+);
+export default meta;

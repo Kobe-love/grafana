@@ -1,7 +1,8 @@
-import React, { ReactElement } from 'react';
+import { type ReactElement } from 'react';
+import * as React from 'react';
 
 /** Returns the ID value of the first, and only, child element  */
-export function getChildId(children: ReactElement): string | undefined {
+export function getChildId(children: ReactElement<Record<string, unknown>>): string | undefined {
   let inputId: unknown;
 
   // Get the first, and only, child to retrieve form input's id
@@ -24,15 +25,15 @@ export function getChildId(children: ReactElement): string | undefined {
  * @param itemToRender
  * @param props props to be passed to the function if item provided as such
  */
-export function renderOrCallToRender<TProps = any>(
-  itemToRender: ((props?: TProps) => React.ReactNode) | React.ReactNode,
+export function renderOrCallToRender<TProps = {}>(
+  itemToRender: ((props: TProps) => React.ReactNode) | React.ReactNode,
   props?: TProps
 ): React.ReactNode {
   if (React.isValidElement(itemToRender) || typeof itemToRender === 'string' || typeof itemToRender === 'number') {
     return itemToRender;
   }
 
-  if (typeof itemToRender === 'function') {
+  if (typeof itemToRender === 'function' && props) {
     return itemToRender(props);
   }
 

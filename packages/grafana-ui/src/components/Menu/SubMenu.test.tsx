@@ -1,6 +1,8 @@
-import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { createRef } from 'react';
+
 import { selectors } from '@grafana/e2e-selectors';
+
 import { MenuItem } from './MenuItem';
 import { SubMenu } from './SubMenu';
 
@@ -10,14 +12,13 @@ describe('SubMenu', () => {
       <MenuItem key="subitem1" label="subitem1" icon="history" />,
       <MenuItem key="subitem2" label="subitem2" icon="apps" />,
     ];
+    const parentItemRef = createRef<HTMLElement>();
 
-    render(
-      <SubMenu items={items} isOpen={true} openedWithArrow={false} setOpenedWithArrow={jest.fn()} close={jest.fn()} />
-    );
+    render(<SubMenu parentItemRef={parentItemRef} items={items} isOpen={true} close={jest.fn()} />);
 
-    expect(screen.getByLabelText(selectors.components.Menu.SubMenu.icon)).toBeInTheDocument();
+    expect(screen.getByTestId(selectors.components.Menu.SubMenu.icon)).toBeInTheDocument();
 
-    const subMenuContainer = await screen.findByLabelText(selectors.components.Menu.SubMenu.container);
+    const subMenuContainer = await screen.findByTestId(selectors.components.Menu.SubMenu.container);
 
     expect(subMenuContainer).toBeInTheDocument();
     expect(subMenuContainer.firstChild?.childNodes.length).toBe(2);

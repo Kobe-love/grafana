@@ -1,24 +1,33 @@
-import React, { forwardRef, HTMLAttributes } from 'react';
 import { cx, css } from '@emotion/css';
-import { GrafanaTheme } from '@grafana/data';
-import { useTheme } from '../../themes';
-import { getTagColor, getTagColorsFromName } from '../../utils';
+import { forwardRef, type HTMLAttributes } from 'react';
+import * as React from 'react';
+import Skeleton from 'react-loading-skeleton';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useStyles2, useTheme2 } from '../../themes/ThemeContext';
+import { type IconName } from '../../types/icon';
+import { type SkeletonComponent, attachSkeleton } from '../../utils/skeleton';
+import { getTagColor, getTagColorsFromName } from '../../utils/tags';
+import { Icon } from '../Icon/Icon';
 
 /**
  * @public
  */
-export type OnTagClick = (name: string, event: React.MouseEvent<HTMLElement>) => any;
+export type OnTagClick = (name: string, event: React.MouseEvent<HTMLElement>) => void;
 
 export interface Props extends Omit<HTMLAttributes<HTMLElement>, 'onClick'> {
   /** Name of the tag to display */
   name: string;
-  /** Use constant color from TAG_COLORS. Using index instead of color directly so we can match other styling. */
+  icon?: IconName;
+  /** Use constant color from TAG_COLORS. Using index instead of color directly so we can match other styling.
+   * The index wraps around, so a value beyond the number of colors is fine. */
   colorIndex?: number;
   onClick?: OnTagClick;
 }
 
-export const Tag = forwardRef<HTMLElement, Props>(({ name, onClick, className, colorIndex, ...rest }, ref) => {
-  const theme = useTheme();
+const TagComponent = forwardRef<HTMLElement, Props>(({ name, onClick, icon, className, colorIndex, ...rest }, ref) => {
+  const theme = useTheme2();
   const styles = getTagStyles(theme, name, colorIndex);
 
   const onTagClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -32,44 +41,72 @@ export const Tag = forwardRef<HTMLElement, Props>(({ name, onClick, className, c
 
   return onClick ? (
     <button {...rest} className={classes} onClick={onTagClick} ref={ref as React.ForwardedRef<HTMLButtonElement>}>
+      {icon && <Icon name={icon} />}
       {name}
     </button>
   ) : (
     <span {...rest} className={classes} ref={ref}>
+      {icon && <Icon name={icon} />}
       {name}
     </span>
   );
 });
+TagComponent.displayName = 'Tag';
 
-Tag.displayName = 'Tag';
+const TagSkeleton: SkeletonComponent = ({ rootProps }) => {
+  const styles = useStyles2(getSkeletonStyles);
+  return <Skeleton width={60} height={22} containerClassName={styles.container} {...rootProps} />;
+};
 
-const getTagStyles = (theme: GrafanaTheme, name: string, colorIndex?: number) => {
-  let colors;
-  if (colorIndex === undefined) {
-    colors = getTagColorsFromName(name);
-  } else {
-    colors = getTagColor(colorIndex);
-  }
+/**
+ * Used for displaying metadata, for example to add more details to search results. Background and border colors are generated from the tag name.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/information-tag--docs
+ */
+export const Tag = attachSkeleton(TagComponent, TagSkeleton);
+
+const getSkeletonStyles = () => ({
+  container: css({
+    lineHeight: 1,
+  }),
+});
+
+const getTagStyles = (theme: GrafanaTheme2, name: string, colorIndex?: number) => {
+  const visualRefreshEnabled = theme.flags.visualDesignRefresh;
+  const { background, text } =
+    colorIndex === undefined ? getTagColorsFromName(name, theme) : getTagColor(colorIndex, theme);
   return {
-    wrapper: css`
-      appearance: none;
-      border-style: none;
-      font-weight: ${theme.typography.weight.semibold};
-      font-size: ${theme.typography.size.sm};
-      line-height: ${theme.typography.lineHeight.xs};
-      vertical-align: baseline;
-      background-color: ${colors.color};
-      color: ${theme.palette.gray98};
-      white-space: nowrap;
-      text-shadow: none;
-      padding: 3px 6px;
-      border-radius: ${theme.border.radius.md};
-    `,
-    hover: css`
-      &:hover {
-        opacity: 0.85;
-        cursor: pointer;
+    wrapper: css(
+      {
+        appearance: 'none',
+        borderStyle: 'none',
+        fontWeight: theme.typography.fontWeightMedium,
+        fontSize: theme.typography.size.sm,
+        lineHeight: theme.typography.bodySmall.lineHeight,
+        verticalAlign: 'baseline',
+        backgroundColor: background,
+        color: text,
+        whiteSpace: 'pre',
+        textShadow: 'none',
+        padding: '3px 6px',
+        borderRadius: theme.shape.radius.sm,
+      },
+      visualRefreshEnabled && {
+        gap: '3px',
+        borderRadius: theme.shape.radius.pill,
+        padding: `3px ${theme.spacing.x1}`,
+        // needed for the icon/text gap below to take effect
+        display: 'inline-flex',
+        alignItems: 'center',
+        fontSize: theme.typography.size.xs,
+        fontWeight: theme.typography.fontWeightRegular,
       }
-    `,
+    ),
+    hover: css({
+      '&:hover': {
+        opacity: 0.85,
+        cursor: 'pointer',
+      },
+    }),
   };
 };

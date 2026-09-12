@@ -3,96 +3,82 @@ on:
   workflow_dispatch:
     inputs:
       version:
+        description: 'Needs to match, exactly, the name of a milestone. The version to be released please respect: major.minor.patch, major.minor.patch-preview or major.minor.patch-preview<number> format. example: 7.4.3, 7.4.3-preview or 7.4.3-preview1'
         required: true
-        default: '7.x.x'
-  workflow_call:
-    inputs:
-      version_call:
-        description: Needs to match, exactly, the name of a version
-        required: true
-        type: string
-    secrets:
-        token:
-          required: true
-        metricsWriteAPIKey:
-          required: true
+      push:
+        default: true
+        required: false
+      dry_run:
+        default: false
+        required: false
+
+permissions: {}
+
 jobs:
-  main:
-    runs-on: ubuntu-latest
+  bump-version:
+    runs-on: ubuntu-arm64-small
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    env:
+      VERSION: ${{ inputs.version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      REF_NAME: ${{ github.ref_name }}
+      RUN_ID: ${{ github.run_id }}
     steps:
-    # This is a basic workflow to help you get started with Actions
-      - uses: actions-ecosystem/action-regex-match@v2.0.2
-        if: ${{ github.event.inputs.version != '' }}
-        id: regex-match
+      # grafana/grafana is too large for GitHub's pre-receive workflow-file scan to
+      # finish within its timeout, so every push is rejected with "workflows scope may
+      # be required" -- even when no workflow files are touched. workflows:write tells
+      # GitHub to skip that scan. grafana-writer is the only app installed with that
+      # scope here. Commits go through the Git Data API via planetscale/ghcommit-action
+      # so they're automatically signed under grafana-writer[bot]'s identity, satisfying
+      # upcoming required_signatures rules.
+      - name: Get GitHub App token
+        id: get-writer-app-token
+        uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
         with:
-          text: ${{ github.event.inputs.version }}
-          regex: '^(\d+.\d+).\d+(?:-beta.\d+)?$'
-      - uses: actions-ecosystem/action-regex-match@v2.0.2
-        if: ${{ inputs.version_call != '' }}
-        id: regex-match-version-call
+          github_app: grafana-writer
+          permission_set: ${{ startsWith(github.ref_name, 'release-') && 'release-writer' || 'release-writer-main' }}
+      - name: Checkout Grafana
+        uses: actions/checkout@v5
+      - name: Update package.json versions
+        uses: ./pkg/build/actions/bump-version
         with:
-          text: ${{ inputs.version_call }}
-          regex: '^(\d+.\d+).\d+(?:-beta\d+)?$'
-      - name: Validate input version
-        if: ${{ steps.regex-match.outputs.match == '' && github.event.inputs.version != '' }}
+          version: ${{ inputs.version }}
+      - run: echo "WORK_BRANCH=bump-version/${RUN_ID}/${VERSION}" >> "$GITHUB_ENV"
+      # Pre-create the branch on the remote so kminehart has a target ref to commit to.
+      - if: ${{ inputs.push == true || inputs.push == 'true' }}
+        name: Pre-create branch on remote
+        env:
+          GH_TOKEN: ${{ steps.get-writer-app-token.outputs.token }}
         run: |
-          echo "The input version format is not correct, please respect:\
-          major.minor.patch or major.minor.patch-beta.number format. \
-          example: 7.4.3 or 7.4.3-beta.1"
-          exit 1
-      - name: Validate input version call
-        if: ${{ inputs.version_call != '' && steps.regex-match-version-call.outputs.match == '' }}
-        run: |
-          echo "The input version format is not correct, please respect:\
-          major.minor.patch or major.minor.patch-beta<number> format. \
-          example: 7.4.3 or 7.4.3-beta1"
-          exit 1
-
-      - uses: actions/checkout@v2
-
-      - name: Set intermedia variables
-        id: intermedia
-        run: |
-          echo "::set-output name=short_ref::${GITHUB_REF#refs/*/}"
-          echo "::set-output name=check_passed::false"
-          echo "::set-output name=branch_name::v${{steps.regex-match.outputs.group1}}"
-          echo "::set-output name=branch_exist::$(git ls-remote --heads https://github.com/grafana/grafana.git v${{ steps.regex-match.outputs.group1 }}.x | wc -l)"
-
-      - name: Check input version is aligned with branch(not main)
-        if: ${{ github.event.inputs.version != '' && steps.intermedia.outputs.branch_exist != '0' && !contains(steps.intermedia.outputs.short_ref, steps.intermedia.outputs.branch_name) }}
-        run: |
-          echo " You need to run the workflow on branch v${{steps.regex-match.outputs.group1}}.x
-          exit 1
-
-      - name: Check input version is aligned with branch(main)
-        if: ${{ github.event.inputs.version != '' && steps.intermedia.outputs.branch_exist == '0' && !contains(steps.intermedia.outputs.short_ref, 'main') }}
-        run: |
-          echo "When you want to deliver a new new minor version, you might want to create a new branch first \
-          with naming convention v[major].[minor].x, and just run the workflow on that branch. \
-          Run the workflow on main only when needed"
-          exit 1
-
-      - name: Checkout Actions
-        uses: actions/checkout@v2
+          BASE_SHA=$(git rev-parse "origin/${REF_NAME}")
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            --method POST \
+            -f "ref=refs/heads/${WORK_BRANCH}" \
+            -f "sha=${BASE_SHA}"
+      - if: ${{ inputs.push == true || inputs.push == 'true' }}
+        name: Commit bump-version changes
+        uses: planetscale/ghcommit-action@a6b150b81dca5dd027baa898604418eec9e11465 # v0.2.22
         with:
-          repository: "grafana/grafana-github-actions"
-          path: ./actions
-          ref: main
-      - uses: actions/setup-node@v2.5.1
-        with:
-          node-version: '14'
-      - name: Install Actions
-        run: npm install --production --prefix ./actions
-      - name: Run bump version (manually invoked)
-        if: ${{ github.event.inputs.version != '' }}
-        uses: ./actions/bump-version
-        with:
-          token: ${{ secrets.GH_BOT_ACCESS_TOKEN }}
-          metricsWriteAPIKey: ${{ secrets.GRAFANA_MISC_STATS_API_KEY }}
-      - name: Run bump version (workflow invoked)
-        if: ${{ inputs.version_call != '' }}
-        uses: ./actions/bump-version
-        with:
-          version_call: ${{ inputs.version_call }}
-          token: ${{ secrets.token }}
-          metricsWriteAPIKey: ${{ secrets.metricsWriteAPIKey }}
+          commit_message: "bump version ${{ env.VERSION }}"
+          repo: ${{ github.repository }}
+          branch: ${{ env.WORK_BRANCH }}
+          file_pattern: "**"
+        env:
+          GITHUB_TOKEN: ${{ steps.get-writer-app-token.outputs.token }}
+      - if: ${{ inputs.push == true || inputs.push == 'true' }}
+        name: Create PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --dry-run="$DRY_RUN" \
+            -l "type/ci" \
+            -l "no-changelog" \
+            --draft \
+            -B "$REF_NAME" \
+            -H "$WORK_BRANCH" \
+            --title "Release: Bump version to ${VERSION}" \
+            --body "Updated version to ${VERSION}"

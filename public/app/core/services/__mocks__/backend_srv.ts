@@ -1,8 +1,8 @@
-import 'whatwg-fetch'; // fetch polyfill needed for Headers
-
-import { BackendSrvRequest, FetchResponse } from '@grafana/runtime';
 import { of } from 'rxjs';
-import { BackendSrv } from '../backend_srv';
+
+import { type BackendSrvRequest, type FetchResponse } from '@grafana/runtime';
+
+import { type BackendSrv } from '../backend_srv';
 
 /**
  * Creates a pretty bogus prom response. Definitelly needs more work but right now we do not test the contents of the
@@ -26,18 +26,21 @@ function makePromResponse() {
   };
 }
 
-export const backendSrv = ({
+export const backendSrv = {
   get: jest.fn(),
-  getDashboardByUid: jest.fn(),
   getFolderByUid: jest.fn(),
   post: jest.fn(),
   resolveCancelerIfExists: jest.fn(),
+  search: jest.fn(),
   datasourceRequest: jest.fn(() => Promise.resolve(makePromResponse())),
+
+  /** @deprecated Use getDashboardAPI().getDashboardDTO(uid) */
+  getDashboardByUid: jest.fn(),
 
   // Observable support
   fetch: (options: BackendSrvRequest) => {
     return of(makePromResponse() as FetchResponse);
   },
-} as unknown) as BackendSrv;
+} as unknown as BackendSrv;
 
 export const getBackendSrv = jest.fn().mockReturnValue(backendSrv);

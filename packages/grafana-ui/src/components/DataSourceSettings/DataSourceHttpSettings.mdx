@@ -1,9 +1,11 @@
-import { Meta, Props } from '@storybook/addon-docs/blocks';
+import { Meta, ArgTypes } from '@storybook/addon-docs/blocks';
 import { DataSourceHttpSettings } from './DataSourceHttpSettings';
 
 <Meta title="MDX|DataSourceHttpSettings" component={DataSourceHttpSettings} />
 
 # DataSourceHttpSettings
+
+> **Deprecated!** Use components from `@grafana/plugin-ui` instead, according to the [migration guide](https://github.com/grafana/plugin-ui/blob/main/src/components/ConfigEditor/migrating-from-datasource-http-settings.md)
 
 Component for displaying the configuration options for a data source plugin.
 
@@ -33,4 +35,4 @@ export const ConfigEditor = (props: Props) => {
 };
 ```
 
-<Props of={DataSourceHttpSettings} />
+<ArgTypes of={DataSourceHttpSettings} />

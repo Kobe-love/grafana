@@ -1,6 +1,7 @@
-import { Field, FieldType, DataFrame } from '../../types/dataFrame';
+import { type Field, FieldType, type DataFrame } from '../../types/dataFrame';
+import { type FieldMatcherInfo } from '../../types/transformations';
+
 import { FieldMatcherID } from './ids';
-import { FieldMatcherInfo } from '../../types/transformations';
 
 const firstFieldMatcher: FieldMatcherInfo = {
   id: FieldMatcherID.first,

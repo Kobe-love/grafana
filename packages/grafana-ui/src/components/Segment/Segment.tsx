@@ -1,19 +1,28 @@
-import React, { HTMLProps } from 'react';
 import { cx } from '@emotion/css';
-import { isObject } from 'lodash';
-import { SelectableValue } from '@grafana/data';
-import { SegmentSelect, useExpandableLabel, SegmentProps } from './';
-import { getSegmentStyles } from './styles';
-import { InlineLabel } from '../Forms/InlineLabel';
-import { useStyles } from '../../themes';
+import { type HTMLProps } from 'react';
+import * as React from 'react';
 
-export interface SegmentSyncProps<T> extends SegmentProps<T>, Omit<HTMLProps<HTMLDivElement>, 'value' | 'onChange'> {
+import { type SelectableValue } from '@grafana/data';
+
+import { useStyles2 } from '../../themes/ThemeContext';
+import { InlineLabel } from '../Forms/InlineLabel';
+import { getLabelFromValue } from '../Select/utils';
+
+import { SegmentSelect } from './SegmentSelect';
+import { getSegmentStyles } from './styles';
+import { type SegmentProps } from './types';
+import { useExpandableLabel } from './useExpandableLabel';
+
+export interface SegmentSyncProps<T> extends SegmentProps, Omit<HTMLProps<HTMLDivElement>, 'value' | 'onChange'> {
   value?: T | SelectableValue<T>;
   onChange: (item: SelectableValue<T>) => void;
   options: Array<SelectableValue<T>>;
   inputMinWidth?: number;
 }
 
+/**
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/inputs-segment--docs
+ */
 export function Segment<T>({
   options,
   value,
@@ -32,10 +41,10 @@ export function Segment<T>({
 }: React.PropsWithChildren<SegmentSyncProps<T>>) {
   const [Label, labelWidth, expanded, setExpanded] = useExpandableLabel(autofocus, onExpandedChange);
   const width = inputMinWidth ? Math.max(inputMinWidth, labelWidth) : labelWidth;
-  const styles = useStyles(getSegmentStyles);
+  const styles = useStyles2(getSegmentStyles);
 
   if (!expanded) {
-    const label = isObject(value) ? value.label : value;
+    const label = getLabelFromValue(value);
 
     return (
       <Label
@@ -63,7 +72,7 @@ export function Segment<T>({
   return (
     <SegmentSelect
       {...rest}
-      value={value && !isObject(value) ? { value } : value}
+      value={value && typeof value !== 'object' ? { value } : value}
       placeholder={inputPlaceholder}
       options={options}
       width={width}

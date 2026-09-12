@@ -1,10 +1,12 @@
+import { toDataFrame } from '../../dataframe/processDataFrame';
+import { type Field, FieldType } from '../../types/dataFrame';
+import { type DisplayProcessor } from '../../types/displayValue';
+import { type DataTransformerConfig } from '../../types/transformations';
 import { mockTransformationsRegistry } from '../../utils/tests/mockTransformationsRegistry';
-import { DataTransformerConfig, DisplayProcessor, Field, FieldType } from '../../types';
-import { DataTransformerID } from './ids';
-import { toDataFrame } from '../../dataframe';
 import { transformDataFrame } from '../transformDataFrame';
-import { ArrayVector } from '../../vector';
-import { mergeTransformer, MergeTransformerOptions } from './merge';
+
+import { DataTransformerID } from './ids';
+import { mergeTransformer, type MergeTransformerOptions } from './merge';
 
 describe('Merge multiple to single', () => {
   const cfg: DataTransformerConfig<MergeTransformerOptions> = {
@@ -584,18 +586,16 @@ describe('Merge multiple to single', () => {
   });
 });
 
-const createField = (name: string, type: FieldType, values: any[], config = {}, display?: DisplayProcessor): Field => {
-  return { name, type, values: new ArrayVector(values), config, labels: undefined, display };
+const createField = (
+  name: string,
+  type: FieldType,
+  values: unknown[],
+  config = {},
+  display?: DisplayProcessor
+): Field => {
+  return { name, type, values: values, config, labels: undefined, display };
 };
 
 const unwrap = (fields: Field[]): Field[] => {
-  return fields.map((field) =>
-    createField(
-      field.name,
-      field.type,
-      field.values.toArray().map((value: any) => value),
-      field.config,
-      field.display
-    )
-  );
+  return fields.map((field) => createField(field.name, field.type, field.values, field.config, field.display));
 };

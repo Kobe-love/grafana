@@ -1,37 +1,34 @@
-// This is a temporary workaround to allow theme switching storybook docs
-// see https://github.com/storybookjs/storybook/issues/10523 for further details
-import React from 'react';
-import { DocsContainer } from '@storybook/addon-docs/blocks';
-import { useDarkMode } from 'storybook-dark-mode';
-import { GrafanaLight, GrafanaDark } from '../../../.storybook/storybookTheme';
+// Wrap the DocsContainer for theme switching support.
+import { DocsContainer, type DocsContextProps } from '@storybook/addon-docs/blocks';
+import * as React from 'react';
+
+import { getThemeById, ThemeContext } from '@grafana/data';
+
+import { createStorybookTheme } from '../../../.storybook/storybookTheme';
+import { GlobalStyles } from '../../themes/GlobalStyles/GlobalStyles';
 
 type Props = {
-  context: any;
+  context: DocsContextProps;
+  children?: React.ReactNode;
 };
 
-export const ThemedDocsContainer: React.FC<Props> = ({ children, context }) => {
-  const dark = useDarkMode();
+export const ThemedDocsContainer = ({ children, context }: Props) => {
+  // Default to system theme for pages that don't have associated stories
+  // Currently this is only the case for the docs `Intro` page
+  let themeId = 'system';
+  if (context.componentStories().length > 0) {
+    const story = context.storyById();
+    const { globals } = context.getStoryContext(story);
+    themeId = globals.theme;
+  }
+  const theme = getThemeById(themeId);
 
   return (
-    <DocsContainer
-      context={{
-        ...context,
-        storyById: (id) => {
-          const storyContext = context.storyById(id);
-          return {
-            ...storyContext,
-            parameters: {
-              ...storyContext?.parameters,
-              docs: {
-                ...storyContext?.parameters.docs,
-                theme: dark ? GrafanaDark : GrafanaLight,
-              },
-            },
-          };
-        },
-      }}
-    >
-      {children}
+    <DocsContainer theme={createStorybookTheme(theme)} context={context}>
+      <ThemeContext.Provider value={theme}>
+        <GlobalStyles />
+        {children}
+      </ThemeContext.Provider>
     </DocsContainer>
   );
 };

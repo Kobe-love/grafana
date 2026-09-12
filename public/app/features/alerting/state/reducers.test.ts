@@ -1,16 +1,23 @@
 import { dateTime } from '@grafana/data';
 import {
+  type AlertRuleDTO,
+  type AlertRulesState,
+  type NotificationChannelState,
+  type NotifierDTO,
+} from 'app/features/alerting/unified/types/alerting';
+
+import { reducerTester } from '../../../../test/core/redux/reducerTester';
+
+import {
   alertRulesReducer,
   initialChannelState,
   initialState,
   loadAlertRules,
   loadedAlertRules,
+  notificationChannelLoaded,
   notificationChannelReducer,
   setSearchQuery,
-  notificationChannelLoaded,
 } from './reducers';
-import { AlertRuleDTO, AlertRulesState, NotificationChannelState, NotifierDTO } from 'app/types';
-import { reducerTester } from '../../../../test/core/redux/reducerTester';
 
 describe('Alert rules', () => {
   const realDateNow = Date.now.bind(global.Date);
@@ -20,7 +27,8 @@ describe('Alert rules', () => {
 
   const newStateDate = dateTime().subtract(1, 'y');
   const newStateDateFormatted = newStateDate.format('YYYY-MM-DD');
-  const newStateDateAge = newStateDate.fromNow(true);
+  // same logic as convertToAlertRule(): stateAge: dateTime(dto.newStateDate).fromNow(true)
+  const newStateDateAge = dateTime(`${newStateDateFormatted}T10:01:01+02:00`).fromNow(true);
   const payload: AlertRuleDTO[] = [
     {
       id: 2,
@@ -255,6 +263,7 @@ describe('Notification channel', () => {
           required: true,
           validationRule: '',
           secure: false,
+          dependsOn: '',
         },
         {
           element: 'select',
@@ -271,6 +280,7 @@ describe('Notification channel', () => {
           required: false,
           validationRule: '',
           secure: false,
+          dependsOn: '',
         },
         {
           element: 'input',
@@ -283,6 +293,7 @@ describe('Notification channel', () => {
           required: false,
           validationRule: '',
           secure: false,
+          dependsOn: '',
         },
         {
           element: 'input',
@@ -295,6 +306,7 @@ describe('Notification channel', () => {
           required: false,
           validationRule: '',
           secure: true,
+          dependsOn: '',
         },
       ],
     },

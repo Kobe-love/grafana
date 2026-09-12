@@ -1,31 +1,42 @@
-import React, { FC, useCallback } from 'react';
-import { GrafanaTheme2, SelectableValue, StandardEditorProps } from '@grafana/data';
-import { ColorDimensionConfig } from '../types';
-import { Select, ColorPicker, useStyles2 } from '@grafana/ui';
-import {
-  useFieldDisplayNames,
-  useSelectOptions,
-} from '../../../../../packages/grafana-ui/src/components/MatchersUI/utils';
 import { css } from '@emotion/css';
+import { useCallback, useMemo } from 'react';
 
-const fixedColorOption: SelectableValue<string> = {
-  label: 'Fixed color',
-  value: '_____fixed_____',
-};
+import { type GrafanaTheme2, type SelectableValue, type StandardEditorProps } from '@grafana/data';
+import { t } from '@grafana/i18n';
+import { type ColorDimensionConfig } from '@grafana/schema';
+import { Combobox, ColorPicker, useStyles2 } from '@grafana/ui';
+import { useFieldDisplayNames, useMatcherSelectOptions } from '@grafana/ui/internal';
 
-export const ColorDimensionEditor: FC<StandardEditorProps<ColorDimensionConfig, any, any>> = (props) => {
-  const { value, context, onChange } = props;
+import { type ColorDimensionOptions } from '../types';
+
+export const ColorDimensionEditor = (props: StandardEditorProps<ColorDimensionConfig, ColorDimensionOptions>) => {
+  const fixedColorOption = useMemo(
+    () => ({
+      label: t('dimensions.color-dimension-editor.label-fixed-color', 'Fixed color'),
+      value: '_____fixed_____',
+    }),
+    []
+  );
+  const { value, context, onChange, item, id } = props;
 
   const defaultColor = 'dark-green';
 
   const styles = useStyles2(getStyles);
   const fieldName = value?.field;
-  const isFixed = Boolean(!fieldName);
+  const isFixed = value && Boolean(!fieldName) && value?.fixed;
   const names = useFieldDisplayNames(context.data);
-  const selectOptions = useSelectOptions(names, fieldName, fixedColorOption);
+  const selectOptions = useMatcherSelectOptions(names, fieldName, {
+    baseNameMode: item.settings?.baseNameMode,
+    firstItem: fixedColorOption,
+  });
 
   const onSelectChange = useCallback(
-    (selection: SelectableValue<string>) => {
+    (selection: SelectableValue<string> | null) => {
+      if (!selection) {
+        onChange(undefined);
+        return;
+      }
+
       const field = selection.value;
       if (field && field !== fixedColorOption.value) {
         onChange({
@@ -33,7 +44,7 @@ export const ColorDimensionEditor: FC<StandardEditorProps<ColorDimensionConfig, 
           field,
         });
       } else {
-        const fixed = value.fixed ?? defaultColor;
+        const fixed = value?.fixed ?? defaultColor;
         onChange({
           ...value,
           field: undefined,
@@ -41,7 +52,7 @@ export const ColorDimensionEditor: FC<StandardEditorProps<ColorDimensionConfig, 
         });
       }
     },
-    [onChange, value]
+    [fixedColorOption.value, onChange, value]
   );
 
   const onColorChange = useCallback(
@@ -58,16 +69,18 @@ export const ColorDimensionEditor: FC<StandardEditorProps<ColorDimensionConfig, 
   return (
     <>
       <div className={styles.container}>
-        <Select
-          menuShouldPortal
+        <Combobox
+          id={id}
           value={selectedOption}
           options={selectOptions}
           onChange={onSelectChange}
-          noOptionsMessage="No fields found"
+          noOptionsMessage={t('dimensions.color-dimension-editor.noOptionsMessage-no-fields-found', 'No fields found')}
+          placeholder={item.settings?.placeholder}
+          {...(item.settings?.isClearable ? { isClearable: true } : { isClearable: false })} // silly TS issue
         />
         {isFixed && (
           <div className={styles.picker}>
-            <ColorPicker color={value?.fixed ?? defaultColor} onChange={onColorChange} enableNamedColors={true} />
+            <ColorPicker color={value?.fixed} onChange={onColorChange} enableNamedColors={true} />
           </div>
         )}
       </div>
@@ -76,13 +89,13 @@ export const ColorDimensionEditor: FC<StandardEditorProps<ColorDimensionConfig, 
 };
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  container: css`
-    display: flex;
-    flex-wrap: nowrap;
-    justify-content: flex-end;
-    align-items: center;
-  `,
-  picker: css`
-    padding-left: 8px;
-  `,
+  container: css({
+    display: 'flex',
+    flexWrap: 'nowrap',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  }),
+  picker: css({
+    paddingLeft: theme.spacing(1),
+  }),
 });

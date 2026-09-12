@@ -1,10 +1,19 @@
-import { Observable, of } from 'rxjs';
+import { type Observable, of } from 'rxjs';
 import { map, mergeMap } from 'rxjs/operators';
-import { CoreApp, DataQueryRequest, DataSourceApi, rangeUtil, ScopedVars } from '@grafana/data';
 
-import { AnnotationQueryOptions, AnnotationQueryResponse } from './types';
-import { standardAnnotationSupport } from './standardAnnotationSupport';
+import {
+  type AnnotationQuery,
+  CoreApp,
+  type DataQueryRequest,
+  type DataSourceApi,
+  rangeUtil,
+  type ScopedVars,
+} from '@grafana/data';
+
 import { runRequest } from '../query/state/runRequest';
+
+import { standardAnnotationSupport } from './standardAnnotationSupport';
+import { type AnnotationQueryOptions, type AnnotationQueryResponse } from './types';
 
 let counter = 100;
 function getNextRequestId() {
@@ -14,14 +23,18 @@ function getNextRequestId() {
 export function executeAnnotationQuery(
   options: AnnotationQueryOptions,
   datasource: DataSourceApi,
-  savedJsonAnno: any
+  savedJsonAnno: AnnotationQuery
 ): Observable<AnnotationQueryResponse> {
   const processor = {
     ...standardAnnotationSupport,
     ...datasource.annotations,
   };
 
-  const annotation = processor.prepareAnnotation!(savedJsonAnno);
+  const annotationWithDefaults = {
+    ...processor.getDefaultQuery?.(),
+    ...savedJsonAnno,
+  };
+  const annotation = processor.prepareAnnotation!(annotationWithDefaults);
   if (!annotation) {
     return of({});
   }
@@ -64,11 +77,12 @@ export function executeAnnotationQuery(
 
   return runRequest(datasource, queryRequest).pipe(
     mergeMap((panelData) => {
-      if (!panelData.series) {
+      // Some annotations set the topic already
+      const data = panelData?.series.length ? panelData.series : panelData.annotations;
+      if (!data?.length) {
         return of({ panelData, events: [] });
       }
-
-      return processor.processEvents!(annotation, panelData.series).pipe(map((events) => ({ panelData, events })));
+      return processor.processEvents!(annotation, data).pipe(map((events) => ({ panelData, events })));
     })
   );
 }

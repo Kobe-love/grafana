@@ -3,9 +3,9 @@ package pipeline
 import (
 	"context"
 
-	"github.com/grafana/grafana/pkg/services/live/managedstream"
-
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+
+	"github.com/grafana/grafana/pkg/services/live/managedstream"
 )
 
 type ManagedStreamFrameOutput struct {
@@ -23,7 +23,7 @@ func (out *ManagedStreamFrameOutput) Type() string {
 }
 
 func (out *ManagedStreamFrameOutput) OutputFrame(ctx context.Context, vars Vars, frame *data.Frame) ([]*ChannelFrame, error) {
-	stream, err := out.managedStream.GetOrCreateStream(vars.OrgID, vars.Scope, vars.Namespace)
+	stream, err := out.managedStream.GetOrCreateStream(vars.NS, vars.Scope, vars.Stream)
 	if err != nil {
 		logger.Error("Error getting stream", "error", err)
 		return nil, err

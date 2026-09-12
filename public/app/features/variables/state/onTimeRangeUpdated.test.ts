@@ -1,38 +1,67 @@
-import { dateTime, TimeRange } from '@grafana/data';
+import { dateTime, type TimeRange, VariableRefresh } from '@grafana/data';
+import { type DataSourceSrv } from '@grafana/runtime';
+import * as runtime from '@grafana/runtime';
+import { type DashboardState } from 'app/types/dashboard';
 
-import { TemplateSrv } from '../../templating/template_srv';
-import { onTimeRangeUpdated, OnTimeRangeUpdatedDependencies, setOptionAsCurrent } from './actions';
-import { DashboardModel } from '../../dashboard/state';
-import { DashboardState } from '../../../types';
-import { createIntervalVariableAdapter } from '../interval/adapter';
+import { reduxTester } from '../../../../test/core/redux/reduxTester';
+import { silenceConsoleOutput } from '../../../../test/core/utils/silenceConsoleOutput';
+import { appEvents } from '../../../core/app_events';
+import { notifyApp } from '../../../core/reducers/appNotification';
+import { type DashboardModel } from '../../dashboard/state/DashboardModel';
+import { createDashboardModelFixture } from '../../dashboard/state/__fixtures__/dashboardFixtures';
+import { type TemplateSrv } from '../../templating/template_srv';
 import { variableAdapters } from '../adapters';
 import { createConstantVariableAdapter } from '../constant/adapter';
-import { VariableRefresh } from '../types';
+import { createDataSourceVariableAdapter } from '../datasource/adapter';
+import { createIntervalVariableAdapter } from '../interval/adapter';
+import { createIntervalOptions } from '../interval/reducer';
+import { createQueryVariableAdapter } from '../query/adapter';
 import { constantBuilder, intervalBuilder } from '../shared/testing/builders';
-import { reduxTester } from '../../../../test/core/redux/reduxTester';
-import { getRootReducer, RootReducerType } from './helpers';
-import { toVariableIdentifier, toVariablePayload } from './types';
+import { toKeyedVariableIdentifier, toVariablePayload } from '../utils';
+
+import { onTimeRangeUpdated, type OnTimeRangeUpdatedDependencies, setOptionAsCurrent } from './actions';
+import { getPreloadedState, getRootReducer, type RootReducerType } from './helpers';
+import { toKeyedAction } from './keyedVariablesReducer';
 import {
   setCurrentVariableValue,
   variableStateCompleted,
   variableStateFailed,
   variableStateFetching,
 } from './sharedReducer';
-import { createIntervalOptions } from '../interval/reducer';
-import { silenceConsoleOutput } from '../../../../test/core/utils/silenceConsoleOutput';
-import { notifyApp } from '../../../core/reducers/appNotification';
-import { expect } from '../../../../test/lib/common';
-import { TemplatingState } from './reducers';
-import { appEvents } from '../../../core/core';
 import { variablesInitTransaction } from './transactionReducer';
 
-variableAdapters.setInit(() => [createIntervalVariableAdapter(), createConstantVariableAdapter()]);
+variableAdapters.setInit(() => [
+  createIntervalVariableAdapter(),
+  createConstantVariableAdapter(),
+  createQueryVariableAdapter(),
+  createDataSourceVariableAdapter(),
+]);
+
+const metricFindQuery = jest
+  .fn()
+  .mockResolvedValueOnce([{ text: 'responses' }, { text: 'timers' }])
+  .mockResolvedValue([{ text: '200' }, { text: '500' }]);
+const getMetricSources = jest.fn().mockReturnValue([]);
+const getDatasource = jest.fn().mockResolvedValue({ metricFindQuery });
+
+jest.mock('app/features/dashboard/services/TimeSrv', () => ({
+  getTimeSrv: () => ({
+    timeRange: jest.fn().mockReturnValue(undefined),
+  }),
+}));
+
+runtime.setDataSourceSrv({
+  get: getDatasource,
+  getList: getMetricSources,
+} as unknown as DataSourceSrv);
 
 const getTestContext = (dashboard: DashboardModel) => {
   jest.clearAllMocks();
 
+  const key = 'key';
   const interval = intervalBuilder()
     .withId('interval-0')
+    .withRootStateKey(key)
     .withName('interval-0')
     .withOptions('1m', '10m', '30m', '1h', '6h', '12h', '1d', '7d', '14d', '30d')
     .withCurrent('1m')
@@ -41,6 +70,7 @@ const getTestContext = (dashboard: DashboardModel) => {
 
   const constant = constantBuilder()
     .withId('constant-1')
+    .withRootStateKey(key)
     .withName('constant-1')
     .withOptions('a constant')
     .withCurrent('a constant')
@@ -55,31 +85,35 @@ const getTestContext = (dashboard: DashboardModel) => {
     },
   };
   const updateTimeRangeMock = jest.fn();
-  const templateSrvMock = ({ updateTimeRange: updateTimeRangeMock } as unknown) as TemplateSrv;
+  const templateSrvMock = { updateTimeRange: updateTimeRangeMock } as unknown as TemplateSrv;
   const dependencies: OnTimeRangeUpdatedDependencies = { templateSrv: templateSrvMock, events: appEvents };
   const templateVariableValueUpdatedMock = jest.fn();
   const startRefreshMock = jest.fn();
   dashboard.templateVariableValueUpdated = templateVariableValueUpdatedMock;
   dashboard.startRefresh = startRefreshMock;
-  const dashboardState = ({
+  const dashboardState = {
     getModel: () => dashboard,
-  } as unknown) as DashboardState;
-  const adapter = variableAdapters.get('interval');
-  const preloadedState = ({
+  } as unknown as DashboardState;
+  const adapterInterval = variableAdapters.get('interval');
+  const adapterQuery = variableAdapters.get('query');
+  const templatingState = {
+    variables: {
+      'interval-0': { ...interval },
+      'constant-1': { ...constant },
+    },
+  };
+  const preloadedState = {
     dashboard: dashboardState,
-    templating: ({
-      variables: {
-        'interval-0': { ...interval },
-        'constant-1': { ...constant },
-      },
-    } as unknown) as TemplatingState,
-  } as unknown) as RootReducerType;
+    ...getPreloadedState(key, templatingState),
+  } as unknown as RootReducerType;
 
   return {
+    key,
     interval,
     range,
     dependencies,
-    adapter,
+    adapterInterval,
+    adapterQuery,
     preloadedState,
     updateTimeRangeMock,
     templateVariableValueUpdatedMock,
@@ -91,6 +125,7 @@ describe('when onTimeRangeUpdated is dispatched', () => {
   describe('and options are changed by update', () => {
     it('then correct actions are dispatched and correct dependencies are called', async () => {
       const {
+        key,
         preloadedState,
         range,
         dependencies,
@@ -101,20 +136,23 @@ describe('when onTimeRangeUpdated is dispatched', () => {
 
       const tester = await reduxTester<RootReducerType>({ preloadedState })
         .givenRootReducer(getRootReducer())
-        .whenActionIsDispatched(variablesInitTransaction({ uid: 'a uid' }))
-        .whenAsyncActionIsDispatched(onTimeRangeUpdated(range, dependencies));
+        .whenActionIsDispatched(toKeyedAction(key, variablesInitTransaction({ uid: key })))
+        .whenAsyncActionIsDispatched(onTimeRangeUpdated(key, range, dependencies));
 
       tester.thenDispatchedActionsShouldEqual(
-        variablesInitTransaction({ uid: 'a uid' }),
-        variableStateFetching(toVariablePayload({ type: 'interval', id: 'interval-0' })),
-        createIntervalOptions(toVariablePayload({ type: 'interval', id: 'interval-0' })),
-        setCurrentVariableValue(
-          toVariablePayload(
-            { type: 'interval', id: 'interval-0' },
-            { option: { text: '1m', value: '1m', selected: false } }
+        toKeyedAction(key, variablesInitTransaction({ uid: key })),
+        toKeyedAction(key, variableStateFetching(toVariablePayload({ type: 'interval', id: 'interval-0' }))),
+        toKeyedAction(key, createIntervalOptions(toVariablePayload({ type: 'interval', id: 'interval-0' }))),
+        toKeyedAction(
+          key,
+          setCurrentVariableValue(
+            toVariablePayload(
+              { type: 'interval', id: 'interval-0' },
+              { option: { text: '1m', value: '1m', selected: false } }
+            )
           )
         ),
-        variableStateCompleted(toVariablePayload({ type: 'interval', id: 'interval-0' }))
+        toKeyedAction(key, variableStateCompleted(toVariablePayload({ type: 'interval', id: 'interval-0' })))
       );
 
       expect(updateTimeRangeMock).toHaveBeenCalledTimes(1);
@@ -127,6 +165,7 @@ describe('when onTimeRangeUpdated is dispatched', () => {
   describe('and options are not changed by update', () => {
     it('then correct actions are dispatched and correct dependencies are called', async () => {
       const {
+        key,
         interval,
         preloadedState,
         range,
@@ -138,21 +177,26 @@ describe('when onTimeRangeUpdated is dispatched', () => {
 
       const base = await reduxTester<RootReducerType>({ preloadedState })
         .givenRootReducer(getRootReducer())
-        .whenActionIsDispatched(variablesInitTransaction({ uid: 'a uid' }))
-        .whenAsyncActionIsDispatched(setOptionAsCurrent(toVariableIdentifier(interval), interval.options[0], false));
+        .whenActionIsDispatched(toKeyedAction(key, variablesInitTransaction({ uid: key })))
+        .whenAsyncActionIsDispatched(
+          setOptionAsCurrent(toKeyedVariableIdentifier(interval), interval.options[0], false)
+        );
 
-      const tester = await base.whenAsyncActionIsDispatched(onTimeRangeUpdated(range, dependencies), true);
+      const tester = await base.whenAsyncActionIsDispatched(onTimeRangeUpdated(key, range, dependencies), true);
 
       tester.thenDispatchedActionsShouldEqual(
-        variableStateFetching(toVariablePayload({ type: 'interval', id: 'interval-0' })),
-        createIntervalOptions(toVariablePayload({ type: 'interval', id: 'interval-0' })),
-        setCurrentVariableValue(
-          toVariablePayload(
-            { type: 'interval', id: 'interval-0' },
-            { option: { text: '1m', value: '1m', selected: false } }
+        toKeyedAction(key, variableStateFetching(toVariablePayload({ type: 'interval', id: 'interval-0' }))),
+        toKeyedAction(key, createIntervalOptions(toVariablePayload({ type: 'interval', id: 'interval-0' }))),
+        toKeyedAction(
+          key,
+          setCurrentVariableValue(
+            toVariablePayload(
+              { type: 'interval', id: 'interval-0' },
+              { option: { text: '1m', value: '1m', selected: false } }
+            )
           )
         ),
-        variableStateCompleted(toVariablePayload({ type: 'interval', id: 'interval-0' }))
+        toKeyedAction(key, variableStateCompleted(toVariablePayload({ type: 'interval', id: 'interval-0' })))
       );
 
       expect(updateTimeRangeMock).toHaveBeenCalledTimes(1);
@@ -164,9 +208,11 @@ describe('when onTimeRangeUpdated is dispatched', () => {
 
   describe('and updateOptions throws', () => {
     silenceConsoleOutput();
+
     it('then correct actions are dispatched and correct dependencies are called', async () => {
       const {
-        adapter,
+        key,
+        adapterInterval,
         preloadedState,
         range,
         dependencies,
@@ -175,20 +221,23 @@ describe('when onTimeRangeUpdated is dispatched', () => {
         startRefreshMock,
       } = getTestContext(getDashboardModel());
 
-      adapter.updateOptions = jest.fn().mockRejectedValue(new Error('Something broke'));
+      adapterInterval.updateOptions = jest.fn().mockRejectedValue(new Error('Something broke'));
 
       const tester = await reduxTester<RootReducerType>({ preloadedState, debug: true })
         .givenRootReducer(getRootReducer())
-        .whenActionIsDispatched(variablesInitTransaction({ uid: 'a uid' }))
-        .whenAsyncActionIsDispatched(onTimeRangeUpdated(range, dependencies), true);
+        .whenActionIsDispatched(toKeyedAction(key, variablesInitTransaction({ uid: key })))
+        .whenAsyncActionIsDispatched(onTimeRangeUpdated(key, range, dependencies), true);
 
       tester.thenDispatchedActionsPredicateShouldEqual((dispatchedActions) => {
         expect(dispatchedActions[0]).toEqual(
-          variableStateFetching(toVariablePayload({ type: 'interval', id: 'interval-0' }))
+          toKeyedAction(key, variableStateFetching(toVariablePayload({ type: 'interval', id: 'interval-0' })))
         );
         expect(dispatchedActions[1]).toEqual(
-          variableStateFailed(
-            toVariablePayload({ type: 'interval', id: 'interval-0' }, { error: new Error('Something broke') })
+          toKeyedAction(
+            key,
+            variableStateFailed(
+              toVariablePayload({ type: 'interval', id: 'interval-0' }, { error: new Error('Something broke') })
+            )
           )
         );
         expect(dispatchedActions[2].type).toEqual(notifyApp.type);
@@ -207,5 +256,5 @@ describe('when onTimeRangeUpdated is dispatched', () => {
 });
 
 function getDashboardModel(): DashboardModel {
-  return new DashboardModel({ schemaVersion: 9999 }); // ignore any schema migrations
+  return createDashboardModelFixture({ schemaVersion: 9999 }); // ignore any schema migrations
 }

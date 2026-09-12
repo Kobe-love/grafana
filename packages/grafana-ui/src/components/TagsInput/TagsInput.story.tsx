@@ -1,15 +1,14 @@
-import React, { useState } from 'react';
-import { Meta, Story } from '@storybook/react';
-import { TagsInput, Props } from './TagsInput';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
-import { StoryExample } from '../../utils/storybook/StoryExample';
-import { VerticalGroup } from '../Layout/Layout';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+import { useState } from 'react';
+
+import { Field } from '../Forms/Field';
+
+import { TagsInput } from './TagsInput';
 import mdx from './TagsInput.mdx';
 
-export default {
-  title: 'Forms/TagsInput',
+const meta: Meta<typeof TagsInput> = {
+  title: 'Inputs/TagsInput',
   component: TagsInput,
-  decorators: [withCenteredStory],
   parameters: {
     docs: {
       page: mdx,
@@ -18,22 +17,24 @@ export default {
       exclude: ['onChange', 'className', 'tags'],
     },
   },
-} as Meta;
-
-type StoryProps = Omit<Props, 'onChange' | 'className' | 'tags'>;
-
-export const Basic: Story<StoryProps> = (props) => {
-  const [tags, setTags] = useState<string[]>([]);
-  return <TagsInput {...props} tags={tags} onChange={setTags} />;
 };
 
-export const WithManyTags = () => {
-  const [tags, setTags] = useState<string[]>(['dashboard', 'prod', 'server', 'frontend', 'game', 'kubernetes']);
+export const Basic: StoryFn<typeof TagsInput> = ({ disabled, invalid, ...rest }) => {
+  const [tags, setTags] = useState<string[]>([]);
   return (
-    <VerticalGroup>
-      <StoryExample name="With many tags">
-        <TagsInput tags={tags} onChange={setTags} />
-      </StoryExample>
-    </VerticalGroup>
+    <Field label="Tags" disabled={disabled} invalid={invalid}>
+      <TagsInput {...rest} tags={tags} onChange={setTags} />
+    </Field>
   );
 };
+
+export const WithManyTags: StoryFn<typeof TagsInput> = ({ disabled, invalid, ...rest }) => {
+  const [tags, setTags] = useState<string[]>(['dashboard', 'prod', 'server', 'frontend', 'game', 'kubernetes']);
+  return (
+    <Field label="With many tags" disabled={disabled} invalid={invalid}>
+      <TagsInput {...rest} tags={tags} onChange={setTags} />
+    </Field>
+  );
+};
+
+export default meta;

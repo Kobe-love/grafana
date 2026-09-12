@@ -1,33 +1,7 @@
-import React from 'react';
-import { Placement } from '@popperjs/core';
-import { PopoverContent } from './Tooltip';
+import { type Placement } from '@popperjs/core';
+import { useState, useRef, useCallback, type JSX } from 'react';
 
-// This API allows popovers to update Popper's position when e.g. popover content changes
-// updatePopperPosition is delivered to content by react-popper
-
-export interface UsingPopperProps {
-  show?: boolean;
-  placement?: TooltipPlacement;
-  content: PopoverContent;
-  children: JSX.Element;
-}
-
-export type TooltipPlacement =
-  | 'auto-start'
-  | 'auto'
-  | 'auto-end'
-  | 'top-start'
-  | 'top'
-  | 'top-end'
-  | 'right-start'
-  | 'right'
-  | 'right-end'
-  | 'bottom-end'
-  | 'bottom'
-  | 'bottom-start'
-  | 'left-end'
-  | 'left'
-  | 'left-start';
+import { type PopoverContent } from './types';
 
 type PopperControllerRenderProp = (
   showPopper: () => void,
@@ -47,35 +21,28 @@ interface Props {
   hideAfter?: number;
 }
 
-interface State {
-  show: boolean;
-}
+const PopoverController = ({ placement = 'auto', content, children, hideAfter }: Props) => {
+  const [show, setShow] = useState(false);
+  const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-class PopoverController extends React.Component<Props, State> {
-  private hideTimeout: any;
-  state = { show: false };
+  const showPopper = useCallback(() => {
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+    }
+    setShow(true);
+  }, []);
 
-  showPopper = () => {
-    clearTimeout(this.hideTimeout);
-    this.setState({ show: true });
-  };
+  const hidePopper = useCallback(() => {
+    hideTimeoutRef.current = setTimeout(() => {
+      setShow(false);
+    }, hideAfter);
+  }, [hideAfter]);
 
-  hidePopper = () => {
-    this.hideTimeout = setTimeout(() => {
-      this.setState({ show: false });
-    }, this.props.hideAfter);
-  };
-
-  render() {
-    const { children, content, placement = 'auto' } = this.props;
-    const { show } = this.state;
-
-    return children(this.showPopper, this.hidePopper, {
-      show,
-      placement,
-      content,
-    });
-  }
-}
+  return children(showPopper, hidePopper, {
+    show,
+    placement,
+    content,
+  });
+};
 
 export { PopoverController };

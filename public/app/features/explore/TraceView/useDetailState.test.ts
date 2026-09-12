@@ -1,7 +1,8 @@
-import { act, renderHook } from '@testing-library/react-hooks';
+import { act, renderHook } from '@testing-library/react';
+
+import { type DataFrame, type TraceLog } from '@grafana/data';
+
 import { useDetailState } from './useDetailState';
-import { TraceLog } from '@jaegertracing/jaeger-ui-components/src/types/trace';
-import { DataFrame } from '@grafana/data';
 
 const sampleFrame: DataFrame = {
   name: 'trace',
@@ -28,7 +29,7 @@ describe('useDetailState', () => {
     act(() => result.current.detailLogsToggle('span1'));
     expect(result.current.detailStates.get('span1')?.logs.isOpen).toBe(true);
 
-    const log = { timestamp: 1 } as TraceLog;
+    const log: TraceLog = { timestamp: 1, fields: [] };
     act(() => result.current.detailLogItemToggle('span1', log));
     expect(result.current.detailStates.get('span1')?.logs.openedItems.has(log)).toBe(true);
   });
@@ -44,20 +45,19 @@ describe('useDetailState', () => {
     const { result } = renderHook(() => useDetailState(sampleFrame));
     act(() => result.current.toggleDetail('span1'));
     act(() => result.current.detailReferencesToggle('span1'));
-    expect(result.current.detailStates.get('span1')?.isReferencesOpen).toBe(true);
+    expect(result.current.detailStates.get('span1')?.references.isOpen).toBe(true);
   });
 
-  it('toggles processes', async () => {
+  it('opens process and tags by default, and toggles them closed', async () => {
     const { result } = renderHook(() => useDetailState(sampleFrame));
     act(() => result.current.toggleDetail('span1'));
-    act(() => result.current.detailProcessToggle('span1'));
     expect(result.current.detailStates.get('span1')?.isProcessOpen).toBe(true);
-  });
-
-  it('toggles tags', async () => {
-    const { result } = renderHook(() => useDetailState(sampleFrame));
-    act(() => result.current.toggleDetail('span1'));
-    act(() => result.current.detailTagsToggle('span1'));
     expect(result.current.detailStates.get('span1')?.isTagsOpen).toBe(true);
+
+    act(() => result.current.detailProcessToggle('span1'));
+    expect(result.current.detailStates.get('span1')?.isProcessOpen).toBe(false);
+
+    act(() => result.current.detailTagsToggle('span1'));
+    expect(result.current.detailStates.get('span1')?.isTagsOpen).toBe(false);
   });
 });

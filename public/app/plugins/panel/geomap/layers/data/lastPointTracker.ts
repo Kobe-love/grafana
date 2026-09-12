@@ -1,9 +1,9 @@
-import { MapLayerRegistryItem, MapLayerOptions, PanelData, GrafanaTheme2, PluginState } from '@grafana/data';
-import Map from 'ol/Map';
 import Feature from 'ol/Feature';
-import * as style from 'ol/style';
-import * as source from 'ol/source';
 import * as layer from 'ol/layer';
+import * as source from 'ol/source';
+import * as style from 'ol/style';
+
+import { type MapLayerRegistryItem, type PanelData, PluginState } from '@grafana/data';
 import { getGeometryField, getLocationMatchers } from 'app/features/geo/utils/location';
 
 export interface LastPointConfig {
@@ -24,9 +24,11 @@ export const lastPointTracker: MapLayerRegistryItem<LastPointConfig> = {
 
   /**
    * Function that configures transformation and returns a transformer
+   * @param map
    * @param options
+   * @param theme
    */
-  create: async (map: Map, options: MapLayerOptions<LastPointConfig>, theme: GrafanaTheme2) => {
+  create: async (_map, options) => {
     const point = new Feature({});
     const config = { ...defaultOptions, ...options.config };
 
@@ -56,7 +58,7 @@ export const lastPointTracker: MapLayerRegistryItem<LastPointConfig> = {
           if (!out.field) {
             return; // ???
           }
-          point.setGeometry(out.field.values.get(frame.length - 1));
+          point.setGeometry(out.field.values[frame.length - 1]);
         }
       },
     };

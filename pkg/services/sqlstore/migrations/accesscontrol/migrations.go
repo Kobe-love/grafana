@@ -1,6 +1,10 @@
 package accesscontrol
 
-import "github.com/grafana/grafana/pkg/services/sqlstore/migrator"
+import (
+	"github.com/grafana/grafana/pkg/services/sqlstore/migrator"
+)
+
+const CodeMigrationSQL = "code migration"
 
 func AddMigration(mg *migrator.Migrator) {
 	permissionV1 := migrator.Table{
@@ -162,4 +166,90 @@ func AddMigration(mg *migrator.Migrator) {
 
 	//-------  indexes ------------------
 	mg.AddMigration("add unique index builtin_role_role_name", migrator.NewAddIndexMigration(seedAssignmentV1, seedAssignmentV1.Indices[0]))
+
+	mg.AddMigration("add column hidden to role table", migrator.NewAddColumnMigration(roleV1, &migrator.Column{
+		Name: "hidden", Type: migrator.DB_Bool, Nullable: false, Default: "0",
+	}))
+
+	mg.AddMigration("permission kind migration", migrator.NewAddColumnMigration(permissionV1, &migrator.Column{
+		Name: "kind", Type: migrator.DB_NVarchar, Length: 40, Default: "''",
+	}))
+
+	mg.AddMigration("permission attribute migration", migrator.NewAddColumnMigration(permissionV1, &migrator.Column{
+		Name: "attribute", Type: migrator.DB_NVarchar, Length: 40, Default: "''",
+	}))
+
+	mg.AddMigration("permission identifier migration", migrator.NewAddColumnMigration(permissionV1, &migrator.Column{
+		Name: "identifier", Type: migrator.DB_NVarchar, Length: 40, Default: "''",
+	}))
+
+	mg.AddMigration("add permission identifier index", migrator.NewAddIndexMigration(permissionV1, &migrator.Index{
+		Cols: []string{"identifier"},
+	}))
+
+	mg.AddMigration("add permission action scope role_id index", migrator.NewAddIndexMigration(permissionV1, &migrator.Index{
+		Type: migrator.UniqueIndex,
+		Cols: []string{"action", "scope", "role_id"},
+	}))
+
+	mg.AddMigration("remove permission role_id action scope index", migrator.NewDropIndexMigration(permissionV1, &migrator.Index{
+		Type: migrator.UniqueIndex,
+		Cols: []string{"role_id", "action", "scope"},
+	}))
+
+	mg.AddMigration("add group mapping UID column to user_role table", migrator.NewAddColumnMigration(userRoleV1, &migrator.Column{
+		Name: "group_mapping_uid", Type: migrator.DB_NVarchar, Length: 40, Default: "''", Nullable: true,
+	}))
+
+	mg.AddMigration("add user_role org ID, user ID, role ID, group mapping UID index", migrator.NewAddIndexMigration(userRoleV1, &migrator.Index{
+		Type: migrator.UniqueIndex,
+		Cols: []string{"org_id", "user_id", "role_id", "group_mapping_uid"},
+	}))
+
+	mg.AddMigration("remove user_role org ID, user ID, role ID index", migrator.NewDropIndexMigration(userRoleV1, &migrator.Index{
+		Type: migrator.UniqueIndex,
+		Cols: []string{"org_id", "user_id", "role_id"},
+	}))
+
+	mg.AddMigration("add permission role_id action index", migrator.NewAddIndexMigration(permissionV1, &migrator.Index{
+		Cols: []string{"role_id", "action"},
+	}))
+
+	mg.AddMigration("Remove permission role_id index", migrator.NewDropIndexMigration(permissionV1, &migrator.Index{
+		Cols: []string{"role_id"},
+	}))
+
+	mg.AddMigration("add permission role_id scope index", migrator.NewAddIndexMigration(permissionV1, &migrator.Index{
+		Cols: []string{"role_id", "scope"},
+	}))
+
+	mg.AddMigration("alter permission.kind to length 80", migrator.NewRawSQLMigration("").
+		Postgres("ALTER TABLE permission ALTER COLUMN kind TYPE VARCHAR(80);").
+		Mysql("ALTER TABLE permission MODIFY kind VARCHAR(80);"))
+
+	mg.AddMigration("add datasource_type column to permission table", migrator.NewAddColumnMigration(permissionV1, &migrator.Column{
+		Name: "datasource_type", Type: migrator.DB_NVarchar, Length: 255, Nullable: true,
+	}))
+
+	// Expand role.uid column from 40 to 253 so that longer UIDs are no longer
+	// silently truncated by MySQL. 253 matches both the Kubernetes DNS-1123
+	// subdomain limit for metadata.name and the size of the `name` column in
+	// the unified storage `resource`/`resource_history` tables, keeping a
+	// single ceiling across the legacy and apiserver paths. SQLite does not
+	// enforce VARCHAR length so the change is a no-op there.
+	mg.AddMigration("Expand role.uid length to 253", migrator.NewRawSQLMigration("").
+		Postgres("ALTER TABLE role ALTER COLUMN uid TYPE VARCHAR(253);").
+		Mysql("ALTER TABLE role MODIFY uid NVARCHAR(253) NOT NULL;"))
+
+	// Existing indexes bury role_id behind an unconstrained key part, so joining
+	// role -> assignees on role_id scans every assignment in the org and filters.
+	mg.AddMigration("add user_role role_id org_id index", migrator.NewAddIndexMigration(userRoleV1, &migrator.Index{
+		Cols: []string{"role_id", "org_id"},
+	}))
+
+	mg.AddMigration("add team_role role_id org_id index", migrator.NewAddIndexMigration(teamRoleV1, &migrator.Index{
+		Cols: []string{"role_id", "org_id"},
+	}))
+
+	AddDatasourceTypeMigration(mg)
 }

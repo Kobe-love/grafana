@@ -1,15 +1,24 @@
-import { DataFrame } from '@grafana/data';
-import { DimensionSupplier, ResourceDimensionConfig, ResourceDimensionMode } from './types';
+import { type DataFrame } from '@grafana/data';
+import { type ResourceDimensionConfig, ResourceDimensionMode } from '@grafana/schema';
+
+import { type DimensionSupplier } from './types';
 import { findField, getLastNotNullFieldValue } from './utils';
 
 //---------------------------------------------------------
 // Resource dimension
 //---------------------------------------------------------
-export function getPublicOrAbsoluteUrl(v: string): string {
-  if (!v) {
+export function getPublicOrAbsoluteUrl(path: unknown): string {
+  if (!path || typeof path !== 'string') {
     return '';
   }
-  return v.indexOf(':/') > 0 ? v : (window as any).__grafana_public_path__ + v;
+
+  // NOTE: The value of `path` could be either an URL string or a relative
+  //       path to a Grafana CDN asset served from the CDN.
+  const isUrl = path.indexOf(':/') > 0;
+  // Falls back to the default build directory when no entry point has set the global.
+  const buildPath = window.__grafana_build_path__ || 'public/build/';
+
+  return isUrl ? path : `${buildPath}${path}`;
 }
 
 export function getResourceDimension(
@@ -18,7 +27,7 @@ export function getResourceDimension(
 ): DimensionSupplier<string> {
   const mode = config.mode ?? ResourceDimensionMode.Fixed;
   if (mode === ResourceDimensionMode.Fixed) {
-    const v = getPublicOrAbsoluteUrl(config.fixed!);
+    const v = getPublicOrAbsoluteUrl(config.fixed);
     return {
       isAssumed: !Boolean(v),
       fixed: v,
@@ -39,17 +48,39 @@ export function getResourceDimension(
   }
 
   if (mode === ResourceDimensionMode.Mapping) {
-    const mapper = (v: any) => getPublicOrAbsoluteUrl(`${v}`);
+    const mapper = (v: string) => getPublicOrAbsoluteUrl(`${v}`);
     return {
       field,
-      get: (i) => mapper(field.values.get(i)),
+      get: (i) => mapper(field.values[i]),
       value: () => mapper(getLastNotNullFieldValue(field)),
     };
   }
 
+  // mode === ResourceDimensionMode.Field case
+  const getImageOrIcon = (value: unknown): string => {
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return '';
+    }
+
+    let url = typeof value === 'string' ? value : '';
+    if (field && field.display) {
+      const displayValue = field.display(value);
+      if (displayValue.icon) {
+        url = displayValue.icon;
+      }
+    }
+
+    const noIconFound = !url;
+    if (noIconFound) {
+      return '';
+    }
+
+    return getPublicOrAbsoluteUrl(url);
+  };
+
   return {
     field,
-    get: field.values.get,
-    value: () => getLastNotNullFieldValue(field),
+    get: (index: number): string => getImageOrIcon(field.values[index]),
+    value: () => getImageOrIcon(getLastNotNullFieldValue(field)),
   };
 }

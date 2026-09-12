@@ -5,20 +5,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/services/sqlstore"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/grafana/grafana/pkg/infra/db"
+	"github.com/grafana/grafana/pkg/infra/log"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
-func TestDatabaseStorageGarbageCollection(t *testing.T) {
-	sqlstore := sqlstore.InitTestDB(t)
+func TestIntegrationDatabaseStorageGarbageCollection(t *testing.T) {
+	testutil.SkipIntegrationTestInShortMode(t)
+
+	sqlstore := db.InitTestDB(t) //nolint:staticcheck // legacy shared-DB test setup; migrate to NewTestStore
 
 	db := &databaseCache{
 		SQLStore: sqlstore,
 		log:      log.New("remotecache.database"),
 	}
 
-	obj := &CacheableStruct{String: "foolbar"}
+	obj := []byte("foolbar")
 
 	// set time.now to 2 weeks ago
 	var err error
@@ -57,16 +61,18 @@ func TestDatabaseStorageGarbageCollection(t *testing.T) {
 	assert.Equal(t, err, nil)
 }
 
-func TestSecondSet(t *testing.T) {
+func TestIntegrationSecondSet(t *testing.T) {
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	var err error
-	sqlstore := sqlstore.InitTestDB(t)
+	sqlstore := db.InitTestDB(t) //nolint:staticcheck // legacy shared-DB test setup; migrate to NewTestStore
 
 	db := &databaseCache{
 		SQLStore: sqlstore,
 		log:      log.New("remotecache.database"),
 	}
 
-	obj := &CacheableStruct{String: "hey!"}
+	obj := []byte("hey!")
 
 	err = db.Set(context.Background(), "killa-gorilla", obj, 0)
 	assert.Equal(t, err, nil)

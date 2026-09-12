@@ -1,103 +1,278 @@
-import React from 'react';
-import { mount, ReactWrapper } from 'enzyme';
+import { render, screen, within } from '@testing-library/react';
+import { uniqueId } from 'lodash';
+
 import {
   dateMath,
   dateTime,
-  FieldConfigSource,
+  type EventBus,
   LoadingState,
-  PanelData,
-  PanelProps,
-  TimeRange,
+  type TimeRange,
   toDataFrame,
   VizOrientation,
 } from '@grafana/data';
-import { BarGaugeDisplayMode } from '@grafana/ui';
 import { selectors } from '@grafana/e2e-selectors';
+import {
+  BarGaugeDisplayMode,
+  BarGaugeValueMode,
+  BarGaugeNamePlacement,
+  BarGaugeSizing,
+  LegendDisplayMode,
+  type LegendPlacement,
+} from '@grafana/schema';
 
-import { BarGaugePanel } from './BarGaugePanel';
-import { BarGaugeOptions } from './types';
+import {
+  BarGaugePanel,
+  calcBarSize,
+  getItemSpacing,
+  getLegend,
+  getOrientation,
+  type BarGaugePanelProps,
+} from './BarGaugePanel';
+import { defaultOptions } from './panelcfg.gen';
 
 const valueSelector = selectors.components.Panels.Visualization.BarGauge.valueV2;
 
 describe('BarGaugePanel', () => {
-  describe('when empty result is rendered', () => {
-    const wrapper = createBarGaugePanelWithData({
-      series: [],
-      timeRange: createTimeRange(),
-      state: LoadingState.Done,
-    });
+  describe('when there is no data', () => {
+    it('show a "No Data" message', () => {
+      const panelData = buildPanelData();
 
-    it('should render with title "No data"', () => {
-      const displayValue = wrapper.find(`div[data-testid="${valueSelector}"]`).text();
-      expect(displayValue).toBe('No data');
+      render(<BarGaugePanel {...panelData} />);
+
+      expect(screen.getByText(/no data/i)).toBeInTheDocument();
     });
   });
 
   describe('when there is data', () => {
-    const wrapper = createBarGaugePanelWithData({
-      series: [
-        toDataFrame({
-          target: 'test',
-          datapoints: [
-            [100, 1000],
-            [100, 200],
+    it('shows the panel', () => {
+      const firstBarPanel = 'firstBarPanel';
+      const secondBarPanel = 'secondBarPanel';
+      const panelData = buildPanelData({
+        data: {
+          series: [
+            toDataFrame({
+              target: firstBarPanel,
+              datapoints: [
+                [100, 1000],
+                [100, 200],
+              ],
+            }),
           ],
-        }),
-      ],
-      timeRange: createTimeRange(),
-      state: LoadingState.Done,
+          timeRange: createTimeRange(),
+          state: LoadingState.Done,
+        },
+      });
+
+      const { rerender } = render(<BarGaugePanel {...panelData} />);
+      expect(screen.queryByText(/100/)).toBeInTheDocument();
+      expect(screen.queryByText(/firstbarpanel/i)).not.toBeInTheDocument();
+      expect(screen.getByTestId(valueSelector)).toBeInTheDocument();
+
+      rerender(
+        <BarGaugePanel
+          {...buildPanelData({
+            data: {
+              series: [
+                toDataFrame({
+                  target: firstBarPanel,
+                  datapoints: [
+                    [200, 1000],
+                    [200, 300],
+                  ],
+                }),
+                toDataFrame({
+                  target: secondBarPanel,
+                  datapoints: [
+                    [300, 3000],
+                    [300, 300],
+                  ],
+                }),
+              ],
+              timeRange: createTimeRange(),
+              state: LoadingState.Done,
+            },
+          })}
+        />
+      );
+
+      expect(screen.queryByText(/firstbarpanel/i)).toBeInTheDocument();
+      expect(screen.queryByText(/secondbarpanel/i)).toBeInTheDocument();
+      expect(screen.queryByText(/200/)).toBeInTheDocument();
+      expect(screen.queryByText(/300/)).toBeInTheDocument();
+      expect(screen.getAllByTestId(valueSelector).length).toEqual(2);
+    });
+  });
+
+  describe('legend', () => {
+    function dataWithTwoSeries() {
+      return {
+        series: [
+          toDataFrame({ target: 'series-a', datapoints: [[100, 1000]] }),
+          toDataFrame({ target: 'series-b', datapoints: [[200, 1000]] }),
+        ],
+        timeRange: createTimeRange(),
+        state: LoadingState.Done,
+      };
+    }
+
+    it('renders the legend when showLegend is enabled and there is data', () => {
+      const panelData = buildPanelData({ data: dataWithTwoSeries() });
+      panelData.options.legend.showLegend = true;
+
+      render(<BarGaugePanel {...panelData} />);
+
+      // Series names also render as bar titles, so scope the assertions to the
+      // legend container to prove the legend itself is present.
+      const legend = within(screen.getByTestId(selectors.components.VizLayout.legend));
+      expect(legend.getByText(/series-a/i)).toBeInTheDocument();
+      expect(legend.getByText(/series-b/i)).toBeInTheDocument();
     });
 
-    it('should render with title "No data"', () => {
-      const displayValue = wrapper.find(`div[data-testid="${valueSelector}"]`).text();
-      expect(displayValue).toBe('100');
+    it('does not render a legend when showLegend is disabled', () => {
+      const panelData = buildPanelData({ data: dataWithTwoSeries() });
+      panelData.options.legend.showLegend = false;
+
+      expect(getLegend(panelData.options, panelData.data)).toBeNull();
+    });
+
+    it('does not render a legend when there is no data', () => {
+      const panelData = buildPanelData();
+      panelData.options.legend.showLegend = true;
+
+      expect(getLegend(panelData.options, panelData.data)).toBeNull();
+    });
+  });
+
+  describe('getItemSpacing', () => {
+    it('uses tighter spacing for the LCD display mode than for non-LCD display modes', () => {
+      expect(getItemSpacing(BarGaugeDisplayMode.Gradient)).toBeGreaterThan(getItemSpacing(BarGaugeDisplayMode.Lcd));
+    });
+  });
+
+  describe('getOrientation', () => {
+    it('returns the explicit orientation when not Auto', () => {
+      expect(getOrientation(VizOrientation.Vertical, 552, 250)).toBe(VizOrientation.Vertical);
+    });
+
+    it('resolves Auto to Vertical when wider than tall', () => {
+      expect(getOrientation(VizOrientation.Auto, 600, 200)).toBe(VizOrientation.Vertical);
+    });
+
+    it('resolves Auto to Horizontal when taller than wide', () => {
+      expect(getOrientation(VizOrientation.Auto, 200, 600)).toBe(VizOrientation.Horizontal);
+    });
+  });
+
+  describe('calcBarSize', () => {
+    it('uses default sizes when sizing is Auto', () => {
+      const panelData = buildPanelData();
+      panelData.options.sizing = BarGaugeSizing.Auto;
+      panelData.options.minVizWidth = 111;
+      panelData.options.minVizHeight = 222;
+      panelData.options.maxVizHeight = 333;
+
+      expect(calcBarSize(panelData.options, VizOrientation.Horizontal)).toEqual({
+        minVizWidth: defaultOptions.minVizWidth,
+        minVizHeight: defaultOptions.minVizHeight,
+        maxVizHeight: defaultOptions.maxVizHeight,
+      });
+    });
+
+    it('applies manual min width for vertical orientation', () => {
+      const panelData = buildPanelData();
+      panelData.options.sizing = BarGaugeSizing.Manual;
+      panelData.options.minVizWidth = 42;
+
+      expect(calcBarSize(panelData.options, VizOrientation.Vertical).minVizWidth).toBe(42);
+    });
+
+    it('applies manual min/max height for horizontal orientation', () => {
+      const panelData = buildPanelData();
+      panelData.options.sizing = BarGaugeSizing.Manual;
+      panelData.options.minVizHeight = 20;
+      panelData.options.maxVizHeight = 250;
+
+      const result = calcBarSize(panelData.options, VizOrientation.Horizontal);
+      expect(result.minVizHeight).toBe(20);
+      expect(result.maxVizHeight).toBe(250);
+    });
+  });
+
+  describe('single series', () => {
+    it('hides the series name when there is a single unnamed series', () => {
+      const panelData = buildPanelData({
+        data: {
+          series: [toDataFrame({ target: 'onlySeries', datapoints: [[100, 1000]] })],
+          timeRange: createTimeRange(),
+          state: LoadingState.Done,
+        },
+      });
+
+      render(<BarGaugePanel {...panelData} />);
+
+      expect(screen.queryByText(/onlyseries/i)).not.toBeInTheDocument();
+      expect(screen.getByTestId(valueSelector)).toBeInTheDocument();
     });
   });
 });
 
+function buildPanelData(overrideValues?: Partial<BarGaugePanelProps>): BarGaugePanelProps {
+  const timeRange = createTimeRange();
+  const defaultValues = {
+    id: Number(uniqueId()),
+    data: {
+      series: [],
+      state: LoadingState.Done,
+      timeRange,
+    },
+    options: {
+      displayMode: BarGaugeDisplayMode.Lcd,
+      reduceOptions: {
+        calcs: ['mean'],
+        values: false,
+      },
+      orientation: VizOrientation.Horizontal,
+      showUnfilled: true,
+      maxVizHeight: 100,
+      minVizHeight: 10,
+      minVizWidth: 0,
+      valueMode: BarGaugeValueMode.Color,
+      namePlacement: BarGaugeNamePlacement.Auto,
+      sizing: BarGaugeSizing.Auto,
+      legend: {
+        showLegend: false,
+        placement: 'bottom' as LegendPlacement,
+        calcs: [],
+        displayMode: LegendDisplayMode.List,
+      },
+    },
+    transparent: false,
+    timeRange,
+    timeZone: 'utc',
+    title: 'hello',
+    fieldConfig: {
+      defaults: {},
+      overrides: [],
+    },
+    onFieldConfigChange: jest.fn(),
+    onOptionsChange: jest.fn(),
+    onChangeTimeRange: jest.fn(),
+    replaceVariables: jest.fn(),
+    renderCounter: 0,
+    width: 552,
+    height: 250,
+    eventBus: {} as EventBus,
+  };
+
+  return {
+    ...defaultValues,
+    ...overrideValues,
+  };
+}
 function createTimeRange(): TimeRange {
   return {
     from: dateMath.parse('now-6h') || dateTime(),
     to: dateMath.parse('now') || dateTime(),
     raw: { from: 'now-6h', to: 'now' },
   };
-}
-
-function createBarGaugePanelWithData(data: PanelData): ReactWrapper<PanelProps<BarGaugeOptions>> {
-  const timeRange = createTimeRange();
-
-  const options: BarGaugeOptions = {
-    displayMode: BarGaugeDisplayMode.Lcd,
-    reduceOptions: {
-      calcs: ['mean'],
-      values: false,
-    },
-    orientation: VizOrientation.Horizontal,
-    showUnfilled: true,
-  };
-  const fieldConfig: FieldConfigSource = {
-    defaults: {},
-    overrides: [],
-  };
-
-  return mount<BarGaugePanel>(
-    <BarGaugePanel
-      id={1}
-      data={data}
-      timeRange={timeRange}
-      timeZone={'utc'}
-      options={options}
-      title="hello"
-      fieldConfig={fieldConfig}
-      onFieldConfigChange={() => {}}
-      onOptionsChange={() => {}}
-      onChangeTimeRange={() => {}}
-      replaceVariables={(s) => s}
-      renderCounter={0}
-      width={532}
-      transparent={false}
-      height={250}
-      eventBus={{} as any}
-    />
-  );
 }

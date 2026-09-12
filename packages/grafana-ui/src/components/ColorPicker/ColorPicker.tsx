@@ -1,14 +1,23 @@
-import React, { Component, createRef } from 'react';
-import { PopoverController } from '../Tooltip/PopoverController';
-import { Popover } from '../Tooltip/Popover';
-import { ColorPickerPopover, ColorPickerProps, ColorPickerChangeHandler } from './ColorPickerPopover';
-import { GrafanaTheme2 } from '@grafana/data';
-import { SeriesColorPickerPopover } from './SeriesColorPickerPopover';
-
 import { css } from '@emotion/css';
-import { withTheme2, stylesFactory } from '../../themes';
-import { ColorSwatch } from './ColorSwatch';
+import {
+  type ComponentType,
+  createElement,
+  type PropsWithChildren,
+  type ReactNode,
+  type RefObject,
+  useRef,
+} from 'react';
+
+import { type GrafanaTheme2 } from '@grafana/data';
+
+import { useTheme2 } from '../../themes/ThemeContext';
 import { closePopover } from '../../utils/closePopover';
+import { Popover } from '../Tooltip/Popover';
+import { PopoverController } from '../Tooltip/PopoverController';
+
+import { ColorPickerPopover, type ColorPickerProps } from './ColorPickerPopover';
+import { ColorSwatch } from './ColorSwatch';
+import { SeriesColorPickerPopover } from './SeriesColorPickerPopover';
 
 /**
  * If you need custom trigger for the color picker you can do that with a render prop pattern and supply a function
@@ -17,106 +26,92 @@ import { closePopover } from '../../utils/closePopover';
  * component as a custom trigger you will need to forward the reference to first HTMLElement child.
  */
 type ColorPickerTriggerRenderer = (props: {
-  // This should be a React.RefObject<HTMLElement> but due to how object refs are defined you cannot downcast from that
-  // to a specific type like React.RefObject<HTMLDivElement> even though it would be fine in runtime.
-  ref: React.RefObject<any>;
+  // This should be a RefObject<HTMLElement> but due to how object refs are defined you cannot downcast from that
+  // to a specific type like RefObject<HTMLDivElement> even though it would be fine in runtime.
+  ref: RefObject<any>;
   showColorPicker: () => void;
   hideColorPicker: () => void;
-}) => React.ReactNode;
+  isOpen: boolean;
+}) => ReactNode;
 
-export const colorPickerFactory = <T extends ColorPickerProps>(
-  popover: React.ComponentType<T>,
+const colorPickerFactory = <T extends ColorPickerProps>(
+  popover: ComponentType<PropsWithChildren<T>>,
   displayName = 'ColorPicker'
 ) => {
-  return class ColorPicker extends Component<T & { children?: ColorPickerTriggerRenderer }, any> {
-    static displayName = displayName;
-    pickerTriggerRef = createRef<any>();
+  const ColorPickerComponent = (props: T & { children?: ColorPickerTriggerRenderer }) => {
+    const { children, onChange, color, id } = props;
+    const theme = useTheme2();
+    const pickerTriggerRef = useRef<any>(null);
+    const styles = getStyles(theme);
 
-    onColorChange = (color: string) => {
-      const { onColorChange, onChange } = this.props;
-      const changeHandler = (onColorChange || onChange) as ColorPickerChangeHandler;
+    const popoverElement = createElement(
+      popover,
+      {
+        ...props,
+        onChange,
+      },
+      null
+    );
 
-      return changeHandler(color);
-    };
+    return (
+      <PopoverController content={popoverElement} hideAfter={300}>
+        {(showPopper, hidePopper, popperProps) => {
+          return (
+            <>
+              {pickerTriggerRef.current && (
+                <Popover
+                  {...popperProps}
+                  referenceElement={pickerTriggerRef.current}
+                  wrapperClassName={styles.colorPicker}
+                  onMouseLeave={hidePopper}
+                  onMouseEnter={showPopper}
+                  onKeyDown={(event) => closePopover(event, hidePopper)}
+                />
+              )}
 
-    render() {
-      const { theme, children } = this.props;
-      const styles = getStyles(theme);
-      const popoverElement = React.createElement(popover, {
-        ...{ ...this.props, children: null },
-        onChange: this.onColorChange,
-      });
-
-      return (
-        <PopoverController content={popoverElement} hideAfter={300}>
-          {(showPopper, hidePopper, popperProps) => {
-            return (
-              <>
-                {this.pickerTriggerRef.current && (
-                  <Popover
-                    {...popperProps}
-                    referenceElement={this.pickerTriggerRef.current}
-                    wrapperClassName={styles.colorPicker}
-                    onMouseLeave={hidePopper}
-                    onMouseEnter={showPopper}
-                    onKeyDown={(event) => closePopover(event, hidePopper)}
-                  />
-                )}
-
-                {children ? (
-                  // Children have a bit weird type due to intersection used in the definition so we need to cast here,
-                  // but the definition is correct and should not allow to pass a children that does not conform to
-                  // ColorPickerTriggerRenderer type.
-                  (children as ColorPickerTriggerRenderer)({
-                    ref: this.pickerTriggerRef,
-                    showColorPicker: showPopper,
-                    hideColorPicker: hidePopper,
-                  })
-                ) : (
-                  <ColorSwatch
-                    ref={this.pickerTriggerRef}
-                    onClick={showPopper}
-                    onMouseLeave={hidePopper}
-                    color={theme.visualization.getColorByName(this.props.color || '#000000')}
-                  />
-                )}
-              </>
-            );
-          }}
-        </PopoverController>
-      );
-    }
+              {children ? (
+                children({
+                  ref: pickerTriggerRef,
+                  showColorPicker: showPopper,
+                  hideColorPicker: hidePopper,
+                  isOpen: popperProps.show,
+                })
+              ) : (
+                <ColorSwatch
+                  id={id}
+                  ref={pickerTriggerRef}
+                  onClick={showPopper}
+                  onMouseLeave={hidePopper}
+                  color={theme.visualization.getColorByName(color || '#000000')}
+                  aria-label={color}
+                />
+              )}
+            </>
+          );
+        }}
+      </PopoverController>
+    );
   };
+
+  return ColorPickerComponent;
 };
 
-export const ColorPicker = withTheme2(colorPickerFactory(ColorPickerPopover, 'ColorPicker'));
-export const SeriesColorPicker = withTheme2(colorPickerFactory(SeriesColorPickerPopover, 'SeriesColorPicker'));
+/**
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/pickers-colorpicker--docs
+ */
+export const ColorPicker = colorPickerFactory(ColorPickerPopover, 'ColorPicker');
+export const SeriesColorPicker = colorPickerFactory(SeriesColorPickerPopover, 'SeriesColorPicker');
 
-const getStyles = stylesFactory((theme: GrafanaTheme2) => {
+const getStyles = (theme: GrafanaTheme2) => {
   return {
-    colorPicker: css`
-      position: absolute;
-      z-index: ${theme.zIndex.tooltip};
-      color: ${theme.colors.text.primary};
-      max-width: 400px;
-      font-size: ${theme.typography.size.sm};
-      // !important because these styles are also provided to popper via .popper classes from Tooltip component
-      // hope to get rid of those soon
-      padding: 15px !important;
-      & [data-placement^='top'] {
-        padding-left: 0 !important;
-        padding-right: 0 !important;
-      }
-      & [data-placement^='bottom'] {
-        padding-left: 0 !important;
-        padding-right: 0 !important;
-      }
-      & [data-placement^='left'] {
-        padding-top: 0 !important;
-      }
-      & [data-placement^='right'] {
-        padding-top: 0 !important;
-      }
-    `,
+    colorPicker: css({
+      position: 'absolute',
+      zIndex: theme.zIndex.tooltip,
+      color: theme.colors.text.primary,
+      maxWidth: '400px',
+      fontSize: theme.typography.size.sm,
+      maxHeight: '100vh',
+      overflow: 'auto',
+    }),
   };
-});
+};

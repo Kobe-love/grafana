@@ -4,45 +4,45 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/experimental"
-	"github.com/stretchr/testify/require"
 )
 
 func loadTestData(tb testing.TB, file string) []byte {
 	tb.Helper()
 	// Safe to disable, this is a test.
 	// nolint:gosec
-	content, err := ioutil.ReadFile(filepath.Join("testdata", file+".txt"))
+	content, err := os.ReadFile(filepath.Join("testdata", file+".txt"))
 	require.NoError(tb, err, "expected to be able to read file")
 	require.True(tb, len(content) > 0)
 	return content
 }
 
-func checkTestData(tb testing.TB, file string) *backend.DataResponse {
-	tb.Helper()
+func checkTestData(t *testing.T, file string) *backend.DataResponse {
+	t.Helper()
 	// Safe to disable, this is a test.
 	// nolint:gosec
-	content, err := ioutil.ReadFile(filepath.Join("testdata", file+".txt"))
-	require.NoError(tb, err, "expected to be able to read file")
-	require.True(tb, len(content) > 0)
+	content, err := os.ReadFile(filepath.Join("testdata", file+".txt"))
+	require.NoError(t, err, "expected to be able to read file")
+	require.True(t, len(content) > 0)
 
 	converter := NewConverter(WithUseLabelsColumn(true))
 	frameWrappers, err := converter.Convert(content)
-	require.NoError(tb, err)
+	require.NoError(t, err)
 
 	dr := &backend.DataResponse{}
 	for _, w := range frameWrappers {
 		dr.Frames = append(dr.Frames, w.Frame())
 	}
 
-	err = experimental.CheckGoldenDataResponse(filepath.Join("testdata", file+".golden.txt"), dr, *update)
-	require.NoError(tb, err)
+	experimental.CheckGoldenJSONResponse(t, "testdata", file, dr, false)
 	return dr
 }
 
@@ -144,13 +144,13 @@ func TestConverter_Convert_NumFrameFields(t *testing.T) {
 	frameJSON, err := json.MarshalIndent(frame, "", "  ")
 	require.NoError(t, err)
 	if *update {
-		if err := ioutil.WriteFile(goldenFile, frameJSON, 0600); err != nil {
+		if err := os.WriteFile(goldenFile, frameJSON, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Safe to disable, this is a test.
 	// nolint:gosec
-	want, err := ioutil.ReadFile(goldenFile)
+	want, err := os.ReadFile(goldenFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func BenchmarkConverter_Convert_Wide(b *testing.B) {
 	converter := NewConverter()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := converter.Convert(testData)
 		if err != nil {
 			b.Fatal(err)
@@ -201,7 +201,7 @@ func BenchmarkConverter_Convert_LabelsColumn(b *testing.B) {
 	converter := NewConverter(WithUseLabelsColumn(true))
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := converter.Convert(testData)
 		if err != nil {
 			b.Fatal(err)
@@ -224,13 +224,13 @@ func TestConverter_Convert_NumFrameFields_LabelsColumn(t *testing.T) {
 	frameJSON, err := json.MarshalIndent(frame, "", "  ")
 	require.NoError(t, err)
 	if *update {
-		if err := ioutil.WriteFile(goldenFile, frameJSON, 0600); err != nil {
+		if err := os.WriteFile(goldenFile, frameJSON, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Safe to disable, this is a test.
 	// nolint:gosec
-	want, err := ioutil.ReadFile(goldenFile)
+	want, err := os.ReadFile(goldenFile)
 	if err != nil {
 		t.Fatal(err)
 	}

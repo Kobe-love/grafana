@@ -1,22 +1,36 @@
 import { merge } from 'lodash';
-import { getFieldDisplayValues, GetFieldDisplayValuesOptions } from './fieldDisplay';
+
 import { toDataFrame } from '../dataframe/processDataFrame';
+import { createTheme } from '../themes/createTheme';
 import { ReducerID } from '../transformations/fieldReducer';
-import { MappingType, SpecialValueMatch, ValueMapping } from '../types';
-import { standardFieldConfigEditorRegistry } from './standardFieldConfigEditorRegistry';
-import { createTheme } from '../themes';
+import { FieldType } from '../types/dataFrame';
+import { type FieldConfigPropertyItem } from '../types/fieldOverrides';
+import { MappingType, SpecialValueMatch, type ValueMapping } from '../types/valueMapping';
+
 import { getDisplayProcessor } from './displayProcessor';
+import {
+  type FieldSparkline,
+  fixCellTemplateExpressions,
+  getFieldDisplayValues,
+  type GetFieldDisplayValuesOptions,
+  getSparklineHighlight,
+} from './fieldDisplay';
+import { standardFieldConfigEditorRegistry } from './standardFieldConfigEditorRegistry';
 
 describe('FieldDisplay', () => {
   beforeAll(() => {
     // Since FieldConfigEditors belong to grafana-ui we need to mock those here
     // as grafana-ui code cannot be imported in grafana-data.
     // TODO: figure out a way to share standard editors between data/ui tests
-    const mappings = {
+    const mappings: FieldConfigPropertyItem = {
       id: 'mappings', // Match field properties
-      process: (value: any) => value,
+      process: (value) => value,
       shouldApply: () => true,
-    } as any;
+      override: jest.fn(),
+      editor: jest.fn(),
+      name: 'Value mappings',
+      path: 'mappings',
+    };
 
     standardFieldConfigEditorRegistry.setInit(() => {
       return [mappings];
@@ -319,7 +333,7 @@ describe('FieldDisplay', () => {
       });
 
       const cache = { numeric: 10, text: 'Value' };
-      options.data![0].fields[1].display = (v: any) => {
+      options.data![0].fields[1].display = () => {
         return cache;
       };
 
@@ -502,8 +516,25 @@ function createEmptyDisplayOptions(extend = {}): GetFieldDisplayValuesOptions {
 }
 
 function createDisplayOptions(extend: Partial<GetFieldDisplayValuesOptions> = {}): GetFieldDisplayValuesOptions {
-  const options: GetFieldDisplayValuesOptions = {
-    data: [
+  const options = merge(
+    {
+      replaceVariables: (value: string) => {
+        return value;
+      },
+      reduceOptions: {
+        calcs: [],
+      },
+      fieldConfig: {
+        overrides: [],
+        defaults: {},
+      },
+      theme: createTheme(),
+    },
+    extend
+  );
+
+  if (!options.data?.length) {
+    options.data = [
       toDataFrame({
         name: 'Series Name',
         fields: [
@@ -512,19 +543,91 @@ function createDisplayOptions(extend: Partial<GetFieldDisplayValuesOptions> = {}
           { name: 'Field 3', values: [2, 4, 6] },
         ],
       }),
-    ],
-    replaceVariables: (value: string) => {
-      return value;
-    },
-    reduceOptions: {
-      calcs: [],
-    },
-    fieldConfig: {
-      overrides: [],
-      defaults: {},
-    },
-    theme: createTheme(),
+    ];
+  }
+  return options;
+}
+
+describe('fixCellTemplateExpressions', () => {
+  it('Should replace __cell_x correctly', () => {
+    expect(fixCellTemplateExpressions('$__cell_10 asd ${__cell_15} asd [[__cell_20]]')).toEqual(
+      '${__data.fields[10]} asd ${__data.fields[15]} asd ${__data.fields[20]}'
+    );
+  });
+
+  it('Should handle date formatting', () => {
+    expect(
+      fixCellTemplateExpressions('$__cell_10:date:iso asd ${__cell_15:date:seconds} asd [[__cell_20:date:YYYY-MM]]')
+    ).toEqual(
+      '${__data.fields[10]:date:iso} asd ${__data.fields[15]:date:seconds} asd ${__data.fields[20]:date:YYYY-MM}'
+    );
+  });
+});
+
+describe('getSparklineHighlight', () => {
+  const sparkline: FieldSparkline = {
+    y: { name: 'A', type: FieldType.number, values: [null, 2, 3, 4, 10, 8, 8, 8, 9, null], config: {} },
   };
 
-  return merge<GetFieldDisplayValuesOptions, any>(options, extend);
-}
+  it.each([
+    {
+      calc: ReducerID.last,
+      expected: {
+        type: 'point',
+        xIdx: 9,
+      },
+    },
+    {
+      calc: ReducerID.max,
+      expected: {
+        type: 'point',
+        xIdx: 4,
+      },
+    },
+    {
+      calc: ReducerID.min,
+      expected: {
+        type: 'point',
+        xIdx: 1,
+      },
+    },
+    {
+      calc: ReducerID.first,
+      expected: {
+        type: 'point',
+        xIdx: 0,
+      },
+    },
+    {
+      calc: ReducerID.firstNotNull,
+      expected: {
+        type: 'point',
+        xIdx: 1,
+      },
+    },
+    {
+      calc: ReducerID.lastNotNull,
+      expected: {
+        type: 'point',
+        xIdx: 8,
+      },
+    },
+    {
+      calc: ReducerID.mean,
+      expected: {
+        type: 'line',
+        y: 6.5,
+      },
+    },
+    {
+      calc: ReducerID.median,
+      expected: {
+        type: 'line',
+        y: 8,
+      },
+    },
+  ])('it calculates the correct highlight for the $calc', ({ calc, expected }) => {
+    const result = getSparklineHighlight(sparkline, calc);
+    expect(result).toEqual(expected);
+  });
+});

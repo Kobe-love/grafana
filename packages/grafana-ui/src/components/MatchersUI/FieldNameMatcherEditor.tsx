@@ -1,34 +1,49 @@
-import React, { memo, useCallback } from 'react';
-import { MatcherUIProps, FieldMatcherUIRegistryItem } from './types';
-import { FieldMatcherID, fieldMatchers, SelectableValue } from '@grafana/data';
-import { Select } from '../Select/Select';
-import { useFieldDisplayNames, useSelectOptions, frameHasName } from './utils';
+import { memo, useCallback } from 'react';
+
+import { FieldMatcherID, fieldMatchers } from '@grafana/data';
+import { t } from '@grafana/i18n';
+
+import { Combobox } from '../Combobox/Combobox';
+import { type ComboboxOption } from '../Combobox/types';
+
+import { type FieldMatcherUIRegistryItem, type MatcherUIProps } from './types';
+import { frameHasName, useFieldDisplayNames, useMatcherSelectOptions } from './utils';
 
 export const FieldNameMatcherEditor = memo<MatcherUIProps<string>>((props) => {
-  const { data, options, onChange: onChangeFromProps, id } = props;
+  const { data, options, onChange: onChangeFromProps, id, scope = 'series' } = props;
   const names = useFieldDisplayNames(data);
-  const selectOptions = useSelectOptions(names, options);
+  const selectOptions = useMatcherSelectOptions(names, options, { scope });
 
   const onChange = useCallback(
-    (selection: SelectableValue<string>) => {
+    (selection: ComboboxOption) => {
       if (!frameHasName(selection.value, names)) {
         return;
       }
-      return onChangeFromProps(selection.value!);
+
+      const scope = names.scopes.get(selection.value!);
+      return onChangeFromProps(selection.value!, scope);
     },
     [names, onChangeFromProps]
   );
 
   const selectedOption = selectOptions.find((v) => v.value === options);
-  return <Select menuShouldPortal value={selectedOption} options={selectOptions} onChange={onChange} inputId={id} />;
+  return (
+    <Combobox
+      value={selectedOption}
+      options={selectOptions}
+      onChange={onChange}
+      placeholder={t('grafana-ui.select.placeholder', 'Choose')}
+      id={id}
+    />
+  );
 });
 FieldNameMatcherEditor.displayName = 'FieldNameMatcherEditor';
 
-export const fieldNameMatcherItem: FieldMatcherUIRegistryItem<string> = {
+export const getFieldNameMatcherItem: () => FieldMatcherUIRegistryItem<string> = () => ({
   id: FieldMatcherID.byName,
   component: FieldNameMatcherEditor,
   matcher: fieldMatchers.get(FieldMatcherID.byName),
-  name: 'Fields with name',
-  description: 'Set properties for a specific field',
+  name: t('grafana-ui.matchers-ui.name-fields-with-name', 'Fields with name'),
+  description: t('grafana-ui.matchers-ui.description-fields-with-name', 'Set properties for a specific field'),
   optionsToLabel: (options) => options,
-};
+});

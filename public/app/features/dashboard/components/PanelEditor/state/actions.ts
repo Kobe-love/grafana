@@ -1,23 +1,18 @@
-import { DashboardModel, PanelModel } from '../../../state';
-import { ThunkResult } from 'app/types';
-import {
-  closeEditor,
-  PANEL_EDITOR_UI_STATE_STORAGE_KEY,
-  PanelEditorUIState,
-  setDiscardChanges,
-  setPanelEditorUIState,
-  updateEditorInitState,
-} from './reducers';
-import { cleanUpPanelState, panelModelAndPluginReady } from 'app/features/panel/state/reducers';
-import store from 'app/core/store';
 import { pick } from 'lodash';
-import { initPanelState } from 'app/features/panel/state/actions';
+
+import { removePanel } from 'app/features/dashboard/utils/panel';
+import { cleanUpPanelState } from 'app/features/panel/state/actions';
+import { panelModelAndPluginReady } from 'app/features/panel/state/reducers';
+import { type ThunkResult } from 'app/types/store';
+
+import { type DashboardModel } from '../../../state/DashboardModel';
+import { type PanelModel } from '../../../state/PanelModel';
+
+import { closeEditor, updateEditorInitState } from './reducers';
 
 export function initPanelEditor(sourcePanel: PanelModel, dashboard: DashboardModel): ThunkResult<void> {
   return async (dispatch) => {
     const panel = dashboard.initEditPanel(sourcePanel);
-
-    await dispatch(initPanelState(panel));
 
     dispatch(
       updateEditorInitState({
@@ -28,18 +23,7 @@ export function initPanelEditor(sourcePanel: PanelModel, dashboard: DashboardMod
   };
 }
 
-export function discardPanelChanges(): ThunkResult<void> {
-  return async (dispatch, getStore) => {
-    const { getPanel } = getStore().panelEditor;
-    getPanel().configRev = 0;
-    dispatch(setDiscardChanges(true));
-  };
-}
-
-export function updateDuplicateLibraryPanels(
-  modifiedPanel: PanelModel,
-  dashboard: DashboardModel | null
-): ThunkResult<void> {
+function updateDuplicateLibraryPanels(modifiedPanel: PanelModel, dashboard: DashboardModel | null): ThunkResult<void> {
   return (dispatch) => {
     if (modifiedPanel.libraryPanel?.uid === undefined || !dashboard) {
       return;
@@ -112,9 +96,9 @@ export function exitPanelEditor(): ThunkResult<void> {
       dashboard.exitPanelEditor();
     }
 
-    if (!shouldDiscardChanges) {
+    const sourcePanel = getSourcePanel();
+    if (hasPanelChangedInPanelEdit(panel) && !shouldDiscardChanges) {
       const modifiedSaveModel = panel.getSaveModel();
-      const sourcePanel = getSourcePanel();
       const panelTypeChanged = sourcePanel.type !== panel.type;
 
       dispatch(updateDuplicateLibraryPanels(panel, dashboard));
@@ -135,22 +119,28 @@ export function exitPanelEditor(): ThunkResult<void> {
       setTimeout(() => {
         sourcePanel.getQueryRunner().useLastResultFrom(panel.getQueryRunner());
         sourcePanel.render();
+
+        // If all changes where saved then reset configRev after applying changes
+        if (panel.hasSavedPanelEditChange && !panel.hasChanged) {
+          sourcePanel.configRev = 0;
+        }
       }, 20);
     }
 
-    dispatch(cleanUpPanelState({ key: panel.key }));
+    // A new panel is only new until the first time we exit the panel editor
+    if (sourcePanel.isNew) {
+      if (!shouldDiscardChanges) {
+        delete sourcePanel.isNew;
+      } else {
+        dashboard && removePanel(dashboard, sourcePanel, true);
+      }
+    }
+
+    dispatch(cleanUpPanelState(panel.key));
     dispatch(closeEditor());
   };
 }
 
-export function updatePanelEditorUIState(uiState: Partial<PanelEditorUIState>): ThunkResult<void> {
-  return (dispatch, getStore) => {
-    const nextState = { ...getStore().panelEditor.ui, ...uiState };
-    dispatch(setPanelEditorUIState(nextState));
-    try {
-      store.setObject(PANEL_EDITOR_UI_STATE_STORAGE_KEY, nextState);
-    } catch (error) {
-      console.error(error);
-    }
-  };
+function hasPanelChangedInPanelEdit(panel: PanelModel) {
+  return panel.hasChanged || panel.hasSavedPanelEditChange;
 }

@@ -5,15 +5,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"reflect"
 )
 
+// MaxBindBodyBytes caps the size of a JSON request body that Bind will read
+const MaxBindBodyBytes = 100 << 20
+
 // Bind deserializes JSON payload from the request
-func Bind(req *http.Request, v interface{}) error {
+func Bind(req *http.Request, v any) error {
 	if req.Body != nil {
+		m, _, err := mime.ParseMediaType(req.Header.Get("Content-type"))
+		if err != nil {
+			return err
+		}
+		if m != "application/json" {
+			return errors.New("bad content type")
+		}
 		defer func() { _ = req.Body.Close() }()
-		err := json.NewDecoder(req.Body).Decode(v)
+		body := http.MaxBytesReader(nil, req.Body, MaxBindBodyBytes)
+		err = json.NewDecoder(body).Decode(v)
 		if err != nil && !errors.Is(err, io.EOF) {
 			return err
 		}
@@ -25,16 +37,29 @@ type Validator interface {
 	Validate() error
 }
 
-func validate(obj interface{}) error {
+func validate(obj any) error {
+	// First check if obj is nil, because we cannot validate those.
+	if obj == nil {
+		return nil
+	}
+
+	// Second, check if obj has a nil interface value.
+	// This is to prevent panics when obj is an instance of uninitialised struct pointer / interface.
+	t := reflect.TypeOf(obj)
+	v := reflect.ValueOf(obj)
+
+	if v.Kind() == reflect.Pointer && v.IsNil() {
+		return nil
+	}
+
 	// If type has a Validate() method - use that
 	if validator, ok := obj.(Validator); ok {
 		return validator.Validate()
 	}
+
 	// Otherwise, use reflection to match `binding:"Required"` struct field tags.
 	// Resolve all pointers and interfaces, until we get a concrete type.
-	t := reflect.TypeOf(obj)
-	v := reflect.ValueOf(obj)
-	for v.Kind() == reflect.Interface || v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer {
 		t = t.Elem()
 		v = v.Elem()
 	}

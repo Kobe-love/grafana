@@ -1,21 +1,24 @@
-import React from 'react';
 import { debounce, sortBy } from 'lodash';
+import { type Editor, type Plugin as SlatePlugin } from 'slate-react';
 
-import { Editor as CoreEditor } from 'slate';
-import { Plugin as SlatePlugin } from '@grafana/slate-react';
+import { Typeahead, type TypeaheadMenu } from '../components/Typeahead/Typeahead';
+import {
+  type CompletionItem,
+  type SuggestionsState,
+  type TypeaheadInput,
+  type TypeaheadOutput,
+} from '../types/completion';
+import { SearchFunctionType, SearchFunctionMap } from '../utils/searchFunctions';
+import { makeFragment } from '../utils/slate';
 
 import TOKEN_MARK from './slate-prism/TOKEN_MARK';
-import { Typeahead } from '../components/Typeahead/Typeahead';
-import { CompletionItem, SuggestionsState, TypeaheadInput, TypeaheadOutput } from '../types';
-import { makeFragment, SearchFunctionType } from '../utils';
-import { SearchFunctionMap } from '../utils/searchFunctions';
 
-export const TYPEAHEAD_DEBOUNCE = 250;
+const TYPEAHEAD_DEBOUNCE = 250;
 
 // Commands added to the editor by this plugin.
 interface SuggestionsPluginCommands {
-  selectSuggestion: (suggestion: CompletionItem) => CoreEditor;
-  applyTypeahead: (suggestion: CompletionItem) => CoreEditor;
+  selectSuggestion: (suggestion: CompletionItem) => Editor;
+  applyTypeahead: (suggestion: CompletionItem) => Editor;
 }
 
 export function SuggestionsPlugin({
@@ -29,7 +32,7 @@ export function SuggestionsPlugin({
   onWillApplySuggestion?: (suggestion: string, state: SuggestionsState) => string;
   portalOrigin: string;
 }): SlatePlugin {
-  let typeaheadRef: Typeahead;
+  let typeaheadRef: TypeaheadMenu;
   let state: SuggestionsState = {
     groupedItems: [],
     typeaheadPrefix: '',
@@ -64,16 +67,15 @@ export function SuggestionsPlugin({
       return next();
     },
 
-    onKeyDown: (event: Event, editor, next) => {
-      const keyEvent = event as KeyboardEvent;
+    onKeyDown: (event, editor, next) => {
       const currentSuggestions = state.groupedItems;
 
       const hasSuggestions = currentSuggestions.length;
 
-      switch (keyEvent.key) {
+      switch (event.key) {
         case 'Escape': {
           if (hasSuggestions) {
-            keyEvent.preventDefault();
+            event.preventDefault();
 
             state = {
               ...state,
@@ -90,16 +92,16 @@ export function SuggestionsPlugin({
         case 'ArrowDown':
         case 'ArrowUp':
           if (hasSuggestions) {
-            keyEvent.preventDefault();
-            typeaheadRef.moveMenuIndex(keyEvent.key === 'ArrowDown' ? 1 : -1);
+            event.preventDefault();
+            typeaheadRef.moveMenuIndex(event.key === 'ArrowDown' ? 1 : -1);
             return;
           }
 
           break;
 
         case 'Enter': {
-          if (!(keyEvent.shiftKey || keyEvent.ctrlKey) && hasSuggestions) {
-            keyEvent.preventDefault();
+          if (!(event.shiftKey || event.ctrlKey) && hasSuggestions) {
+            event.preventDefault();
             return typeaheadRef.insertSuggestion();
           }
 
@@ -108,7 +110,7 @@ export function SuggestionsPlugin({
 
         case 'Tab': {
           if (hasSuggestions) {
-            keyEvent.preventDefault();
+            event.preventDefault();
             return typeaheadRef.insertSuggestion();
           }
 
@@ -117,7 +119,7 @@ export function SuggestionsPlugin({
 
         default: {
           // Don't react on meta keys
-          if (keyEvent.key.length === 1) {
+          if (event.key.length === 1) {
             handleTypeaheadDebounced(editor, setState, onTypeahead, cleanText);
           }
           break;
@@ -128,7 +130,7 @@ export function SuggestionsPlugin({
     },
 
     commands: {
-      selectSuggestion: (editor: CoreEditor, suggestion: CompletionItem): CoreEditor => {
+      selectSuggestion: (editor, suggestion: CompletionItem): Editor => {
         const suggestions = state.groupedItems;
         if (!suggestions || !suggestions.length) {
           return editor;
@@ -140,11 +142,13 @@ export function SuggestionsPlugin({
         return ed;
       },
 
-      applyTypeahead: (editor: CoreEditor, suggestion: CompletionItem): CoreEditor => {
+      applyTypeahead: (editor, suggestion: CompletionItem) => {
         let suggestionText = suggestion.insertText || suggestion.label;
 
         const preserveSuffix = suggestion.kind === 'function';
         const move = suggestion.move || 0;
+        const moveForward = move > 0 ? move : 0;
+        const moveBackward = move < 0 ? -move : 0;
 
         const { typeaheadPrefix, typeaheadText, typeaheadContext } = state;
 
@@ -157,18 +161,20 @@ export function SuggestionsPlugin({
           });
         }
 
-        // Remove the current, incomplete text and replace it with the selected suggestion
-        const backward = suggestion.deleteBackwards || typeaheadPrefix.length;
-        const text = cleanText ? cleanText(typeaheadText) : typeaheadText;
-        const suffixLength = text.length - typeaheadPrefix.length;
-        const offset = typeaheadText.indexOf(typeaheadPrefix);
-        const midWord = typeaheadPrefix && ((suffixLength > 0 && offset > -1) || suggestionText === typeaheadText);
-        const forward = midWord && !preserveSuffix ? suffixLength + offset : 0;
+        const { forward, backward } = getNumCharsToDelete(
+          suggestionText,
+          typeaheadPrefix,
+          typeaheadText,
+          preserveSuffix,
+          suggestion.deleteBackwards,
+          cleanText
+        );
 
         // If new-lines, apply suggestion as block
         if (suggestionText.match(/\n/)) {
           const fragment = makeFragment(suggestionText);
-          return editor.deleteBackward(backward).deleteForward(forward).insertFragment(fragment).focus();
+          editor.deleteBackward(backward).deleteForward(forward).insertFragment(fragment).focus();
+          return editor;
         }
 
         state = {
@@ -176,12 +182,16 @@ export function SuggestionsPlugin({
           groupedItems: [],
         };
 
-        return editor
+        editor
+          .snapshotSelection()
           .deleteBackward(backward)
           .deleteForward(forward)
           .insertText(suggestionText)
-          .moveForward(move)
+          .moveForward(moveForward)
+          .moveBackward(moveBackward)
           .focus();
+
+        return editor;
       },
     },
 
@@ -196,12 +206,12 @@ export function SuggestionsPlugin({
         <>
           {children}
           <Typeahead
-            menuRef={(menu: Typeahead) => (typeaheadRef = menu)}
+            menuRef={(menu) => (typeaheadRef = menu)}
             origin={portalOrigin}
             prefix={state.typeaheadPrefix}
             isOpen={!!state.groupedItems.length}
             groupedItems={state.groupedItems}
-            onSelectSuggestion={(editor as CoreEditor & SuggestionsPluginCommands).selectSuggestion}
+            onSelectSuggestion={(editor as Editor & SuggestionsPluginCommands).selectSuggestion}
           />
         </>
       );
@@ -210,7 +220,7 @@ export function SuggestionsPlugin({
 }
 
 const handleTypeahead = async (
-  editor: CoreEditor,
+  editor: Editor,
   onStateChange: (state: Partial<SuggestionsState>) => void,
   onTypeahead?: (typeahead: TypeaheadInput) => Promise<TypeaheadOutput>,
   cleanText?: (text: string) => string
@@ -332,3 +342,27 @@ const handleTypeahead = async (
   // Bogus edit to force re-render
   editor.blur().focus();
 };
+
+export function getNumCharsToDelete(
+  suggestionText: string,
+  typeaheadPrefix: string,
+  typeaheadText: string,
+  preserveSuffix: boolean,
+  deleteBackwards?: number,
+  cleanText?: (text: string) => string
+) {
+  // remove the current, incomplete text and replace it with the selected suggestion
+  const backward = deleteBackwards || typeaheadPrefix.length;
+  const text = cleanText ? cleanText(typeaheadText) : typeaheadText;
+  const offset = typeaheadText.indexOf(typeaheadPrefix);
+
+  const suffixLength =
+    offset > -1 ? text.length - offset - typeaheadPrefix.length : text.length - typeaheadPrefix.length;
+  const midWord = Boolean((typeaheadPrefix && suffixLength > 0) || suggestionText === typeaheadText);
+  const forward = midWord && !preserveSuffix ? suffixLength + offset : 0;
+
+  return {
+    forward,
+    backward,
+  };
+}
